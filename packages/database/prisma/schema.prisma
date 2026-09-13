@@ -1,0 +1,34 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Infrastructure-only tables for Construction Block 001.
+/// Domain tables (account, student, curriculum, etc.) belong to later blocks.
+
+/// Health-check table — proves DB connectivity.
+model health_check {
+  id         Int      @id @default(autoincrement())
+  checked_at DateTime @default(now())
+}
+
+/// Transactional outbox — every domain writes events here inside its
+/// ACID transaction; the outbox relay reads and publishes them.
+model outbox_event {
+  id             String   @id @default(uuid()) @db.Uuid
+  aggregate_type String   @db.VarChar(255)
+  aggregate_id   String   @db.VarChar(255)
+  event_type     String   @db.VarChar(255)
+  payload        Json
+  created_at     DateTime @default(now())
+  published_at   DateTime?
+  /// Idempotency key — prevents duplicate processing downstream.
+  idempotency_key String  @unique @db.VarChar(255)
+
+  @@index([published_at])
+  @@index([created_at])
+}
