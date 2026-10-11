@@ -1,0 +1,11 @@
+{
+  "minorAgeThreshold": 18,
+  "guardianConsentAgeThreshold": 18,
+  "acceptedDobEvidenceMethods": [
+    "GOVERNMENT_ID_DOCUMENT",
+    "DIGITAL_GOVERNMENT_IDENTITY"
+  ],
+  "acceptedGuardianVerificationMethods": [
+    "GUARDIAN_ID_RELATIONSHIP_AND_CONSENT"
+  ]
+}

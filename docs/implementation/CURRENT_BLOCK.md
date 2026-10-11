@@ -20,7 +20,7 @@ Still required before this block can be marked COMPLETED:
 
 ## Blockers, and how they are handled
 
-1. **UAE child-data regime — still OPEN, awaiting counsel.** Two UAE federal laws apply (PDPL 45/2021 + Child Digital Safety 26/2025); see [`../decisions/BLOCKER_01_UAE_CHILD_DATA_REGIME.md`](../decisions/BLOCKER_01_UAE_CHILD_DATA_REGIME.md). Block 002 does not guess: thresholds and verification methods live in versioned policy data, the system fails closed (treat as minor, guardian consent required) without an ACTIVE policy, and no policy can be activated until marked counsel-reviewed.
+1. **UAE child-data regime — counsel's values RECEIVED (2026-10-11), policy v1 prepared but NOT loaded or activated.** See [`../decisions/UAE_POLICY_V1.md`](../decisions/UAE_POLICY_V1.md): activating it blocks the date-of-birth step until a verification flow exists. Earlier status: awaiting counsel. Two UAE federal laws apply (PDPL 45/2021 + Child Digital Safety 26/2025); see [`../decisions/BLOCKER_01_UAE_CHILD_DATA_REGIME.md`](../decisions/BLOCKER_01_UAE_CHILD_DATA_REGIME.md). Block 002 does not guess: thresholds and verification methods live in versioned policy data, the system fails closed (treat as minor, guardian consent required) without an ACTIVE policy, and no policy can be activated until marked counsel-reviewed.
 2. **Consent/age ownership — RESOLVED, ratified by the PM** by [`../decisions/D11_CONSENT_STATE_OWNERSHIP.md`](../decisions/D11_CONSENT_STATE_OWNERSHIP.md) (sub-module 01b under Domain 01). 
 
 ## Also on this branch (code complete, not a completed block)
