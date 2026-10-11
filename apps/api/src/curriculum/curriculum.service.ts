@@ -282,6 +282,16 @@ export class CurriculumService {
     });
   }
 
+  /** Current state of a subject version (used by the account-based admin layer). */
+  async getState(subjectVersionId: string): Promise<CurriculumState> {
+    const sv = await this.db.client.curriculum_subject_version.findUnique({
+      where: { id: subjectVersionId },
+      select: { state: true },
+    });
+    if (!sv) throw new CurriculumNotFoundError('subject version');
+    return sv.state as CurriculumState;
+  }
+
   /** Human/AI workflow steps that need no extra guard beyond the state machine. */
   async transition(
     subjectVersionId: string,

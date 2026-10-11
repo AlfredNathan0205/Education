@@ -169,3 +169,12 @@ export function stateAfterEdit(state: CurriculumState): CurriculumState {
   }
   return REOPENED_BY_EDIT.includes(state) ? 'VALIDATION_PENDING' : state;
 }
+
+/**
+ * Roles that may perform `from -> to` (empty for system-only steps). Used by the
+ * account-based admin layer to choose which of an account's roles to act under.
+ */
+export function allowedRolesFor(from: CurriculumState, to: CurriculumState): CurriculumRole[] {
+  const rule = T[`${from}>${to}`];
+  return rule && !rule.systemOnly ? [...rule.roles] : [];
+}
