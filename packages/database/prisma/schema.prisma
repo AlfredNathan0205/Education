@@ -7,8 +7,10 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-/// Infrastructure-only tables for Construction Block 001.
-/// Domain tables (account, student, curriculum, etc.) belong to later blocks.
+/// Block 001: infrastructure tables (health_check, outbox_event).
+/// Block 002: identity & privacy skeleton (Domain 01 sub-modules 01a/01b/01c,
+///            minimal student [Domain 02] and audit_event [Domain 20]).
+/// Curriculum, question and assessment tables belong to later blocks.
 
 /// Health-check table — proves DB connectivity.
 model health_check {
@@ -31,4 +33,395 @@ model outbox_event {
 
   @@index([published_at])
   @@index([created_at])
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// CONSTRUCTION-002 — Identity & Privacy Skeleton
+// Ownership per docs/decisions/D11_CONSENT_STATE_OWNERSHIP.md
+// ════════════════════════════════════════════════════════════════════════
+
+enum account_status {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+enum auth_identity_kind {
+  EMAIL
+  PHONE
+}
+
+enum student_access_kind {
+  SELF
+  GUARDIAN
+  SCHOOL_ASSISTED
+}
+
+enum guardian_relationship_status {
+  CLAIMED
+  VERIFIED
+  REVOKED
+}
+
+enum guardian_verification_status {
+  PENDING
+  VERIFIED
+  FAILED
+  EXPIRED
+}
+
+enum jurisdiction_policy_status {
+  DRAFT
+  ACTIVE
+  RETIRED
+}
+
+enum legal_review_status {
+  UNREVIEWED
+  COUNSEL_REVIEWED
+}
+
+enum consent_capacity {
+  SELF
+  GUARDIAN
+}
+
+// ── 01a Accounts & Sessions ─────────────────────────────────────────────
+
+/// Login account. Separate from student identity and guardian relationship.
+model account {
+  id         String         @id @default(uuid()) @db.Uuid
+  status     account_status @default(ACTIVE)
+  created_at DateTime       @default(now())
+  updated_at DateTime       @updatedAt
+
+  identities              authentication_identity[]
+  sessions                auth_session[]
+  student_access          account_student_access[]
+  guardian_relationships  guardian_relationship[]
+  consent_records_granted consent_record[]
+  consent_withdrawals     consent_withdrawal[]
+  role_assignments        role_assignment[]         @relation("role_assignment_account")
+  role_assignments_issued role_assignment[]         @relation("role_assignment_granter")
+  audit_events            audit_event[]
+}
+
+/// One verified way to authenticate (email or phone). Passwordless.
+model authentication_identity {
+  id                    String             @id @default(uuid()) @db.Uuid
+  account_id            String             @db.Uuid
+  kind                  auth_identity_kind
+  /// Lower-cased email, or E.164 phone. Normalized before storage.
+  identifier_normalized String             @db.VarChar(320)
+  verified_at           DateTime?
+  created_at            DateTime           @default(now())
+
+  account account @relation(fields: [account_id], references: [id])
+
+  @@unique([kind, identifier_normalized])
+  @@index([account_id])
+}
+
+/// One-time passcode challenge. Only a hash of the code is stored.
+model otp_challenge {
+  id                    String             @id @default(uuid()) @db.Uuid
+  kind                  auth_identity_kind
+  identifier_normalized String             @db.VarChar(320)
+  code_hash             String             @db.VarChar(128)
+  expires_at            DateTime
+  attempts              Int                @default(0)
+  max_attempts          Int                @default(5)
+  consumed_at           DateTime?
+  created_at            DateTime           @default(now())
+
+  @@index([kind, identifier_normalized, created_at])
+}
+
+/// Server-side session. Only a hash of the bearer token is stored.
+model auth_session {
+  id           String    @id @default(uuid()) @db.Uuid
+  account_id   String    @db.Uuid
+  token_hash   String    @unique @db.VarChar(128)
+  created_at   DateTime  @default(now())
+  expires_at   DateTime
+  revoked_at   DateTime?
+  last_seen_at DateTime?
+
+  account account @relation(fields: [account_id], references: [id])
+
+  @@index([account_id])
+}
+
+// ── Domain 02 stub ──────────────────────────────────────────────────────
+
+/// Minimal student identity. Domain 02 extends this in a later block.
+/// Kept deliberately small: data minimization (name is C3 child personal data).
+model student {
+  id           String   @id @default(uuid()) @db.Uuid
+  display_name String?  @db.VarChar(120)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  account_access         account_student_access[]
+  guardian_relationships guardian_relationship[]
+  age_classifications    age_classification[]
+  consent_records        consent_record[]
+}
+
+/// Which login account may act for which student, and in what capacity.
+model account_student_access {
+  id          String              @id @default(uuid()) @db.Uuid
+  account_id  String              @db.Uuid
+  student_id  String              @db.Uuid
+  access_kind student_access_kind
+  granted_at  DateTime            @default(now())
+  revoked_at  DateTime?
+
+  account account @relation(fields: [account_id], references: [id])
+  student student @relation(fields: [student_id], references: [id])
+
+  @@unique([account_id, student_id, access_kind])
+  @@index([student_id])
+}
+
+// ── 01b Privacy & Consent ───────────────────────────────────────────────
+
+/// Versioned, jurisdiction-specific legal parameters. Thresholds and accepted
+/// verification methods live here as DATA, never as constants in code.
+/// A policy may only become ACTIVE once legal_review = COUNSEL_REVIEWED.
+model jurisdiction_policy {
+  id                     String                     @id @default(uuid()) @db.Uuid
+  /// ISO 3166-1 alpha-2, e.g. "AE", "IN".
+  jurisdiction_code      String                     @db.VarChar(8)
+  version                Int
+  status                 jurisdiction_policy_status @default(DRAFT)
+  legal_review           legal_review_status        @default(UNREVIEWED)
+  /// Pointer to the counsel opinion / memo, not its content.
+  legal_review_reference String?                    @db.VarChar(255)
+  effective_from         DateTime?
+  /// Shape validated in code (JurisdictionPolicyConfig).
+  config                 Json
+  created_at             DateTime                   @default(now())
+
+  age_classifications     age_classification[]
+  guardian_verifications  guardian_verification[]
+  consent_policy_versions consent_policy_version[]
+
+  @@unique([jurisdiction_code, version])
+}
+
+/// Append-only. A DOB correction supersedes the row rather than editing it.
+/// DOB is highly restricted data (C5): access is limited to this module.
+model age_classification {
+  id                        String    @id @default(uuid()) @db.Uuid
+  student_id                String    @db.Uuid
+  jurisdiction_policy_id    String?   @db.Uuid
+  date_of_birth             DateTime  @db.Date
+  is_minor                  Boolean
+  requires_guardian_consent Boolean
+  /// POLICY | FAIL_CLOSED_NO_ACTIVE_POLICY | FAIL_CLOSED_INCOMPLETE_POLICY
+  basis                     String    @db.VarChar(64)
+  /// How the DOB was established. Open string: the mandatory method is a legal
+  /// question that is still open (see BLOCKER_01).
+  dob_evidence_method       String    @db.VarChar(64)
+  classified_at             DateTime  @default(now())
+  superseded_at             DateTime?
+
+  student             student              @relation(fields: [student_id], references: [id])
+  jurisdiction_policy jurisdiction_policy? @relation(fields: [jurisdiction_policy_id], references: [id])
+
+  @@index([student_id, superseded_at])
+}
+
+/// Guardian-to-student link. Distinct from the guardian's login account.
+model guardian_relationship {
+  id                  String                       @id @default(uuid()) @db.Uuid
+  guardian_account_id String                       @db.Uuid
+  student_id          String                       @db.Uuid
+  relationship_type   String                       @db.VarChar(50)
+  status              guardian_relationship_status @default(CLAIMED)
+  created_at          DateTime                     @default(now())
+  updated_at          DateTime                     @updatedAt
+
+  guardian_account account                 @relation(fields: [guardian_account_id], references: [id])
+  student          student                 @relation(fields: [student_id], references: [id])
+  verifications    guardian_verification[]
+  authorities      guardian_authority[]
+
+  @@unique([guardian_account_id, student_id])
+  @@index([student_id])
+}
+
+/// Evidence that a claimed guardian relationship is real. The method is data.
+model guardian_verification {
+  id                       String                       @id @default(uuid()) @db.Uuid
+  guardian_relationship_id String                       @db.Uuid
+  method                   String                       @db.VarChar(64)
+  status                   guardian_verification_status @default(PENDING)
+  /// Opaque pointer to evidence held elsewhere; never the evidence itself.
+  evidence_reference       String?                      @db.VarChar(255)
+  jurisdiction_policy_id   String?                      @db.Uuid
+  verified_at              DateTime?
+  expires_at               DateTime?
+  created_at               DateTime                     @default(now())
+
+  guardian_relationship guardian_relationship @relation(fields: [guardian_relationship_id], references: [id])
+  jurisdiction_policy   jurisdiction_policy?  @relation(fields: [jurisdiction_policy_id], references: [id])
+  authorities           guardian_authority[]
+
+  @@index([guardian_relationship_id])
+}
+
+/// What a verified guardian may do (e.g. give consent). Born from a verification.
+model guardian_authority {
+  id                       String    @id @default(uuid()) @db.Uuid
+  guardian_relationship_id String    @db.Uuid
+  guardian_verification_id String    @db.Uuid
+  authority_type           String    @db.VarChar(64)
+  granted_at               DateTime  @default(now())
+  revoked_at               DateTime?
+
+  guardian_relationship guardian_relationship @relation(fields: [guardian_relationship_id], references: [id])
+  guardian_verification guardian_verification @relation(fields: [guardian_verification_id], references: [id])
+  consent_records       consent_record[]
+
+  @@index([guardian_relationship_id])
+}
+
+/// A reason personal data is processed (e.g. core assessment, analytics).
+model consent_purpose {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(64)
+  description String   @db.VarChar(500)
+  created_at  DateTime @default(now())
+
+  policy_versions consent_policy_version[]
+  records         consent_record[]
+}
+
+/// Versioned consent wording for a purpose. A grant references the exact version.
+model consent_policy_version {
+  id                     String    @id @default(uuid()) @db.Uuid
+  consent_purpose_id     String    @db.Uuid
+  version                Int
+  jurisdiction_policy_id String?   @db.Uuid
+  /// Pointer to the versioned consent text, not the text itself.
+  text_reference         String    @db.VarChar(255)
+  effective_from         DateTime
+  retired_at             DateTime?
+
+  consent_purpose     consent_purpose      @relation(fields: [consent_purpose_id], references: [id])
+  jurisdiction_policy jurisdiction_policy? @relation(fields: [jurisdiction_policy_id], references: [id])
+  records             consent_record[]
+
+  @@unique([consent_purpose_id, version])
+}
+
+/// Append-only grant. Active consent is DERIVED (grant minus withdrawal), never edited.
+model consent_record {
+  id                      String           @id @default(uuid()) @db.Uuid
+  student_id              String           @db.Uuid
+  consent_purpose_id      String           @db.Uuid
+  consent_policy_version_id String         @db.Uuid
+  granted_by_account_id   String           @db.Uuid
+  capacity                consent_capacity
+  /// Required when capacity = GUARDIAN.
+  guardian_authority_id   String?          @db.Uuid
+  granted_at              DateTime         @default(now())
+
+  student        student                @relation(fields: [student_id], references: [id])
+  purpose        consent_purpose        @relation(fields: [consent_purpose_id], references: [id])
+  policy_version consent_policy_version @relation(fields: [consent_policy_version_id], references: [id])
+  granted_by     account                @relation(fields: [granted_by_account_id], references: [id])
+  authority      guardian_authority?    @relation(fields: [guardian_authority_id], references: [id])
+  withdrawal     consent_withdrawal?
+
+  @@index([student_id, consent_purpose_id])
+}
+
+/// Withdrawal of one grant. Withdrawal disables the affected processing.
+model consent_withdrawal {
+  id                    String   @id @default(uuid()) @db.Uuid
+  consent_record_id     String   @unique @db.Uuid
+  withdrawn_by_account_id String @db.Uuid
+  withdrawn_at          DateTime @default(now())
+  reason_code           String?  @db.VarChar(64)
+
+  consent_record consent_record @relation(fields: [consent_record_id], references: [id])
+  withdrawn_by   account        @relation(fields: [withdrawn_by_account_id], references: [id])
+}
+
+// ── 01c Authorization skeleton (tables only; evaluation logic comes later) ─
+
+model role {
+  id          String @id @default(uuid()) @db.Uuid
+  code        String @unique @db.VarChar(64)
+  description String @db.VarChar(500)
+
+  permissions role_permission[]
+  assignments role_assignment[]
+}
+
+model permission {
+  id          String @id @default(uuid()) @db.Uuid
+  code        String @unique @db.VarChar(64)
+  description String @db.VarChar(500)
+
+  roles role_permission[]
+}
+
+model role_permission {
+  role_id       String @db.Uuid
+  permission_id String @db.Uuid
+
+  role       role       @relation(fields: [role_id], references: [id])
+  permission permission @relation(fields: [permission_id], references: [id])
+
+  @@id([role_id, permission_id])
+}
+
+model resource_scope {
+  id         String @id @default(uuid()) @db.Uuid
+  scope_type String @db.VarChar(64)
+  scope_ref  String @db.VarChar(255)
+
+  assignments role_assignment[]
+
+  @@unique([scope_type, scope_ref])
+}
+
+model role_assignment {
+  id                    String    @id @default(uuid()) @db.Uuid
+  account_id            String    @db.Uuid
+  role_id               String    @db.Uuid
+  resource_scope_id     String?   @db.Uuid
+  granted_by_account_id String?   @db.Uuid
+  granted_at            DateTime  @default(now())
+  revoked_at            DateTime?
+
+  account    account         @relation("role_assignment_account", fields: [account_id], references: [id])
+  role       role            @relation(fields: [role_id], references: [id])
+  scope      resource_scope? @relation(fields: [resource_scope_id], references: [id])
+  granted_by account?        @relation("role_assignment_granter", fields: [granted_by_account_id], references: [id])
+
+  @@index([account_id])
+}
+
+// ── Domain 20 stub ──────────────────────────────────────────────────────
+
+/// Append-only audit trail. Domain 20 extends this later; Block 002 only appends.
+model audit_event {
+  id               String   @id @default(uuid()) @db.Uuid
+  actor_account_id String?  @db.Uuid
+  action           String   @db.VarChar(128)
+  subject_type     String   @db.VarChar(64)
+  subject_id       String   @db.VarChar(255)
+  reason_code      String?  @db.VarChar(64)
+  metadata         Json?
+  occurred_at      DateTime @default(now())
+
+  actor account? @relation(fields: [actor_account_id], references: [id])
+
+  @@index([subject_type, subject_id])
+  @@index([occurred_at])
 }
