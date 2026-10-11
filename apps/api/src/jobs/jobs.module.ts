@@ -2,8 +2,9 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { PlaceholderProcessor } from './placeholder.processor';
 import { JobsService } from './jobs.service';
+import { PLACEHOLDER_QUEUE } from './jobs.constants';
 
-export const PLACEHOLDER_QUEUE = 'placeholder';
+export { PLACEHOLDER_QUEUE };
 
 @Module({
   imports: [

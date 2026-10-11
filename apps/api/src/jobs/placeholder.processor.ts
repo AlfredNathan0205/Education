@@ -1,7 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { PLACEHOLDER_QUEUE } from './jobs.module';
+import { PLACEHOLDER_QUEUE } from './jobs.constants';
 
 @Processor(PLACEHOLDER_QUEUE)
 export class PlaceholderProcessor extends WorkerHost {
