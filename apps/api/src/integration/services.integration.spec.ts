@@ -118,13 +118,16 @@ describe('IdentityService (real DB)', () => {
   });
 
   it('second login reuses account', async () => {
-    await identityService.requestOtp('EMAIL', 'bob@example.com');
-    const first = await identityService.verifyOtp('EMAIL', 'bob@example.com', capturedCodes[0].code);
+    const t0 = new Date();
+    await identityService.requestOtp('EMAIL', 'bob@example.com', t0);
+    const first = await identityService.verifyOtp('EMAIL', 'bob@example.com', capturedCodes[0].code, t0);
     expect(first.isNewAccount).toBe(true);
 
+    // Advance past the 60-second OTP cooldown
     capturedCodes = [];
-    await identityService.requestOtp('EMAIL', 'bob@example.com');
-    const second = await identityService.verifyOtp('EMAIL', 'bob@example.com', capturedCodes[0].code);
+    const t1 = new Date(t0.getTime() + 61_000);
+    await identityService.requestOtp('EMAIL', 'bob@example.com', t1);
+    const second = await identityService.verifyOtp('EMAIL', 'bob@example.com', capturedCodes[0].code, t1);
     expect(second.isNewAccount).toBe(false);
     expect(second.accountId).toBe(first.accountId);
   });
@@ -194,7 +197,7 @@ describe('PrivacyService (real DB)', () => {
             minorAgeThreshold: 18,
             guardianConsentAgeThreshold: 18,
             acceptedDobEvidenceMethods: ['SELF_DECLARED'],
-            acceptedGuardianVerificationMethods: [],
+            acceptedGuardianVerificationMethods: ['DOCUMENT_UPLOAD'],
           },
         },
         null,
@@ -629,7 +632,7 @@ describe('CurriculumAdminService (real DB)', () => {
     await curriculumAdmin.replaceContent(editorId, id, tree);
     await curriculumAdmin.submitForValidation(editorId, id);
     await curriculumAdmin.verifyEvidencePack(reviewerId, id, 'Re-verified');
-    await curriculumAdmin.transition(editorId, id, 'ADMIN_REVIEW');
+    await curriculumAdmin.transition(reviewerId, id, 'ADMIN_REVIEW');
     await curriculumAdmin.approve(approverId, id, 'Good');
     await curriculumAdmin.activate(approverId, id);
 
