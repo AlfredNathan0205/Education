@@ -27,6 +27,8 @@ Still required before this block can be marked COMPLETED:
 
 - **CONSTRUCTION-003 — Curriculum Governance machinery.** See [`CONSTRUCTION-003_INTERPRETATION.md`](./CONSTRUCTION-003_INTERPRETATION.md). Needs the same migration, CI and real-DB pass as 002, plus the partial unique index listed there, and the syllabus source / approver before anything can be activated.
 
+- **CONSTRUCTION-004 — Student web slice (first cut).** See [`CONSTRUCTION-004_INTERPRETATION.md`](./CONSTRUCTION-004_INTERPRETATION.md). Welcome, sign-in, profile with age gate. Verified in a browser against a stand-in API only.
+
 ## Still gated, not part of this block
 
 - Activating any ICSE Grade 8 curriculum, and the AI Question Factory (step 8), remain gated on the ICSE Grade 8 syllabus source / human approver details (the machinery exists; the content and approver do not).

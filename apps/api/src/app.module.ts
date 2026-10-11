@@ -7,6 +7,7 @@ import { OutboxModule } from './outbox/outbox.module';
 import { JobsModule } from './jobs/jobs.module';
 import { IdentityModule } from './identity/identity.module';
 import { PrivacyModule } from './privacy/privacy.module';
+import { StudentModule } from './student/student.module';
 import { CurriculumModule } from './curriculum/curriculum.module';
 
 @Module({
@@ -24,6 +25,7 @@ import { CurriculumModule } from './curriculum/curriculum.module';
     IdentityModule,
     PrivacyModule,
     CurriculumModule,
+    StudentModule,
   ],
   controllers: [HealthController],
 })

@@ -275,6 +275,28 @@ export class PrivacyService {
     });
   }
 
+  /**
+   * Whether a student has been age-classified and whether guardian consent is required.
+   * Returns NO date of birth: callers outside this module must never see it.
+   */
+  async getClassificationSummary(studentId: string): Promise<{
+    classified: boolean;
+    requiresGuardianConsent: boolean;
+    basis: string | null;
+  }> {
+    const row = await this.db.client.age_classification.findFirst({
+      where: { student_id: studentId, superseded_at: null },
+      select: { requires_guardian_consent: true, basis: true },
+    });
+    // Unclassified students are treated as needing guardian consent (fail closed).
+    if (!row) return { classified: false, requiresGuardianConsent: true, basis: null };
+    return {
+      classified: true,
+      requiresGuardianConsent: row.requires_guardian_consent as boolean,
+      basis: row.basis as string,
+    };
+  }
+
   /** Record a consent grant, by the student themselves or by a verified guardian. */
   async grantConsent(
     input: {

@@ -548,3 +548,25 @@ describe('PrivacyService.markPolicyCounselReviewed', () => {
     );
   });
 });
+
+describe('PrivacyService.getClassificationSummary', () => {
+  it('fails closed for an unclassified student', async () => {
+    const { client, service } = makeFakes();
+    client.age_classification.findFirst.mockResolvedValue(null);
+    await expect(service.getClassificationSummary(STUDENT)).resolves.toEqual({
+      classified: false,
+      requiresGuardianConsent: true,
+      basis: null,
+    });
+  });
+  it('never selects or returns the date of birth', async () => {
+    const { client, service } = makeFakes();
+    client.age_classification.findFirst.mockResolvedValue({
+      requires_guardian_consent: false,
+      basis: 'POLICY',
+    });
+    const out = await service.getClassificationSummary(STUDENT);
+    expect(out).toEqual({ classified: true, requiresGuardianConsent: false, basis: 'POLICY' });
+    expect(client.age_classification.findFirst.mock.calls[0][0].select).not.toHaveProperty('date_of_birth');
+  });
+});
