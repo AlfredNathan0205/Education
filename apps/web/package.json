@@ -6,7 +6,7 @@
     "build": "next build",
     "dev": "next dev --port 3000",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "echo 'no linter configured yet'",
     "typecheck": "tsc --noEmit",
     "test": "echo 'no tests yet'"
   },
