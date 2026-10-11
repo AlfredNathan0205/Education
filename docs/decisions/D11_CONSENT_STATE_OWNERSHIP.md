@@ -1,6 +1,6 @@
 # D11 — Ownership of consent, age-classification and guardian-verification state
 
-**Status:** PROVISIONAL. This is the builder's recommendation, built on after the Project Manager instructed "lets start building" on 2026-10-11. It needs explicit ratification and an entry in the Decision Register of the specification repository.
+**Status:** RATIFIED by the Project Manager on 2026-10-11. (Originally built on provisionally after "lets start building"; ratified when the PM confirmed "D11 ratified".) Still to do: add the entry to the Decision Register in the specification repository.
 
 **Resolves:** Blocker 2 from PRE-001 (no named owner for consent / age-classification / guardian-verification state).
 

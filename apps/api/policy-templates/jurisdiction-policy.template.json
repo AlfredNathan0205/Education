@@ -1,0 +1,6 @@
+{
+  "minorAgeThreshold": null,
+  "guardianConsentAgeThreshold": null,
+  "acceptedDobEvidenceMethods": [],
+  "acceptedGuardianVerificationMethods": []
+}

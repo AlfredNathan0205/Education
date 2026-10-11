@@ -13,6 +13,7 @@ import {
 } from './consent-evaluator';
 import {
   PolicyActivationError,
+  PolicyConfigError,
   assertPolicyActivatable,
   emptyPolicyConfig,
   parsePolicyConfig,
@@ -28,6 +29,7 @@ import {
 /** A guardian may give consent only through an authority of this type. */
 export const CONSENT_AUTHORITY_TYPE = 'CONSENT';
 
+const JURISDICTION_CODE = /^[A-Z]{2}$/;
 const METHOD_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 /**
@@ -47,13 +49,93 @@ export class PrivacyService {
   ) {}
 
   /**
+   * Create a new DRAFT policy version from counsel-supplied values. Always created
+   * UNREVIEWED: loading values never makes them legally effective. The config is
+   * immutable after creation (there is no update method), so a later counsel review
+   * applies to exactly the content that was reviewed. A correction is a new version.
+   */
+  async createJurisdictionPolicyDraft(
+    input: { jurisdictionCode: string; config: unknown },
+    actorAccountId: string | null,
+    operator?: string,
+  ): Promise<{ id: string; version: number }> {
+    if (!JURISDICTION_CODE.test(input.jurisdictionCode)) {
+      throw new PolicyConfigError('jurisdictionCode must be an ISO 3166-1 alpha-2 code, e.g. AE');
+    }
+    const config = parsePolicyConfig(input.config);
+
+    return this.db.client.$transaction(async (tx: Prisma.TransactionClient) => {
+      const latest = await tx.jurisdiction_policy.findFirst({
+        where: { jurisdiction_code: input.jurisdictionCode },
+        orderBy: { version: 'desc' },
+      });
+      const version = (latest?.version ?? 0) + 1;
+      const created = await tx.jurisdiction_policy.create({
+        data: {
+          jurisdiction_code: input.jurisdictionCode,
+          version,
+          status: 'DRAFT',
+          legal_review: 'UNREVIEWED',
+          config: config as unknown as Prisma.InputJsonValue,
+        },
+      });
+      await tx.audit_event.create({
+        data: {
+          actor_account_id: actorAccountId,
+          action: 'privacy.jurisdiction_policy.drafted',
+          subject_type: 'jurisdiction_policy',
+          subject_id: created.id,
+          metadata: { jurisdictionCode: input.jurisdictionCode, version, operator: operator ?? null },
+        },
+      });
+      return { id: created.id as string, version };
+    });
+  }
+
+  /**
+   * Record that counsel has reviewed this exact DRAFT policy. A human assertion
+   * with a pointer to the opinion (never its content). Does not activate.
+   */
+  async markPolicyCounselReviewed(
+    policyId: string,
+    legalReviewReference: string,
+    actorAccountId: string | null,
+    operator?: string,
+  ): Promise<void> {
+    const reference = legalReviewReference.trim();
+    if (reference.length === 0 || reference.length > 255) {
+      throw new PolicyActivationError(['legal review reference must be 1-255 characters']);
+    }
+    await this.db.client.$transaction(async (tx: Prisma.TransactionClient) => {
+      const policy = await tx.jurisdiction_policy.findUnique({ where: { id: policyId } });
+      if (!policy) throw new PrivacyNotFoundError('jurisdiction policy');
+      if (policy.status !== 'DRAFT') {
+        throw new PolicyActivationError([`only a DRAFT policy can be marked reviewed (is ${policy.status})`]);
+      }
+      await tx.jurisdiction_policy.update({
+        where: { id: policyId },
+        data: { legal_review: 'COUNSEL_REVIEWED', legal_review_reference: reference },
+      });
+      await tx.audit_event.create({
+        data: {
+          actor_account_id: actorAccountId,
+          action: 'privacy.jurisdiction_policy.counsel_reviewed',
+          subject_type: 'jurisdiction_policy',
+          subject_id: policyId,
+          metadata: { reference, operator: operator ?? null },
+        },
+      });
+    });
+  }
+
+  /**
    * Make a policy ACTIVE. This is the legal gate in code: it refuses unless the
    * policy is counsel-reviewed and fully established. Retires any previously
    * ACTIVE policy for the same jurisdiction in the same transaction.
    */
   async activateJurisdictionPolicy(
     policyId: string,
-    actorAccountId: string,
+    actorAccountId: string | null,
     now: Date = new Date(),
   ): Promise<void> {
     await this.db.client.$transaction(async (tx: Prisma.TransactionClient) => {

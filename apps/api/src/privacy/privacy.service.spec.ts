@@ -1,6 +1,6 @@
 import type { DatabaseService } from '../database/database.service';
 import type { OutboxService } from '../outbox/outbox.service';
-import { PolicyActivationError } from './jurisdiction-policy';
+import { PolicyActivationError, PolicyConfigError } from './jurisdiction-policy';
 import {
   ConsentTextUnavailableError,
   MethodNotAcceptedError,
@@ -35,6 +35,7 @@ function makeFakes() {
       findFirst: jest.fn(),
       updateMany: jest.fn(),
       update: jest.fn(),
+      create: jest.fn(),
     },
     age_classification: { findFirst: jest.fn(), updateMany: jest.fn(), create: jest.fn() },
     consent_purpose: { findUnique: jest.fn() },
@@ -449,5 +450,101 @@ describe('PrivacyService.evaluateProcessingForStudent', () => {
       allowed: false,
       reason: 'GUARDIAN_AUTHORITY_INVALID',
     });
+  });
+});
+
+describe('PrivacyService.createJurisdictionPolicyDraft', () => {
+  it('creates version 1 as an UNREVIEWED DRAFT when none exists', async () => {
+    const { client, service } = makeFakes();
+    client.jurisdiction_policy.findFirst.mockResolvedValue(null);
+    client.jurisdiction_policy.create.mockResolvedValue({ id: 'p1' });
+    const out = await service.createJurisdictionPolicyDraft(
+      { jurisdictionCode: 'AE', config: completeConfig },
+      null,
+      'cli',
+    );
+    expect(out).toEqual({ id: 'p1', version: 1 });
+    const data = client.jurisdiction_policy.create.mock.calls[0][0].data;
+    expect(data).toMatchObject({ status: 'DRAFT', legal_review: 'UNREVIEWED', version: 1 });
+    expect(data.legal_review_reference).toBeUndefined();
+  });
+
+  it('increments the version past the latest', async () => {
+    const { client, service } = makeFakes();
+    client.jurisdiction_policy.findFirst.mockResolvedValue({ version: 3 });
+    client.jurisdiction_policy.create.mockResolvedValue({ id: 'p4' });
+    const out = await service.createJurisdictionPolicyDraft(
+      { jurisdictionCode: 'AE', config: completeConfig },
+      null,
+    );
+    expect(out.version).toBe(4);
+  });
+
+  it('accepts an empty (null-threshold) config as a draft; it simply cannot be activated', async () => {
+    const { client, service } = makeFakes();
+    client.jurisdiction_policy.findFirst.mockResolvedValue(null);
+    client.jurisdiction_policy.create.mockResolvedValue({ id: 'p1' });
+    await expect(
+      service.createJurisdictionPolicyDraft(
+        {
+          jurisdictionCode: 'AE',
+          config: {
+            minorAgeThreshold: null,
+            guardianConsentAgeThreshold: null,
+            acceptedDobEvidenceMethods: [],
+            acceptedGuardianVerificationMethods: [],
+          },
+        },
+        null,
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it.each([['ae'], ['UAE'], ['']])('rejects jurisdiction code %p', async (code) => {
+    const { client, service } = makeFakes();
+    await expect(
+      service.createJurisdictionPolicyDraft({ jurisdictionCode: code, config: completeConfig }, null),
+    ).rejects.toBeInstanceOf(PolicyConfigError);
+    expect(client.jurisdiction_policy.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed config before touching the database', async () => {
+    const { client, service } = makeFakes();
+    await expect(
+      service.createJurisdictionPolicyDraft(
+        { jurisdictionCode: 'AE', config: { ...completeConfig, minorAgeThreshhold: 18 } },
+        null,
+      ),
+    ).rejects.toBeInstanceOf(PolicyConfigError);
+    expect(client.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe('PrivacyService.markPolicyCounselReviewed', () => {
+  it('marks a DRAFT reviewed with a trimmed reference, and does not activate', async () => {
+    const { client, service } = makeFakes();
+    client.jurisdiction_policy.findUnique.mockResolvedValue({ id: 'p1', status: 'DRAFT' });
+    await service.markPolicyCounselReviewed('p1', '  memo-9 ', null);
+    expect(client.jurisdiction_policy.update).toHaveBeenCalledWith({
+      where: { id: 'p1' },
+      data: { legal_review: 'COUNSEL_REVIEWED', legal_review_reference: 'memo-9' },
+    });
+    expect(client.audit_event.create).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([[''], ['   ']])('refuses a blank reference %p', async (ref) => {
+    const { client, service } = makeFakes();
+    await expect(service.markPolicyCounselReviewed('p1', ref, null)).rejects.toBeInstanceOf(
+      PolicyActivationError,
+    );
+    expect(client.jurisdiction_policy.update).not.toHaveBeenCalled();
+  });
+
+  it.each([['ACTIVE'], ['RETIRED']])('refuses a %s policy', async (status) => {
+    const { client, service } = makeFakes();
+    client.jurisdiction_policy.findUnique.mockResolvedValue({ id: 'p1', status });
+    await expect(service.markPolicyCounselReviewed('p1', 'memo', null)).rejects.toBeInstanceOf(
+      PolicyActivationError,
+    );
   });
 });
