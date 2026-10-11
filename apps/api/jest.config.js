@@ -7,6 +7,7 @@ module.exports = {
   moduleFileExtensions: ['js', 'json', 'ts'],
   rootDir: 'src',
   testRegex: '.*\\.spec\\.ts$',
+  testPathIgnorePatterns: ['/integration/'],
   transform: { '^.+\\.ts$': 'ts-jest' },
   testEnvironment: 'node',
 };
