@@ -23,9 +23,13 @@ Still required before this block can be marked COMPLETED:
 1. **UAE child-data regime — still OPEN, awaiting counsel.** Two UAE federal laws apply (PDPL 45/2021 + Child Digital Safety 26/2025); see [`../decisions/BLOCKER_01_UAE_CHILD_DATA_REGIME.md`](../decisions/BLOCKER_01_UAE_CHILD_DATA_REGIME.md). Block 002 does not guess: thresholds and verification methods live in versioned policy data, the system fails closed (treat as minor, guardian consent required) without an ACTIVE policy, and no policy can be activated until marked counsel-reviewed.
 2. **Consent/age ownership — RESOLVED, ratified by the PM** by [`../decisions/D11_CONSENT_STATE_OWNERSHIP.md`](../decisions/D11_CONSENT_STATE_OWNERSHIP.md) (sub-module 01b under Domain 01). 
 
+## Also on this branch (code complete, not a completed block)
+
+- **CONSTRUCTION-003 — Curriculum Governance machinery.** See [`CONSTRUCTION-003_INTERPRETATION.md`](./CONSTRUCTION-003_INTERPRETATION.md). Needs the same migration, CI and real-DB pass as 002, plus the partial unique index listed there, and the syllabus source / approver before anything can be activated.
+
 ## Still gated, not part of this block
 
-- Curriculum Governance (step 4) and the AI Question Factory (step 8) remain gated on the ICSE Grade 8 syllabus source / human approver decision.
+- Activating any ICSE Grade 8 curriculum, and the AI Question Factory (step 8), remain gated on the ICSE Grade 8 syllabus source / human approver details (the machinery exists; the content and approver do not).
 - Any age-verification UX and mandatory-method decision wait on counsel.
 
 ## Previous Block

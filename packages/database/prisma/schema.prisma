@@ -10,7 +10,7 @@ datasource db {
 /// Block 001: infrastructure tables (health_check, outbox_event).
 /// Block 002: identity & privacy skeleton (Domain 01 sub-modules 01a/01b/01c,
 ///            minimal student [Domain 02] and audit_event [Domain 20]).
-/// Curriculum, question and assessment tables belong to later blocks.
+/// Block 003: Curriculum Governance machinery. Question and assessment tables belong to later blocks.
 
 /// Health-check table — proves DB connectivity.
 model health_check {
@@ -424,4 +424,288 @@ model audit_event {
 
   @@index([subject_type, subject_id])
   @@index([occurred_at])
+}
+
+// ---------------------------------------------------------------------------
+// Block 003 — Curriculum Governance (Domain 03 machinery; Build Sequence step 4).
+// Machinery only: no syllabus content is seeded. Actor ids are stored without a
+// foreign key to account (curriculum governance must not depend on 01a rows).
+// ---------------------------------------------------------------------------
+
+enum curriculum_state {
+  DISCOVERED
+  EVIDENCE_COLLECTION
+  DRAFT
+  AI_STRUCTURED
+  VALIDATION_PENDING
+  VALIDATED
+  ADMIN_REVIEW
+  CHANGES_REQUIRED
+  APPROVED
+  ACTIVE
+  ACTIVE_WITH_REVIEW
+  SUSPENDED
+  BLOCKED
+  REJECTED
+  SUPERSEDED
+  ARCHIVED
+  WITHDRAWN
+}
+
+enum curriculum_provenance {
+  OFFICIAL_EXPLICIT
+  OFFICIAL_INFERRED
+  SYSTEM_DERIVED
+  ADMIN_ADDED
+}
+
+enum evidence_pack_status {
+  DRAFT
+  VERIFIED
+}
+
+enum validation_severity {
+  ERROR
+  WARNING
+}
+
+enum validation_run_status {
+  PASSED
+  FAILED
+}
+
+/// e.g. code "ICSE". Reference data.
+model curriculum {
+  id         String   @id @default(uuid()) @db.Uuid
+  code       String   @unique @db.VarChar(32)
+  name       String   @db.VarChar(255)
+  created_at DateTime @default(now())
+
+  versions curriculum_version[]
+}
+
+/// e.g. label "2026-27".
+model curriculum_version {
+  id            String   @id @default(uuid()) @db.Uuid
+  curriculum_id String   @db.Uuid
+  label         String   @db.VarChar(32)
+  created_at    DateTime @default(now())
+
+  curriculum       curriculum                   @relation(fields: [curriculum_id], references: [id])
+  subject_versions curriculum_subject_version[]
+
+  @@unique([curriculum_id, label])
+}
+
+model grade {
+  id         String @id @default(uuid()) @db.Uuid
+  code       String @unique @db.VarChar(16)
+  sort_order Int
+
+  subject_versions curriculum_subject_version[]
+}
+
+model subject {
+  id   String @id @default(uuid()) @db.Uuid
+  code String @unique @db.VarChar(32)
+  name String @db.VarChar(128)
+
+  subject_versions curriculum_subject_version[]
+}
+
+/// The approval unit: Curriculum + Version + Grade + Subject. A correction after
+/// activation is a NEW revision row; an activated row is never edited.
+model curriculum_subject_version {
+  id                    String           @id @default(uuid()) @db.Uuid
+  curriculum_version_id String           @db.Uuid
+  grade_id              String           @db.Uuid
+  subject_id            String           @db.Uuid
+  revision              Int
+  state                 curriculum_state @default(DRAFT)
+  supersedes_id         String?          @db.Uuid
+  last_edited_by        String?          @db.Uuid
+  activated_at          DateTime?
+  created_at            DateTime         @default(now())
+  updated_at            DateTime         @updatedAt
+
+  curriculum_version curriculum_version @relation(fields: [curriculum_version_id], references: [id])
+  grade              grade              @relation(fields: [grade_id], references: [id])
+  subject            subject            @relation(fields: [subject_id], references: [id])
+  supersedes         curriculum_subject_version?  @relation("revision_chain", fields: [supersedes_id], references: [id])
+  superseded_by      curriculum_subject_version[] @relation("revision_chain")
+
+  chapters         chapter[]
+  evidence_packs   curriculum_evidence_pack[]
+  validation_runs  curriculum_validation_run[]
+  approvals        curriculum_approval_record[]
+  activations      curriculum_activation_record[]
+  events           curriculum_event_log[]
+
+  @@unique([curriculum_version_id, grade_id, subject_id, revision])
+  @@index([state])
+}
+
+model curriculum_evidence_pack {
+  id                 String               @id @default(uuid()) @db.Uuid
+  subject_version_id String               @db.Uuid
+  status             evidence_pack_status @default(DRAFT)
+  /// Who verified it and a pointer to their verification note.
+  verified_by        String?              @db.Uuid
+  verification_note  String?              @db.VarChar(1000)
+  verified_at        DateTime?
+  created_at         DateTime             @default(now())
+
+  subject_version curriculum_subject_version @relation(fields: [subject_version_id], references: [id])
+  references      curriculum_evidence_reference[]
+
+  @@index([subject_version_id])
+}
+
+/// A pointer to an official source. Content of the source is not stored here.
+model curriculum_evidence_reference {
+  id           String    @id @default(uuid()) @db.Uuid
+  pack_id      String    @db.Uuid
+  source_title String    @db.VarChar(500)
+  source_url   String?   @db.VarChar(2000)
+  /// Where in the source: page, section, clause.
+  locator      String?   @db.VarChar(255)
+  retrieved_at DateTime?
+  created_at   DateTime  @default(now())
+
+  pack curriculum_evidence_pack @relation(fields: [pack_id], references: [id])
+
+  @@index([pack_id])
+}
+
+model chapter {
+  id                   String                @id @default(uuid()) @db.Uuid
+  subject_version_id   String                @db.Uuid
+  code                 String                @db.VarChar(64)
+  title                String                @db.VarChar(500)
+  position             Int
+  provenance           curriculum_provenance
+  evidence_reference_id String?              @db.Uuid
+  rationale            String?               @db.VarChar(1000)
+
+  subject_version curriculum_subject_version @relation(fields: [subject_version_id], references: [id], onDelete: Cascade)
+  topics          topic[]
+
+  @@unique([subject_version_id, code])
+}
+
+model topic {
+  id                    String                @id @default(uuid()) @db.Uuid
+  chapter_id            String                @db.Uuid
+  code                  String                @db.VarChar(64)
+  title                 String                @db.VarChar(500)
+  position              Int
+  provenance            curriculum_provenance
+  evidence_reference_id String?               @db.Uuid
+  rationale             String?               @db.VarChar(1000)
+
+  chapter        chapter         @relation(fields: [chapter_id], references: [id], onDelete: Cascade)
+  micro_concepts micro_concept[]
+
+  @@unique([chapter_id, code])
+}
+
+model micro_concept {
+  id                    String                @id @default(uuid()) @db.Uuid
+  topic_id              String                @db.Uuid
+  code                  String                @db.VarChar(64)
+  title                 String                @db.VarChar(500)
+  position              Int
+  provenance            curriculum_provenance
+  evidence_reference_id String?               @db.Uuid
+  rationale             String?               @db.VarChar(1000)
+
+  topic              topic                @relation(fields: [topic_id], references: [id], onDelete: Cascade)
+  learning_objectives learning_objective[]
+
+  @@unique([topic_id, code])
+}
+
+model learning_objective {
+  id                    String                @id @default(uuid()) @db.Uuid
+  micro_concept_id      String                @db.Uuid
+  code                  String                @db.VarChar(64)
+  statement             String                @db.VarChar(1000)
+  position              Int
+  provenance            curriculum_provenance
+  evidence_reference_id String?               @db.Uuid
+  rationale             String?               @db.VarChar(1000)
+
+  micro_concept micro_concept @relation(fields: [micro_concept_id], references: [id], onDelete: Cascade)
+
+  @@unique([micro_concept_id, code])
+}
+
+/// Automated validation precedes human review. Results are append-only.
+model curriculum_validation_run {
+  id                 String                @id @default(uuid()) @db.Uuid
+  subject_version_id String                @db.Uuid
+  status             validation_run_status
+  error_count        Int
+  warning_count      Int
+  created_at         DateTime              @default(now())
+
+  subject_version curriculum_subject_version @relation(fields: [subject_version_id], references: [id])
+  results         curriculum_validation_result[]
+
+  @@index([subject_version_id])
+}
+
+model curriculum_validation_result {
+  id       String              @id @default(uuid()) @db.Uuid
+  run_id   String              @db.Uuid
+  severity validation_severity
+  rule     String              @db.VarChar(64)
+  path     String              @db.VarChar(500)
+  message  String              @db.VarChar(1000)
+
+  run curriculum_validation_run @relation(fields: [run_id], references: [id], onDelete: Cascade)
+
+  @@index([run_id])
+}
+
+model curriculum_approval_record {
+  id                 String   @id @default(uuid()) @db.Uuid
+  subject_version_id String   @db.Uuid
+  decision           String   @db.VarChar(16)
+  actor_account_id   String   @db.Uuid
+  note               String?  @db.VarChar(1000)
+  decided_at         DateTime @default(now())
+
+  subject_version curriculum_subject_version @relation(fields: [subject_version_id], references: [id])
+
+  @@index([subject_version_id])
+}
+
+/// APPROVED is not ACTIVE: activation is its own human act, recorded here.
+model curriculum_activation_record {
+  id                 String   @id @default(uuid()) @db.Uuid
+  subject_version_id String   @db.Uuid
+  actor_account_id   String   @db.Uuid
+  activated_at       DateTime @default(now())
+
+  subject_version curriculum_subject_version @relation(fields: [subject_version_id], references: [id])
+
+  @@index([subject_version_id])
+}
+
+/// Append-only history of every transition and content replacement.
+model curriculum_event_log {
+  id                 String           @id @default(uuid()) @db.Uuid
+  subject_version_id String           @db.Uuid
+  event_type         String           @db.VarChar(64)
+  from_state         curriculum_state?
+  to_state           curriculum_state?
+  actor_kind         String           @db.VarChar(16)
+  actor_account_id   String?          @db.Uuid
+  note               String?          @db.VarChar(1000)
+  occurred_at        DateTime         @default(now())
+
+  subject_version curriculum_subject_version @relation(fields: [subject_version_id], references: [id])
+
+  @@index([subject_version_id, occurred_at])
 }
