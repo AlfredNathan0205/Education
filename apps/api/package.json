@@ -9,6 +9,7 @@
     "lint": "echo 'no linter configured yet'",
     "typecheck": "tsc --noEmit",
     "test": "jest",
+    "test:integration": "jest --config jest.config.integration.js",
     "test:e2e": "jest --config jest-e2e.json"
   },
   "dependencies": {

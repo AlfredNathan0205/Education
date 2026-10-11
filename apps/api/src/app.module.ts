@@ -5,6 +5,11 @@ import { HealthController } from './health/health.controller';
 import { DatabaseModule } from './database/database.module';
 import { OutboxModule } from './outbox/outbox.module';
 import { JobsModule } from './jobs/jobs.module';
+import { IdentityModule } from './identity/identity.module';
+import { PrivacyModule } from './privacy/privacy.module';
+import { AuthzModule } from './authz/authz.module';
+import { StudentModule } from './student/student.module';
+import { CurriculumModule } from './curriculum/curriculum.module';
 
 @Module({
   imports: [
@@ -18,6 +23,11 @@ import { JobsModule } from './jobs/jobs.module';
     DatabaseModule,
     OutboxModule,
     JobsModule,
+    IdentityModule,
+    PrivacyModule,
+    CurriculumModule,
+    StudentModule,
+    AuthzModule,
   ],
   controllers: [HealthController],
 })

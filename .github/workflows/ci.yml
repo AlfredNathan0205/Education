@@ -69,3 +69,8 @@ jobs:
 
       - name: Test
         run: pnpm run test
+
+      - name: Integration tests
+        env:
+          OTP_HMAC_SECRET: ${{ secrets.OTP_HMAC_SECRET || 'ci-test-secret-that-is-at-least-32-characters-long' }}
+        run: pnpm --filter @exam-app/api test:integration
