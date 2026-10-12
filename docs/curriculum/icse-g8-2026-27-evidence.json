@@ -1,0 +1,79 @@
+{
+  "curriculum": { "code": "ICSE", "name": "ICSE (CISCE)" },
+  "versionLabel": "2026-27",
+  "gradeCode": "GRADE_8",
+  "units": [
+    {
+      "subjectCode": "PHYSICS",
+      "subjectName": "Physics",
+      "references": [
+        {
+          "sourceTitle": "Curriculum for Upper Primary Classes (VI - VIII), First Edition, November 2016. Research Development and Consultancy Division (RDCD), CISCE, New Delhi",
+          "sourceUrl": "https://daystarmanali.org/wp-content/uploads/2023/11/UpperPrimary.pdf",
+          "locator": "Physics: printed pp. 171-199 (PDF pp. 205-236); core concepts table p. 171. Class VIII themes are listed with VI-VII. Copy from a third-party school mirror; canonical cisce.org copy not yet compared.",
+          "retrievedAt": "2026-10-11"
+        },
+        {
+          "sourceTitle": "Science at the Upper Primary Level, Module II, Part II: Physics at the Upper Primary Level (2019). RDCD, CISCE, New Delhi",
+          "sourceUrl": "https://web.archive.org/web/2024/https://www.cisce.org/UploadedFiles/PDF/Physics%20at%20Upper%20Primary%20Level.pdf",
+          "locator": "Part II from PDF p. 31 (printed p. 27); Class VIII in core concepts overview, PDF pp. 32-33. Covers VI-VIII as a group. Wayback Machine copy; canonical cisce.org copy not yet compared.",
+          "retrievedAt": "2026-10-11"
+        }
+      ]
+    },
+    {
+      "subjectCode": "CHEMISTRY",
+      "subjectName": "Chemistry",
+      "references": [
+        {
+          "sourceTitle": "Curriculum for Upper Primary Classes (VI - VIII), First Edition, November 2016. Research Development and Consultancy Division (RDCD), CISCE, New Delhi",
+          "sourceUrl": "https://daystarmanali.org/wp-content/uploads/2023/11/UpperPrimary.pdf",
+          "locator": "Chemistry: printed pp. 200-231 (PDF pp. 237-268); core concepts table p. 201. Class VIII themes are listed with VI-VII. Copy from a third-party school mirror; canonical cisce.org copy not yet compared.",
+          "retrievedAt": "2026-10-11"
+        },
+        {
+          "sourceTitle": "Science at the Upper Primary Level, Module II, Part II: Chemistry at the Upper Primary Level (2019). RDCD, CISCE, New Delhi",
+          "sourceUrl": "https://web.archive.org/web/2024/https://www.cisce.org/UploadedFiles/PDF/Chemistry%20at%20Upper%20Primary%20Level.pdf",
+          "locator": "Part II from PDF p. 31 (printed p. 27); core concepts incl. Class VIII p. 33. Covers VI-VIII as a group. Wayback Machine copy; canonical cisce.org copy not yet compared.",
+          "retrievedAt": "2026-10-11"
+        }
+      ]
+    },
+    {
+      "subjectCode": "BIOLOGY",
+      "subjectName": "Biology",
+      "references": [
+        {
+          "sourceTitle": "Curriculum for Upper Primary Classes (VI - VIII), First Edition, November 2016. Research Development and Consultancy Division (RDCD), CISCE, New Delhi",
+          "sourceUrl": "https://daystarmanali.org/wp-content/uploads/2023/11/UpperPrimary.pdf",
+          "locator": "Biology: printed pp. 232-257 (PDF pp. 269-294); core concepts table p. 233. Class VIII themes are listed with VI-VII. Copy from a third-party school mirror; canonical cisce.org copy not yet compared.",
+          "retrievedAt": "2026-10-11"
+        },
+        {
+          "sourceTitle": "Science at the Upper Primary Level, Module II, Part II: Biology at the Upper Primary Level (2019). RDCD, CISCE, New Delhi",
+          "sourceUrl": "https://web.archive.org/web/2024/https://www.cisce.org/UploadedFiles/PDF/Biology%20at%20the%20upper%20Primary%20Level.pdf",
+          "locator": "Part II from PDF p. 31 (printed p. 27); core concepts incl. Class VIII p. 33. Covers VI-VIII as a group. Wayback Machine copy; canonical cisce.org copy not yet compared.",
+          "retrievedAt": "2026-10-11"
+        }
+      ]
+    },
+    {
+      "subjectCode": "MATHEMATICS",
+      "subjectName": "Mathematics",
+      "references": [
+        {
+          "sourceTitle": "Curriculum for Upper Primary Classes (VI - VIII), First Edition, November 2016. Research Development and Consultancy Division (RDCD), CISCE, New Delhi",
+          "sourceUrl": "https://daystarmanali.org/wp-content/uploads/2023/11/UpperPrimary.pdf",
+          "locator": "Mathematics: printed pp. 65-103 (PDF pp. 95-133); 'CLASS -VIII' heading printed p. 94 (PDF p. 124); themes: Number System, Algebra, Geometry, Mensuration, Data Handling. Copy from a third-party school mirror; canonical cisce.org copy not yet compared.",
+          "retrievedAt": "2026-10-11"
+        },
+        {
+          "sourceTitle": "Mathematics at the Upper Primary Level, Module II. RDCD, CISCE, New Delhi (year not printed in the document)",
+          "sourceUrl": "http://resultcisce.in/pdf/ResourceMaterial/Module%20II-Mathematics%20Upper.pdf",
+          "locator": "Sections 1-7 cover VI-VIII as a group; Class VIII referenced PDF pp. 5 and 26. Pedagogical guidance, not a syllabus. Copy from resultcisce.in; canonical cisce.org copy not yet compared.",
+          "retrievedAt": "2026-10-11"
+        }
+      ]
+    }
+  ]
+}
