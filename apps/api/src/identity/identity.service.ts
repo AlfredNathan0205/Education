@@ -4,6 +4,7 @@ import { DatabaseService } from '../database/database.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { normalizeIdentifier, type IdentityKind } from './identifier';
 import {
+  OTP_HOUR_MS,
   OTP_MAX_ATTEMPTS,
   OTP_TTL_MS,
   SESSION_TTL_MS,
@@ -14,6 +15,7 @@ import {
   hashSessionToken,
   precheckOtpAttempt,
   verifyOtpCode,
+  withinHourlyOtpLimit,
 } from './otp';
 import { OTP_SENDER, OtpDeliveryError, type OtpSender } from './otp-sender.port';
 
@@ -77,6 +79,12 @@ export class IdentityService {
       select: { created_at: true },
     });
     if (!canIssueOtp(latest?.created_at ?? null, now)) return;
+
+    // Hourly cap per identifier. Silent, like the cooldown, so the response reveals nothing.
+    const issuedLastHour = await client.otp_challenge.count({
+      where: { kind, identifier_normalized: identifier, created_at: { gt: new Date(now.getTime() - OTP_HOUR_MS) } },
+    });
+    if (!withinHourlyOtpLimit(issuedLastHour)) return;
 
     const code = generateOtpCode();
     const created = await client.otp_challenge.create({

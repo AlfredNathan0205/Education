@@ -97,12 +97,25 @@ export class StudentService {
     if (!NAME.test(name)) throw new InvalidProfileInputError('Enter a name of up to 60 letters');
     const studentId = await this.ownStudentId(accountId);
     const summary = await this.privacy.getClassificationSummary(studentId);
-    if (summary.requiresGuardianConsent) throw new GuardianConsentRequiredError();
+    if (summary.requiresGuardianConsent && !summary.consentSatisfied) throw new GuardianConsentRequiredError();
     await this.db.client.student.update({ where: { id: studentId }, data: { display_name: name } });
     return this.view(studentId);
   }
 
-  private async ownStudentId(accountId: string): Promise<string> {
+  /**
+   * Student id for collecting NEW personal data (school, grade, ...). Fail closed: refused
+   * while guardian consent is required or age is not classified.
+   */
+  async studentIdForDataCollection(accountId: string): Promise<string> {
+    const studentId = await this.ownStudentId(accountId);
+    const summary = await this.privacy.getClassificationSummary(studentId);
+    if (!summary.classified || (summary.requiresGuardianConsent && !summary.consentSatisfied)) {
+      throw new GuardianConsentRequiredError();
+    }
+    return studentId;
+  }
+
+  async ownStudentId(accountId: string): Promise<string> {
     const access = await this.db.client.account_student_access.findFirst({
       where: { account_id: accountId, access_kind: 'SELF', revoked_at: null },
     });
@@ -125,7 +138,8 @@ export class StudentService {
       studentId,
       displayName: (student?.display_name ?? null) as string | null,
       ageClassified: summary.classified,
-      requiresGuardianConsent: summary.requiresGuardianConsent,
+      // True only while a guardian's approval is still outstanding (needed and not yet validly given).
+      requiresGuardianConsent: summary.requiresGuardianConsent && !summary.consentSatisfied,
     };
   }
 }

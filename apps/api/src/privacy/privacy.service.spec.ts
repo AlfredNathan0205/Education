@@ -777,6 +777,7 @@ describe('PrivacyService.getClassificationSummary', () => {
     await expect(service.getClassificationSummary(STUDENT)).resolves.toEqual({
       classified: false,
       requiresGuardianConsent: true,
+      consentSatisfied: false,
       basis: null,
     });
   });
@@ -787,7 +788,186 @@ describe('PrivacyService.getClassificationSummary', () => {
       basis: 'POLICY',
     });
     const out = await service.getClassificationSummary(STUDENT);
-    expect(out).toEqual({ classified: true, requiresGuardianConsent: false, basis: 'POLICY' });
+    expect(out).toEqual({ classified: true, requiresGuardianConsent: false, consentSatisfied: true, basis: 'POLICY' });
     expect(client.age_classification.findFirst.mock.calls[0][0].select).not.toHaveProperty('date_of_birth');
+  });
+});
+
+
+describe('PrivacyService.getClassificationSummary: consentSatisfied', () => {
+  it('is false for a student who needs a guardian and has no consent', async () => {
+    const { client, service } = makeFakes();
+    client.age_classification.findFirst.mockResolvedValue({ requires_guardian_consent: true, basis: 'POLICY' });
+    client.consent_record.findMany.mockResolvedValue([]);
+    const out = await service.getClassificationSummary(STUDENT);
+    expect(out).toMatchObject({ requiresGuardianConsent: true, consentSatisfied: false });
+  });
+
+  it('is true once a live, verified guardian grant exists', async () => {
+    const { client, service } = makeFakes();
+    client.age_classification.findFirst.mockResolvedValue({ requires_guardian_consent: true, basis: 'POLICY' });
+    client.consent_record.findMany.mockResolvedValue([
+      {
+        id: 'c1',
+        capacity: 'GUARDIAN',
+        guardian_authority_id: 'a1',
+        granted_at: new Date('2026-10-01T00:00:00Z'),
+        withdrawal: null,
+        authority: { id: 'a1', revoked_at: null, guardian_verification: { status: 'VERIFIED', expires_at: null } },
+      },
+    ]);
+    const out = await service.getClassificationSummary(STUDENT);
+    expect(out).toMatchObject({ requiresGuardianConsent: true, consentSatisfied: true });
+  });
+
+  it('goes back to false when the guardian withdraws', async () => {
+    const { client, service } = makeFakes();
+    client.age_classification.findFirst.mockResolvedValue({ requires_guardian_consent: true, basis: 'POLICY' });
+    client.consent_record.findMany.mockResolvedValue([
+      {
+        id: 'c1',
+        capacity: 'GUARDIAN',
+        guardian_authority_id: 'a1',
+        granted_at: new Date('2026-10-01T00:00:00Z'),
+        withdrawal: { id: 'w1' },
+        authority: { id: 'a1', revoked_at: null, guardian_verification: { status: 'VERIFIED', expires_at: null } },
+      },
+    ]);
+    expect((await service.getClassificationSummary(STUDENT)).consentSatisfied).toBe(false);
+  });
+
+  it('does not look at consent when none is required', async () => {
+    const { client, service } = makeFakes();
+    client.age_classification.findFirst.mockResolvedValue({ requires_guardian_consent: false, basis: 'POLICY' });
+    expect((await service.getClassificationSummary(STUDENT)).consentSatisfied).toBe(true);
+    expect(client.consent_record.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('PrivacyService.establishGuardianApproval', () => {
+  const input = {
+    studentId: STUDENT,
+    guardianAccountId: 'guardian-acct',
+    relationshipType: 'MOTHER',
+    method: 'EMAIL_LINK_ATTESTATION',
+    evidenceReference: 'guardian_invitation:inv-1',
+  };
+  const policyRow = (methods: string[]) => ({
+    id: 'pol-1',
+    jurisdiction_code: 'AE',
+    version: 2,
+    config: { ...completeConfig, acceptedGuardianVerificationMethods: methods },
+  });
+
+  function ready(methods: string[] = ['EMAIL_LINK_ATTESTATION']) {
+    const f = makeFakes();
+    const c = f.client;
+    c.age_classification.findFirst.mockResolvedValue({ requires_guardian_consent: true, jurisdiction_policy_id: 'pol-0' });
+    c.account_student_access.findFirst.mockResolvedValue(null); // guardian has no self access
+    c.jurisdiction_policy.findUnique.mockResolvedValue({ jurisdiction_code: 'AE' });
+    c.jurisdiction_policy.findFirst.mockResolvedValue(policyRow(methods));
+    c.guardian_relationship = { upsert: jest.fn().mockResolvedValue({ id: 'rel-1' }) };
+    c.guardian_verification = { create: jest.fn().mockResolvedValue({ id: 'ver-1' }) };
+    c.guardian_authority = { ...c.guardian_authority, create: jest.fn().mockResolvedValue({ id: 'auth-1' }) };
+    c.consent_purpose.findUnique.mockResolvedValue({ id: 'purpose-1' });
+    c.consent_policy_version.findFirst.mockResolvedValue({ id: 'cpv-1', version: 1 });
+    c.consent_record.create.mockResolvedValue({ id: 'rec-1' });
+    // grantConsent re-reads the authority to validate it
+    c.guardian_authority.findUnique.mockResolvedValue({
+      id: 'auth-1',
+      authority_type: 'CONSENT',
+      revoked_at: null,
+      guardian_relationship: { guardian_account_id: 'guardian-acct', student_id: STUDENT },
+      guardian_verification: { status: 'VERIFIED', expires_at: null },
+    });
+    return f;
+  }
+
+  it('records relationship, verification, authority and consent together', async () => {
+    const { client, outbox, service } = ready();
+    const out = await service.establishGuardianApproval(input, NOW);
+    expect(out).toEqual({ consentRecordId: 'rec-1', guardianAuthorityId: 'auth-1' });
+    expect(client.guardian_verification.create.mock.calls[0][0].data).toMatchObject({
+      method: 'EMAIL_LINK_ATTESTATION',
+      status: 'VERIFIED',
+      jurisdiction_policy_id: 'pol-1',
+      evidence_reference: 'guardian_invitation:inv-1',
+    });
+    expect(client.consent_record.create.mock.calls[0][0].data).toMatchObject({
+      capacity: 'GUARDIAN',
+      guardian_authority_id: 'auth-1',
+      granted_by_account_id: 'guardian-acct',
+    });
+    const types = outbox.publish.mock.calls.map((c: any[]) => c[1].eventType);
+    expect(types).toEqual(expect.arrayContaining(['privacy.consent.granted.v1', 'privacy.guardian.verified.v1']));
+  });
+
+  it('refuses when the active policy does not accept the method, and writes nothing', async () => {
+    const { client, service } = ready(['SOME_OTHER_METHOD']);
+    await expect(service.establishGuardianApproval(input, NOW)).rejects.toBeInstanceOf(MethodNotAcceptedError);
+    expect(client.guardian_relationship.upsert).not.toHaveBeenCalled();
+    expect(client.consent_record.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the policy lists no methods at all', async () => {
+    const { client, service } = ready([]);
+    await expect(service.establishGuardianApproval(input, NOW)).rejects.toBeInstanceOf(MethodNotAcceptedError);
+    expect(client.consent_record.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses when there is no counsel-reviewed active policy', async () => {
+    const { client, service } = ready();
+    client.jurisdiction_policy.findFirst.mockResolvedValue(null);
+    await expect(service.establishGuardianApproval(input, NOW)).rejects.toBeInstanceOf(MethodNotAcceptedError);
+  });
+
+  it('refuses a student classified when no policy existed (fail-closed classification)', async () => {
+    const { client, service } = ready();
+    client.age_classification.findFirst.mockResolvedValue({ requires_guardian_consent: true, jurisdiction_policy_id: null });
+    await expect(service.establishGuardianApproval(input, NOW)).rejects.toBeInstanceOf(MethodNotAcceptedError);
+  });
+
+  it('refuses a student who does not need guardian consent', async () => {
+    const { client, service } = ready();
+    client.age_classification.findFirst.mockResolvedValue({ requires_guardian_consent: false, jurisdiction_policy_id: 'pol-0' });
+    await expect(service.establishGuardianApproval(input, NOW)).rejects.toBeInstanceOf(PrivacyForbiddenError);
+  });
+
+  it('refuses an unclassified student', async () => {
+    const { client, service } = ready();
+    client.age_classification.findFirst.mockResolvedValue(null);
+    await expect(service.establishGuardianApproval(input, NOW)).rejects.toBeInstanceOf(PrivacyForbiddenError);
+  });
+
+  it('refuses the student approving their own account', async () => {
+    const { client, service } = ready();
+    client.account_student_access.findFirst.mockResolvedValue({ id: 'acc-1' });
+    await expect(service.establishGuardianApproval(input, NOW)).rejects.toThrow(/own account/);
+    expect(client.guardian_relationship.upsert).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the core purpose has no live consent wording', async () => {
+    const { client, service } = ready();
+    client.consent_policy_version.findFirst.mockResolvedValue(null);
+    await expect(service.establishGuardianApproval(input, NOW)).rejects.toBeInstanceOf(ConsentTextUnavailableError);
+  });
+
+  it('treats corrupt policy data as accepting nothing', async () => {
+    const { client, service } = ready();
+    client.jurisdiction_policy.findFirst.mockResolvedValue({ id: 'pol-1', jurisdiction_code: 'AE', version: 1, config: { nonsense: true } });
+    await expect(service.establishGuardianApproval(input, NOW)).rejects.toBeInstanceOf(MethodNotAcceptedError);
+  });
+
+  it('rejects a malformed method code', async () => {
+    const { service } = ready();
+    await expect(service.establishGuardianApproval({ ...input, method: 'email link' }, NOW)).rejects.toBeInstanceOf(MethodNotAcceptedError);
+  });
+
+  it('uses the caller-supplied transaction instead of opening its own', async () => {
+    const { client, service } = ready();
+    const tx = client; // same fake, but prove $transaction is not called
+    client.$transaction.mockClear();
+    await service.establishGuardianApproval(input, NOW, tx as any);
+    expect(client.$transaction).not.toHaveBeenCalled();
   });
 });

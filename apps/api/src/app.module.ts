@@ -12,6 +12,8 @@ import { StudentModule } from './student/student.module';
 import { CurriculumModule } from './curriculum/curriculum.module';
 import { QuestionModule } from './question/question.module';
 import { ExamModule } from './exam/exam.module';
+import { GuardianModule } from './guardian/guardian.module';
+import { SchoolModule } from './school/school.module';
 
 @Module({
   imports: [
@@ -30,7 +32,9 @@ import { ExamModule } from './exam/exam.module';
     CurriculumModule,
     QuestionModule,
     ExamModule,
+    GuardianModule,
     StudentModule,
+    SchoolModule,
     AuthzModule,
   ],
   controllers: [HealthController],

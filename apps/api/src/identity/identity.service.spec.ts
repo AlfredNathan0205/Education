@@ -17,7 +17,7 @@ const NOW = new Date('2026-10-11T12:00:00Z');
 
 function makeFakes() {
   const client: Record<string, any> = {
-    otp_challenge: { findFirst: jest.fn(), create: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    otp_challenge: { findFirst: jest.fn(), count: jest.fn().mockResolvedValue(0), create: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn().mockResolvedValue({ count: 1 }) },
     authentication_identity: { findUnique: jest.fn(), update: jest.fn() },
     account: { create: jest.fn() },
     auth_session: { create: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn() },
@@ -108,6 +108,16 @@ describe('IdentityService.requestOtp', () => {
     await expect(service.requestOtp('EMAIL', EMAIL, NOW)).resolves.toBeUndefined();
     expect(client.otp_challenge.create).not.toHaveBeenCalled();
     expect(sender.send).not.toHaveBeenCalled();
+  });
+
+  it('silently sends nothing once the hourly cap is reached', async () => {
+    const { client, sender, service } = makeFakes();
+    client.otp_challenge.findFirst.mockResolvedValue(null);
+    client.otp_challenge.count.mockResolvedValue(5);
+    await expect(service.requestOtp('EMAIL', EMAIL, NOW)).resolves.toBeUndefined();
+    expect(client.otp_challenge.create).not.toHaveBeenCalled();
+    expect(sender.send).not.toHaveBeenCalled();
+    expect(client.otp_challenge.count.mock.calls[0][0].where).toMatchObject({ identifier_normalized: EMAIL });
   });
 
   it('never looks up whether the identity is registered', async () => {

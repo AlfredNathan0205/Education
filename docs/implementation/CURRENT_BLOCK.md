@@ -76,6 +76,9 @@ Done: Prisma models for 01a/01b/01c plus minimal `student` and `audit_event`; pu
 
 - **CONSTRUCTION-009 — Exam engine (Quick 10, TEST and PRACTICE) with student web pages.** See [`CONSTRUCTION-009_INTERPRETATION.md`](./CONSTRUCTION-009_INTERPRETATION.md). Needs a migration, CI, and a real-database pass. Serves only approved questions from an ACTIVE curriculum (a dev-only switch relaxes this locally).
 
+- **CONSTRUCTION-010 — Guardian approval, sign-in email rate limiting.** See [`CONSTRUCTION-010_INTERPRETATION.md`](./CONSTRUCTION-010_INTERPRETATION.md). Needs a migration (`guardian_invitation`) with a partial unique index, CI, and a real-database pass. Applies on top of Block 009. The flow is built; whether it is legally sufficient is counsel's call and the policy decides whether it runs.
+- **CONSTRUCTION-005 — School & Academic Plan, first cut (registry + student selection).** See [`CONSTRUCTION-005_INTERPRETATION.md`](./CONSTRUCTION-005_INTERPRETATION.md). Needs a migration (with a partial unique index and a CHECK constraint, both listed in that doc), CI, and a real-database pass. Plan mapping is deliberately deferred.
+
 ## Still gated, not part of this block
 
 - Activating any ICSE Grade 8 curriculum, and the AI Question Factory (step 8), remain gated on the ICSE Grade 8 syllabus source / human approver details.

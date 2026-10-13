@@ -18,6 +18,7 @@ interface Opts {
   unitState?: string;
   classified?: boolean;
   consent?: boolean;
+  consentSatisfied?: boolean;
 }
 
 function build(opts: Opts = {}, config: Partial<ExamConfig> = {}) {
@@ -162,6 +163,7 @@ function build(opts: Opts = {}, config: Partial<ExamConfig> = {}) {
     getClassificationSummary: jest.fn(async () => ({
       classified: opts.classified ?? true,
       requiresGuardianConsent: opts.consent ?? false,
+      consentSatisfied: opts.consentSatisfied ?? false,
       basis: 'POLICY',
     })),
   };
@@ -204,6 +206,11 @@ describe('ExamService: who may take a test', () => {
     await expect(h.service.listUnits(ACCOUNT)).rejects.toThrow(/parent or guardian/);
     await expect(start(h)).rejects.toBeInstanceOf(ExamNotPermittedError);
     expect(h.store.sessions).toHaveLength(0);
+  });
+  it('lets a student through once a valid guardian approval exists', async () => {
+    const h = build({ consent: true, consentSatisfied: true });
+    await expect(h.service.listUnits(ACCOUNT)).resolves.toBeDefined();
+    await expect(start(h)).resolves.toMatchObject({ resumed: false });
   });
 });
 

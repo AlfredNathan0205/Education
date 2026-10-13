@@ -10,6 +10,20 @@ const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
   { method: 'GET', path: 'students/me' },
   { method: 'PUT', path: 'students/me/date-of-birth' },
   { method: 'PUT', path: 'students/me/display-name' },
+  // Guardian approval. The invitation token travels in the request body, never in the path.
+  { method: 'GET', path: 'guardian/status' },
+  { method: 'POST', path: 'guardian/invitations' },
+  { method: 'POST', path: 'guardian/invitations/cancel' },
+  { method: 'POST', path: 'guardian/invitations/preview' },
+  { method: 'POST', path: 'guardian/invitations/accept' },
+  { method: 'POST', path: 'guardian/invitations/decline' },
+  { method: 'GET', path: 'guardian/approvals' },
+  // School and grade selection (Block 005).
+  { method: 'GET', path: 'students/me/academic' },
+  { method: 'PUT', path: 'students/me/grade' },
+  { method: 'POST', path: 'students/me/schools/search' },
+  { method: 'PUT', path: 'students/me/school' },
+  { method: 'POST', path: 'students/me/school/leave' },
 ];
 
 /** Admin curriculum routes carry a unit id, so they are matched by an exact pattern, never a prefix. */
@@ -32,6 +46,7 @@ const ALLOWED_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: 'POST', pattern: new RegExp(`^exam/assessments/${UUID}/(present|review-skipped|submit)$`) },
   { method: 'POST', pattern: new RegExp(`^exam/assessments/${UUID}/questions/\\d{1,2}/(lock|skip)$`) },
   { method: 'GET', pattern: new RegExp(`^exam/assessments/${UUID}/result$`) },
+  { method: 'POST', pattern: new RegExp(`^guardian/approvals/${UUID}/withdraw$`) },
 ];
 
 export function isAllowed(method: string, path: string): boolean {

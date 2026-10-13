@@ -2,7 +2,7 @@
 
 import { useRef, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { ApiError, bff } from '@/lib/client-api';
+import { ApiError, bff, recalledGuardianToken } from '@/lib/client-api';
 
 type Kind = 'EMAIL' | 'PHONE';
 
@@ -37,7 +37,8 @@ export function SignInForm() {
     setError(null);
     try {
       await bff('POST', 'identity/otp/verify', { kind, identifier, code });
-      router.push('/profile');
+      // A guardian who came from an approval email goes back to it; everyone else goes to their profile.
+      router.push(recalledGuardianToken() ? '/guardian/approve' : '/profile');
       router.refresh();
     } catch (err) {
       setError(

@@ -40,6 +40,8 @@ services:
       DEFAULT_JURISDICTION: "XX"
       # Dev only: serve approved questions from a curriculum that is not ACTIVE yet. The API refuses to start with this in production.
       EXAM_ALLOW_UNACTIVATED_CURRICULUM: "true"
+      # Where the guardian approval link in the email points. Required (and https) in production.
+      WEB_BASE_URL: "http://localhost:3000"
     depends_on:
       postgres:
         condition: service_healthy

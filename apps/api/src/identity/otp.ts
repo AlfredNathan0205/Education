@@ -4,6 +4,9 @@ export const OTP_LENGTH = 6;
 export const OTP_TTL_MS = 10 * 60 * 1000;
 export const OTP_MAX_ATTEMPTS = 5;
 export const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+/** At most this many codes per identifier in a rolling hour, so one address cannot be flooded with email. */
+export const OTP_MAX_PER_HOUR = 5;
+export const OTP_HOUR_MS = 60 * 60 * 1000;
 /** Shorter than a typical consumer app: children may share devices. Adjust with policy later. */
 export const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -57,6 +60,11 @@ export function canIssueOtp(
 ): boolean {
   if (latestCreatedAt === null) return true;
   return now.getTime() - latestCreatedAt.getTime() >= cooldownMs;
+}
+
+/** Hourly cap on codes for one identifier. `issuedInLastHour` counts codes that were actually delivered. */
+export function withinHourlyOtpLimit(issuedInLastHour: number, max: number = OTP_MAX_PER_HOUR): boolean {
+  return issuedInLastHour < max;
 }
 
 export function generateSessionToken(): string {

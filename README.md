@@ -70,6 +70,30 @@ whose curriculum is ACTIVE. For local testing, `docker-compose.yml` sets
 `EXAM_ALLOW_UNACTIVATED_CURRICULUM=true`, so approved questions from an unactivated
 curriculum also work; the API refuses to start with that switch in production.
 
+**Guardian approval** — a student whose date of birth means they need a parent or guardian
+sees a form asking for the adult's email. The adult gets a link, signs in with that same email,
+reads the consent wording and approves. Locally the link is printed in the API log
+(`docker compose logs api`) because `EMAIL_PROVIDER=console`. Before it can work you must load the
+test policy **again** (it now also accepts the `EMAIL_LINK_ATTESTATION` method and publishes the
+draft consent wording):
+
+```bash
+docker compose exec api node apps/api/dist/privacy/cli/policy.js seed-dev-policy
+```
+
+In production the flow refuses to run until counsel has reviewed the policy (which must list an
+accepted guardian verification method) and the consent wording; see
+`docs/implementation/CONSTRUCTION-010_INTERPRETATION.md`.
+
+**School registry CLI** — schools are entered by a person, never invented.
+Needs `ADMIN_OPERATOR` set:
+
+```bash
+docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/school/cli/schools.js add "Example School" AE "Dubai"
+docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/school/cli/schools.js list
+docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/school/cli/schools.js candidates
+```
+
 Data is stored in a Docker named volume (`pgdata`) and survives restarts.
 Run `docker compose down -v` to wipe everything and start fresh.
 

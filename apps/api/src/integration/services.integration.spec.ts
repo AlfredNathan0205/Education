@@ -25,6 +25,9 @@ import { OutboxService } from '../outbox/outbox.service';
 import { ExamService } from '../exam/exam.service';
 import { ExamConflictError, ExamNotPermittedError } from '../exam/exam.errors';
 import { DEFAULT_JURISDICTION } from '../student/student.service';
+import { GuardianService } from '../guardian/guardian.service';
+import { DEV_DRAFT_WORDING_REFERENCE } from '../guardian/consent-texts';
+import { GuardianConflictError, GuardianNotPermittedError, GuardianUnavailableError } from '../guardian/guardian.errors';
 import type { CurriculumActor } from '../curriculum/curriculum-state';
 import type { CurriculumTree } from '../curriculum/curriculum-validation';
 
@@ -77,6 +80,13 @@ async function cleanAll() {
   await prisma.consent_record.deleteMany();
   await prisma.consent_policy_version.deleteMany();
   await prisma.consent_purpose.deleteMany();
+  await prisma.student_school_association.deleteMany();
+  await prisma.student_academic_context.deleteMany();
+  await prisma.school_candidate.deleteMany();
+  await prisma.school_branch.deleteMany();
+  await prisma.school_alias.deleteMany();
+  await prisma.school.deleteMany();
+  await prisma.guardian_invitation.deleteMany();
   await prisma.guardian_authority.deleteMany();
   await prisma.guardian_verification.deleteMany();
   await prisma.guardian_relationship.deleteMany();
@@ -1042,5 +1052,209 @@ describe('ExamService (real DB)', () => {
     const { accountId } = await adult();
     expect(await exam.listUnits(accountId)).toEqual([]);
     await expect(exam.create(accountId, { subjectVersionId: id, mode: 'TEST' })).rejects.toThrow(/not open for tests/);
+  });
+});
+
+
+/* ===================================================================== */
+/*  Guardian approval                                                     */
+/* ===================================================================== */
+
+describe('GuardianService (real DB)', () => {
+  const sentMail: { to: string; link: string }[] = [];
+  const mailer = { sendInvitation: async (to: string, link: string) => { sentMail.push({ to, link }); } };
+  const guardian = new GuardianService(dbService, privacyService, outbox, mailer, 'https://app.example.com');
+  const GUARDIAN_EMAIL = 'parent@example.com';
+  const tokenOfLast = () => sentMail[sentMail.length - 1].link.split('#t=')[1];
+
+  async function policy(methods: string[] = ['EMAIL_LINK_ATTESTATION']) {
+    const { id } = await privacyService.createJurisdictionPolicyDraft(
+      { jurisdictionCode: DEFAULT_JURISDICTION, config: { minorAgeThreshold: 18, guardianConsentAgeThreshold: 18, acceptedDobEvidenceMethods: ['SELF_DECLARED'], acceptedGuardianVerificationMethods: methods } },
+      null,
+    );
+    await privacyService.markPolicyCounselReviewed(id, 'LEGAL-OPINION-001', null);
+    await privacyService.activateJurisdictionPolicy(id, null);
+  }
+  async function wording() {
+    await privacyService.publishConsentWording({ purposeCode: 'CORE_SERVICE', textReference: DEV_DRAFT_WORDING_REFERENCE, description: 'Core service' });
+  }
+  async function minor() {
+    const account = await prisma.account.create({ data: {} });
+    const student = await prisma.student.create({ data: {} });
+    await prisma.account_student_access.create({ data: { account_id: account.id, student_id: student.id, access_kind: 'SELF' } });
+    await privacyService.recordAgeClassification({ studentId: student.id, dateOfBirth: new Date('2013-05-01'), jurisdictionCode: DEFAULT_JURISDICTION, dobEvidenceMethod: 'SELF_DECLARED', actorAccountId: account.id });
+    return { accountId: account.id, studentId: student.id };
+  }
+  async function guardianAccount(email = GUARDIAN_EMAIL) {
+    const account = await prisma.account.create({ data: {} });
+    await prisma.authentication_identity.create({ data: { account_id: account.id, kind: 'EMAIL', identifier_normalized: email, verified_at: new Date() } });
+    return account.id;
+  }
+  const ask = (accountId: string) => guardian.createInvitation(accountId, { email: GUARDIAN_EMAIL, relationshipType: 'MOTHER' });
+
+  beforeEach(() => { sentMail.length = 0; });
+
+  it('full flow: request, approve, student is cleared; withdraw puts the block back', async () => {
+    await policy();
+    await wording();
+    const s = await minor();
+    expect((await privacyService.getClassificationSummary(s.studentId)).consentSatisfied).toBe(false);
+
+    await ask(s.accountId);
+    expect(sentMail).toHaveLength(1);
+    const g = await guardianAccount();
+    const preview = await guardian.preview(g, tokenOfLast());
+    await guardian.accept(g, { token: tokenOfLast(), consentVersion: preview.consent.version, attested: true });
+
+    expect((await privacyService.getClassificationSummary(s.studentId)).consentSatisfied).toBe(true);
+    expect(await prisma.guardian_verification.count({ where: { status: 'VERIFIED', method: 'EMAIL_LINK_ATTESTATION' } })).toBe(1);
+    expect((await guardian.status(s.accountId)).approved).toBe(true);
+
+    const [approval] = await guardian.listApprovals(g);
+    await guardian.withdraw(g, approval.consentRecordId);
+    expect((await privacyService.getClassificationSummary(s.studentId)).consentSatisfied).toBe(false);
+  });
+
+  it('only the token hash is stored', async () => {
+    await policy(); await wording();
+    const s = await minor();
+    await ask(s.accountId);
+    const rows = await prisma.guardian_invitation.findMany();
+    expect(JSON.stringify(rows)).not.toContain(tokenOfLast());
+  });
+
+  it('refuses, and writes nothing, when the active policy does not accept the method', async () => {
+    await policy(['DOCUMENT_UPLOAD']); await wording();
+    const s = await minor();
+    await ask(s.accountId);
+    const g = await guardianAccount();
+    const v = (await guardian.preview(g, tokenOfLast())).consent.version;
+    await expect(guardian.accept(g, { token: tokenOfLast(), consentVersion: v, attested: true })).rejects.toBeInstanceOf(GuardianUnavailableError);
+    expect((await prisma.guardian_invitation.findFirstOrThrow()).status).toBe('PENDING');
+    expect(await prisma.guardian_relationship.count()).toBe(0);
+    expect(await prisma.consent_record.count()).toBe(0);
+  });
+
+  it('refuses when no consent wording has been published', async () => {
+    await policy();
+    const s = await minor();
+    await ask(s.accountId);
+    const g = await guardianAccount();
+    await expect(guardian.preview(g, tokenOfLast())).rejects.toBeInstanceOf(GuardianUnavailableError);
+  });
+
+  it('an account that does not control the invited address cannot see or accept it', async () => {
+    await policy(); await wording();
+    const s = await minor();
+    await ask(s.accountId);
+    const stranger = await guardianAccount('someone-else@example.com');
+    await expect(guardian.preview(stranger, tokenOfLast())).rejects.toBeInstanceOf(GuardianNotPermittedError);
+    await expect(guardian.accept(stranger, { token: tokenOfLast(), consentVersion: 1, attested: true })).rejects.toBeInstanceOf(GuardianNotPermittedError);
+    expect(await prisma.consent_record.count()).toBe(0);
+  });
+
+  it('two simultaneous accepts produce exactly one approval', async () => {
+    await policy(); await wording();
+    const s = await minor();
+    await ask(s.accountId);
+    const g = await guardianAccount();
+    const v = (await guardian.preview(g, tokenOfLast())).consent.version;
+    const results = await Promise.allSettled([
+      guardian.accept(g, { token: tokenOfLast(), consentVersion: v, attested: true }),
+      guardian.accept(g, { token: tokenOfLast(), consentVersion: v, attested: true }),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const loser = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(loser.reason).toBeInstanceOf(GuardianConflictError);
+    expect(await prisma.consent_record.count()).toBe(1);
+    expect(await prisma.guardian_authority.count()).toBe(1);
+  });
+
+  it('a student never has more than one pending request, even when two are sent at once', async () => {
+    await policy(); await wording();
+    const s = await minor();
+    await Promise.allSettled([ask(s.accountId), ask(s.accountId)]);
+    expect(await prisma.guardian_invitation.count({ where: { status: 'PENDING' } })).toBeLessThanOrEqual(1);
+  });
+
+  it('the daily limit holds across resends', async () => {
+    await policy(); await wording();
+    const s = await minor();
+    await ask(s.accountId);
+    // push the earlier ones back past the cooldown so only the daily limit can stop us
+    const back = async () => prisma.guardian_invitation.updateMany({ data: { created_at: new Date(Date.now() - 5 * 60_000) } });
+    await back(); await ask(s.accountId);
+    await back(); await ask(s.accountId);
+    await back();
+    await expect(ask(s.accountId)).rejects.toThrow(/limit|can't receive/);
+  });
+
+  it('a request that has expired cannot be used', async () => {
+    await policy(); await wording();
+    const s = await minor();
+    await ask(s.accountId);
+    await prisma.guardian_invitation.updateMany({ data: { expires_at: new Date(Date.now() - 1000) } });
+    const g = await guardianAccount();
+    await expect(guardian.preview(g, tokenOfLast())).rejects.toThrow(/expired/);
+  });
+
+  it('declining approves nothing', async () => {
+    await policy(); await wording();
+    const s = await minor();
+    await ask(s.accountId);
+    const g = await guardianAccount();
+    await guardian.decline(g, tokenOfLast());
+    expect((await privacyService.getClassificationSummary(s.studentId)).consentSatisfied).toBe(false);
+    expect(await prisma.consent_record.count()).toBe(0);
+  });
+
+  it('the exam gate opens only after approval', async () => {
+    await policy(); await wording();
+    const s = await minor();
+    const exam = new ExamService(dbService, privacyService, outbox, { allowUnactivatedCurriculum: false, resumeHours: 24 });
+    await expect(exam.listUnits(s.accountId)).rejects.toBeInstanceOf(ExamNotPermittedError);
+    await ask(s.accountId);
+    const g = await guardianAccount();
+    const v = (await guardian.preview(g, tokenOfLast())).consent.version;
+    await guardian.accept(g, { token: tokenOfLast(), consentVersion: v, attested: true });
+    await expect(exam.listUnits(s.accountId)).resolves.toBeDefined();
+  });
+});
+
+
+/* ===================================================================== */
+/*  School registry tables (constraints the migration must carry)         */
+/* ===================================================================== */
+
+describe('School association constraints (real DB)', () => {
+  async function student() {
+    return prisma.student.create({ data: {} });
+  }
+
+  it('allows only one open school association per student', async () => {
+    const st = await student();
+    const school = await prisma.school.create({ data: { name: 'Example School', country_code: 'AE', city: 'Dubai' } });
+    await prisma.student_school_association.create({ data: { student_id: st.id, school_id: school.id, state: 'STUDENT_SELECTED' } });
+    await expect(
+      prisma.student_school_association.create({ data: { student_id: st.id, school_id: school.id, state: 'STUDENT_SELECTED' } }),
+    ).rejects.toThrow();
+  });
+
+  it('allows a new association once the earlier one has ended (history is kept)', async () => {
+    const st = await student();
+    const school = await prisma.school.create({ data: { name: 'Example School', country_code: 'AE', city: 'Dubai' } });
+    await prisma.student_school_association.create({ data: { student_id: st.id, school_id: school.id, state: 'STUDENT_SELECTED', ended_at: new Date(), end_reason: 'LEFT' } });
+    await prisma.student_school_association.create({ data: { student_id: st.id, school_id: school.id, state: 'STUDENT_SELECTED' } });
+    expect(await prisma.student_school_association.count({ where: { student_id: st.id } })).toBe(2);
+  });
+
+  it('requires exactly one of school or candidate', async () => {
+    const st = await student();
+    const school = await prisma.school.create({ data: { name: 'Example School', country_code: 'AE', city: 'Dubai' } });
+    const cand = await prisma.school_candidate.create({ data: { name_as_entered: 'Typed School', country_code: 'AE' } });
+    await expect(prisma.student_school_association.create({ data: { student_id: st.id, state: 'UNVERIFIED' } })).rejects.toThrow();
+    await expect(
+      prisma.student_school_association.create({ data: { student_id: st.id, school_id: school.id, candidate_id: cand.id, state: 'UNVERIFIED' } }),
+    ).rejects.toThrow();
   });
 });

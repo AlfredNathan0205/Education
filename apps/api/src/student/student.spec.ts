@@ -108,10 +108,50 @@ describe('StudentService', () => {
     expect(client.student.update).toHaveBeenCalledWith({ where: { id: 'st1' }, data: { display_name: 'Asha Rao' } });
   });
 
+  it('setDisplayName is allowed once a valid guardian approval exists', async () => {
+    const { client, privacy, service } = makeService();
+    client.account_student_access.findFirst.mockResolvedValue({ student_id: 'st1' });
+    privacy.getClassificationSummary.mockResolvedValue({ classified: true, requiresGuardianConsent: true, consentSatisfied: true, basis: 'POLICY' });
+    await service.setDisplayName('acct', 'Asha');
+    expect(client.student.update).toHaveBeenCalled();
+  });
+
+  it('collecting school/grade data is refused until guardian approval is valid, then allowed', async () => {
+    const { client, privacy, service } = makeService();
+    client.account_student_access.findFirst.mockResolvedValue({ student_id: 'st1' });
+    privacy.getClassificationSummary.mockResolvedValue({ classified: true, requiresGuardianConsent: true, consentSatisfied: false, basis: 'POLICY' });
+    await expect(service.studentIdForDataCollection('acct')).rejects.toBeInstanceOf(GuardianConsentRequiredError);
+    privacy.getClassificationSummary.mockResolvedValue({ classified: true, requiresGuardianConsent: true, consentSatisfied: true, basis: 'POLICY' });
+    await expect(service.studentIdForDataCollection('acct')).resolves.toBe('st1');
+  });
+
+  it('the profile no longer asks for a guardian once approval is valid, and still does before', async () => {
+    const { client, privacy, service } = makeService();
+    client.account_student_access.findFirst.mockResolvedValue({ student_id: 'st1' });
+    client.student.findUnique.mockResolvedValue({ display_name: null });
+    privacy.getClassificationSummary.mockResolvedValue({ classified: true, requiresGuardianConsent: true, consentSatisfied: false, basis: 'POLICY' });
+    expect((await service.getOwnProfile('acct')).requiresGuardianConsent).toBe(true);
+    privacy.getClassificationSummary.mockResolvedValue({ classified: true, requiresGuardianConsent: true, consentSatisfied: true, basis: 'POLICY' });
+    expect((await service.getOwnProfile('acct')).requiresGuardianConsent).toBe(false);
+  });
+
   it.each([[''], ['<script>'], ['x'.repeat(61)], ['123']])('rejects display name %p', async (n) => {
     const { client, service } = makeService();
     client.account_student_access.findFirst.mockResolvedValue({ student_id: 'st1' });
     await expect(service.setDisplayName('acct', n)).rejects.toThrow();
+  });
+
+  it('studentIdForDataCollection fails closed while guardian consent is required', async () => {
+    const { client, service } = makeService();
+    client.account_student_access.findFirst.mockResolvedValue({ student_id: 'st1' });
+    await expect(service.studentIdForDataCollection('acct')).rejects.toBeInstanceOf(GuardianConsentRequiredError);
+  });
+
+  it('studentIdForDataCollection returns the student once consent is not required', async () => {
+    const { client, privacy, service } = makeService();
+    client.account_student_access.findFirst.mockResolvedValue({ student_id: 'st1' });
+    privacy.getClassificationSummary.mockResolvedValue({ classified: true, requiresGuardianConsent: false, basis: 'POLICY' });
+    await expect(service.studentIdForDataCollection('acct')).resolves.toBe('st1');
   });
 
   it('calls reclassifyIfStale on every profile view', async () => {
