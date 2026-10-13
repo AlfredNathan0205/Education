@@ -72,6 +72,8 @@ export interface QuestionDetail extends QuestionRow {
   aiSource: string | null;
   /** The latest deterministic check on this exact revision, if one has run. */
   validation: { validatorVersion: string; passed: boolean; findings: Finding[]; at: string } | null;
+  /** How the AI factory scored this draft (advisory; a person decides). Null for anything not made by the factory. */
+  generation: { batchId: string; route: string | null; confidence: number | null; repairs: number; issues: { role: string; message: string }[]; reason: string | null } | null;
   history: { from: string | null; to: string; actorKind: string; reasonCode: string | null; note: string | null; at: string }[];
 }
 
@@ -120,6 +122,15 @@ export class QuestionService {
       latestRevisionId: latest!.id as string,
       latestRevisionState: latest!.state as string,
     };
+  }
+
+  /** The newest revision id of the question with this code in the unit, or null. */
+  async revisionIdByCode(unit: UnitIdentity, code: string): Promise<string | null> {
+    const q: any = await this.db.client.question.findFirst({
+      where: { curriculum_version_id: unit.curriculumVersionId, grade_id: unit.gradeId, subject_id: unit.subjectId, code },
+      include: { revisions: { orderBy: { revision: 'desc' }, take: 1, select: { id: true } } },
+    });
+    return q?.revisions?.[0]?.id ?? null;
   }
 
   /** objective code -> every "chapter/topic/concept/objective" path that uses it, in the newest revision. */
@@ -504,6 +515,7 @@ export class QuestionService {
       include: { options: { orderBy: { position: 'asc' } }, question: true, events: { orderBy: { occurred_at: 'asc' } }, validation_runs: { orderBy: { created_at: 'desc' }, take: 1 } },
     });
     if (!r) throw new QuestionNotFoundError('question');
+    const gen: any = r.origin === 'AI_DRAFT' ? await this.db.client.generation_attempt.findFirst({ where: { question_revision_id: revisionId } }) : null;
     return {
       questionId: r.question_id,
       revisionId: r.id,
@@ -522,6 +534,16 @@ export class QuestionService {
       aiSource: r.ai_source ?? null,
       validation: r.validation_runs[0]
         ? { validatorVersion: r.validation_runs[0].validator_version, passed: r.validation_runs[0].passed, findings: r.validation_runs[0].findings as Finding[], at: new Date(r.validation_runs[0].created_at).toISOString() }
+        : null,
+      generation: gen
+        ? {
+            batchId: gen.batch_id,
+            route: gen.route ?? null,
+            confidence: gen.confidence === null || gen.confidence === undefined ? null : Number(gen.confidence),
+            repairs: gen.repairs,
+            issues: Array.isArray(gen.evidence?.issues) ? gen.evidence.issues : [],
+            reason: gen.evidence?.reason ?? null,
+          }
         : null,
       history: r.events.map((e: any) => ({
         from: e.from_state ?? null,

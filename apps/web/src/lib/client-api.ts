@@ -72,6 +72,7 @@ export interface QuestionDetail extends QuestionRow {
   answerVerified: boolean;
   aiSource: string | null;
   validation: { validatorVersion: string; passed: boolean; findings: Array<{ code: string; severity: 'CRITICAL' | 'MAJOR' | 'MINOR'; message: string }>; at: string } | null;
+  generation: { batchId: string; route: string | null; confidence: number | null; repairs: number; issues: Array<{ role: string; message: string }>; reason: string | null } | null;
   history: Array<{ from: string | null; to: string; actorKind: string; reasonCode: string | null; note: string | null; at: string }>;
 }
 

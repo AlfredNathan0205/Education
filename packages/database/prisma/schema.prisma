@@ -1245,3 +1245,113 @@ model question_validation_run {
 
   @@index([revision_id, created_at])
 }
+
+// ---------------------------------------------------------------------------
+// Step 8 — AI Question Factory. The AI only ever produces DRAFT questions through the normal question
+// path; a person must submit and a different person approve. These tables are the evidence trail.
+// ---------------------------------------------------------------------------
+
+enum generation_batch_status {
+  RUNNING
+  STOP_REQUESTED
+  COMPLETED
+  STOPPED
+}
+
+enum generation_attempt_outcome {
+  /// Stored as a DRAFT question for human review.
+  DRAFT_STORED
+  /// Failed the automatic structure checks.
+  REJECTED_STRUCTURE
+  /// The same wording already exists in the unit.
+  REJECTED_DUPLICATE
+  /// Validators raised a critical gate or the score was below the amber threshold.
+  REJECTED_QUALITY
+  /// A validator could not run or returned unusable output, so the candidate was not routed.
+  FAILED_VALIDATION
+  /// The generator itself failed or returned unusable output.
+  FAILED_GENERATION
+}
+
+enum ai_call_status {
+  OK
+  INVALID_OUTPUT
+  ERROR
+}
+
+/// One request to generate for one cell (objective x difficulty x cognitive). The operator decides demand.
+model generation_batch {
+  id                    String                  @id @default(uuid()) @db.Uuid
+  curriculum_version_id String                  @db.Uuid
+  grade_id              String                  @db.Uuid
+  subject_id            String                  @db.Uuid
+  objective_path        String                  @db.VarChar(300)
+  difficulty            question_difficulty
+  cognitive             question_cognitive
+  requested_count       Int
+  status                generation_batch_status @default(RUNNING)
+  stop_reason           String?                 @db.VarChar(255)
+  requested_by          String                  @db.VarChar(255)
+  provider              String                  @db.VarChar(32)
+  model                 String                  @db.VarChar(100)
+  config_version        String                  @db.VarChar(32)
+  drafts_stored         Int                     @default(0)
+  rejected              Int                     @default(0)
+  duplicates            Int                     @default(0)
+  failed                Int                     @default(0)
+  started_at            DateTime                @default(now())
+  finished_at           DateTime?
+
+  attempts generation_attempt[]
+  calls    ai_call_log[]
+
+  @@index([curriculum_version_id, grade_id, subject_id, objective_path, started_at])
+}
+
+model generation_attempt {
+  id                   String                     @id @default(uuid()) @db.Uuid
+  batch_id             String                     @db.Uuid
+  sequence             Int
+  outcome              generation_attempt_outcome
+  /// GREEN / YELLOW / AMBER / RED, or null when the candidate was never routed.
+  route                String?                    @db.VarChar(8)
+  confidence           Float?
+  repairs              Int                        @default(0)
+  /// The exact candidate, kept even when rejected, so a rejection can be audited.
+  candidate            Json?
+  /// Validator scores, gates and issues behind the route.
+  evidence             Json?
+  question_revision_id String?                    @db.Uuid
+  note                 String?                    @db.VarChar(500)
+  created_at           DateTime                   @default(now())
+
+  batch generation_batch @relation(fields: [batch_id], references: [id], onDelete: Cascade)
+
+  @@unique([batch_id, sequence])
+  @@index([question_revision_id])
+}
+
+/// Every call to a model, whatever the role. Hashes, not content: the candidate content is on the attempt.
+model ai_call_log {
+  id             String         @id @default(uuid()) @db.Uuid
+  batch_id       String         @db.Uuid
+  attempt_seq    Int?
+  role           String         @db.VarChar(40)
+  provider       String         @db.VarChar(32)
+  model          String         @db.VarChar(100)
+  prompt_version String         @db.VarChar(16)
+  schema_version String         @db.VarChar(16)
+  input_hash     String         @db.VarChar(64)
+  output_hash    String?        @db.VarChar(64)
+  latency_ms     Int
+  status         ai_call_status
+  detail         String?        @db.VarChar(300)
+  tokens_in      Int?
+  tokens_out     Int?
+  created_at     DateTime       @default(now())
+
+  batch generation_batch @relation(fields: [batch_id], references: [id], onDelete: Cascade)
+
+  @@index([batch_id])
+  @@index([created_at])
+}

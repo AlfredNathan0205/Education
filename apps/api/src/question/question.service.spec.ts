@@ -80,6 +80,7 @@ function makeDb(tree: any[] = TREE) {
       create: jest.fn(async ({ data }: any) => runs.push({ created_at: new Date(), ...data })),
       findFirst: jest.fn(async ({ where }: any) => [...runs].reverse().find((x) => x.revision_id === where.revision_id) ?? null),
     },
+    generation_attempt: { findFirst: jest.fn(async () => null) },
     question_option: {
       deleteMany: jest.fn(async ({ where }: any) => {
         for (let i = options.length - 1; i >= 0; i--) if (options[i].revision_id === where.revision_id) options.splice(i, 1);

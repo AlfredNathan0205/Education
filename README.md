@@ -114,6 +114,20 @@ You choose the target number of approved questions per objective-and-difficulty 
 docker compose exec api node apps/api/dist/bank-coverage/cli/coverage.js report ICSE GRADE_8 PHYSICS 10
 ```
 
+**AI question factory** — generates DRAFT questions for people to review (it never approves or publishes anything).
+Today it runs against a built-in mock provider whose questions are placeholders; a real model is plugged in later.
+Set `FACTORY_ENABLED=true`, `FACTORY_DAILY_TOKEN_BUDGET=<tokens per day>` and `AI_PROVIDER=mock` in `.env`
+(optionally `MOCK_AI_FAULTS=wrong-answer=4,weak-explanation=5,duplicate=7,garbage=9` to see each outcome), then:
+
+```bash
+F="docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/factory/cli/factory.js"
+$F suggest ICSE GRADE_8 PHYSICS 10                                   # where the bank is thinnest (you pick the cognitive level)
+$F run ICSE GRADE_8 PHYSICS <objectiveCode> EASY C1 5                # at most 20 per run
+$F batches ; $F show <batchId> ; $F stop <batchId>
+```
+
+Drafts appear in the question bank screen with their score and reasons, marked as AI drafts.
+
 Data is stored in a Docker named volume (`pgdata`) and survives restarts.
 Run `docker compose down -v` to wipe everything and start fresh.
 
