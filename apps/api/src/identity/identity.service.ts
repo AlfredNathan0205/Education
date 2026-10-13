@@ -15,7 +15,7 @@ import {
   precheckOtpAttempt,
   verifyOtpCode,
 } from './otp';
-import { OTP_SENDER, type OtpSender } from './otp-sender.port';
+import { OTP_SENDER, OtpDeliveryError, type OtpSender } from './otp-sender.port';
 
 /**
  * Deliberately one generic error for every failure (unknown identity, wrong code,
@@ -79,7 +79,7 @@ export class IdentityService {
     if (!canIssueOtp(latest?.created_at ?? null, now)) return;
 
     const code = generateOtpCode();
-    await client.otp_challenge.create({
+    const created = await client.otp_challenge.create({
       data: {
         kind,
         identifier_normalized: identifier,
@@ -87,8 +87,18 @@ export class IdentityService {
         expires_at: new Date(now.getTime() + OTP_TTL_MS),
         max_attempts: OTP_MAX_ATTEMPTS,
       },
+      select: { id: true },
     });
-    await this.sender.send(kind, identifier, code);
+    try {
+      await this.sender.send(kind, identifier, code);
+    } catch (error) {
+      // Nothing was delivered, so the stored code is useless. Remove it so the person can retry at once
+      // instead of waiting out the resend cooldown for a code that never arrived.
+      if (created?.id) {
+        await client.otp_challenge.deleteMany({ where: { id: created.id } }).catch(() => undefined);
+      }
+      throw error instanceof OtpDeliveryError ? error : new OtpDeliveryError();
+    }
   }
 
   /** Verify a code; on success find-or-create the account and open a session. */

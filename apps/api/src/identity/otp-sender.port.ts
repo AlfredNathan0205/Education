@@ -9,6 +9,17 @@ export interface OtpSender {
 export const OTP_SENDER = Symbol('OTP_SENDER');
 
 /**
+ * A code could not be delivered. The message is safe to log: it never contains the code,
+ * the address, or the provider's response body.
+ */
+export class OtpDeliveryError extends Error {
+  constructor(message = 'the sign-in code could not be delivered') {
+    super(message);
+    this.name = 'OtpDeliveryError';
+  }
+}
+
+/**
  * Development-only sender: writes the code to the server log so the flow can be
  * exercised locally. It refuses to run in production, so a missing provider
  * configuration fails loudly instead of silently logging real users' codes.
