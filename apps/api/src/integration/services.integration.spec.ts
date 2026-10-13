@@ -894,7 +894,10 @@ describe('ExamService (real DB)', () => {
         },
       });
       // Approved is not published: tests are built only from published questions.
-      if (opts.published !== false) await prisma.question_publication.create({ data: { revision_id: rev.id, state: 'PUBLISHED', published_by: '00000000-0000-4000-8000-000000000001' } });
+      if (opts.published !== false) {
+        await prisma.question_publication.create({ data: { revision_id: rev.id, state: 'PUBLISHED', published_by: '00000000-0000-4000-8000-000000000001' } });
+        await prisma.question_publication_event.create({ data: { revision_id: rev.id, action: 'PUBLISH', actor_kind: 'SYSTEM', actor_account_id: null } });
+      }
     }
   }
 
