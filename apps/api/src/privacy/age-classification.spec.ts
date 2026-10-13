@@ -1,4 +1,5 @@
 import { InvalidDateOfBirthError, ageInFullYears, classifyAge } from './age-classification';
+import { DEV_TEST_POLICY_CONFIG } from './cli/policy-cli';
 import { emptyPolicyConfig, type JurisdictionPolicyConfig } from './jurisdiction-policy';
 
 /** Illustrative thresholds for tests only. NOT legal parameters for any real jurisdiction. */
@@ -92,6 +93,31 @@ describe('classifyAge fails closed', () => {
     expect(classifyAge({ dateOfBirth: d('1990-01-01'), asOf, policy: half }).basis).toBe(
       'FAIL_CLOSED_INCOMPLETE_POLICY',
     );
+  });
+});
+
+describe('classifyAge with DEV_TEST_POLICY_CONFIG', () => {
+  const asOf = d('2026-10-11');
+  const devPolicy: JurisdictionPolicyConfig = { ...DEV_TEST_POLICY_CONFIG, acceptedDobEvidenceMethods: [...DEV_TEST_POLICY_CONFIG.acceptedDobEvidenceMethods], acceptedGuardianVerificationMethods: [...DEV_TEST_POLICY_CONFIG.acceptedGuardianVerificationMethods] };
+
+  it('student aged 18+ proceeds without guardian consent', () => {
+    const result = classifyAge({ dateOfBirth: d('2008-10-11'), asOf, policy: devPolicy });
+    expect(result).toMatchObject({
+      ageYears: 18,
+      isMinor: false,
+      requiresGuardianConsent: false,
+      basis: 'POLICY',
+    });
+  });
+
+  it('student under 18 requires guardian consent', () => {
+    const result = classifyAge({ dateOfBirth: d('2008-10-12'), asOf, policy: devPolicy });
+    expect(result).toMatchObject({
+      ageYears: 17,
+      isMinor: true,
+      requiresGuardianConsent: true,
+      basis: 'POLICY',
+    });
   });
 });
 
