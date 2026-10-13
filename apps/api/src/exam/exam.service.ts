@@ -536,7 +536,7 @@ export class ExamService {
     await this.privacy.reclassifyIfStale(studentId, DEFAULT_JURISDICTION);
     const summary = await this.privacy.getClassificationSummary(studentId);
     if (!summary.classified) throw new ExamNotPermittedError('Finish your profile before taking a test');
-    if (summary.requiresGuardianConsent) throw new ExamNotPermittedError('A parent or guardian must give consent before you can take a test');
+    if (summary.requiresGuardianConsent && !summary.consentSatisfied) throw new ExamNotPermittedError('A parent or guardian must give consent before you can take a test');
     return studentId;
   }
 

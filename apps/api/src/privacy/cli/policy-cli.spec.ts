@@ -12,6 +12,7 @@ function deps(over: Record<string, unknown> = {}) {
     createJurisdictionPolicyDraft: jest.fn().mockResolvedValue({ id: 'p1', version: 2 }),
     markPolicyCounselReviewed: jest.fn().mockResolvedValue(undefined),
     activateJurisdictionPolicy: jest.fn().mockResolvedValue(undefined),
+    publishConsentWording: jest.fn().mockResolvedValue({ version: 4 }),
   };
   return {
     service,
@@ -103,6 +104,23 @@ describe('seed-dev-policy', () => {
     expect(service.activateJurisdictionPolicy).toHaveBeenCalledWith('p1', null);
     expect(msg).toMatch(/DEV TEST POLICY/);
     expect(msg).toMatch(/NOT A LEGAL VALUE/);
+  });
+
+  it('seed-dev-policy also publishes the draft consent wording and accepts the email-link method', async () => {
+    const { service, d } = deps({ env: devEnv });
+    await runPolicyCli(['seed-dev-policy'], d);
+    expect(service.publishConsentWording).toHaveBeenCalledWith(
+      expect.objectContaining({ purposeCode: 'CORE_SERVICE', textReference: 'consent-text:CORE_SERVICE:v1-draft' }),
+    );
+    expect(DEV_TEST_POLICY_CONFIG.acceptedGuardianVerificationMethods).toContain('EMAIL_LINK_ATTESTATION');
+  });
+
+  it('consent-wording publishes a version and needs all three arguments', async () => {
+    const { service, d } = deps();
+    const msg = await runPolicyCli(['consent-wording', 'CORE_SERVICE', 'consent-text:CORE_SERVICE:v1', 'Core', 'service'], d);
+    expect(service.publishConsentWording).toHaveBeenCalledWith({ purposeCode: 'CORE_SERVICE', textReference: 'consent-text:CORE_SERVICE:v1', description: 'Core service' });
+    expect(msg).toMatch(/v4/);
+    await expect(runPolicyCli(['consent-wording', 'CORE_SERVICE'], d)).rejects.toBeInstanceOf(CliUsageError);
   });
 
   it('rejects extra arguments', async () => {

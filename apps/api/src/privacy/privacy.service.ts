@@ -29,6 +29,17 @@ import {
 /** A guardian may give consent only through an authority of this type. */
 export const CONSENT_AUTHORITY_TYPE = 'CONSENT';
 
+/** The one purpose every student needs before anything else is processed (taking tests, storing results). */
+export const CORE_PURPOSE = 'CORE_SERVICE';
+
+export interface GrantConsentInput {
+  studentId: string;
+  purposeCode: string;
+  capacity: ConsentCapacity;
+  actorAccountId: string;
+  guardianAuthorityId?: string;
+}
+
 const JURISDICTION_CODE = /^[A-Z]{2}$/;
 const METHOD_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
@@ -282,6 +293,8 @@ export class PrivacyService {
   async getClassificationSummary(studentId: string): Promise<{
     classified: boolean;
     requiresGuardianConsent: boolean;
+    /** True only when the core-service consent is currently valid (a live, verified guardian grant when one is required). */
+    consentSatisfied: boolean;
     basis: string | null;
   }> {
     const row = await this.db.client.age_classification.findFirst({
@@ -289,10 +302,17 @@ export class PrivacyService {
       select: { requires_guardian_consent: true, basis: true },
     });
     // Unclassified students are treated as needing guardian consent (fail closed).
-    if (!row) return { classified: false, requiresGuardianConsent: true, basis: null };
+    if (!row) {
+      return { classified: false, requiresGuardianConsent: true, consentSatisfied: false, basis: null };
+    }
+    const required = row.requires_guardian_consent as boolean;
+    const consentSatisfied = required
+      ? (await this.evaluateProcessingForStudent(studentId, CORE_PURPOSE)).allowed
+      : true;
     return {
       classified: true,
-      requiresGuardianConsent: row.requires_guardian_consent as boolean,
+      requiresGuardianConsent: required,
+      consentSatisfied,
       basis: row.basis as string,
     };
   }
@@ -415,18 +435,27 @@ export class PrivacyService {
     });
   }
 
-  /** Record a consent grant, by the student themselves or by a verified guardian. */
+  /**
+   * Record a consent grant, by the student themselves or by a verified guardian.
+   * Pass `tx` to make the grant part of a larger transaction (guardian approval does).
+   */
   async grantConsent(
-    input: {
-      studentId: string;
-      purposeCode: string;
-      capacity: ConsentCapacity;
-      actorAccountId: string;
-      guardianAuthorityId?: string;
-    },
+    input: GrantConsentInput,
     now: Date = new Date(),
+    tx?: Prisma.TransactionClient,
   ): Promise<{ consentRecordId: string }> {
-    return this.db.client.$transaction(async (tx: Prisma.TransactionClient) => {
+    if (tx) return this.grantConsentIn(tx, input, now);
+    return this.db.client.$transaction((t: Prisma.TransactionClient) =>
+      this.grantConsentIn(t, input, now),
+    );
+  }
+
+  private async grantConsentIn(
+    tx: Prisma.TransactionClient,
+    input: GrantConsentInput,
+    now: Date,
+  ): Promise<{ consentRecordId: string }> {
+    {
       const purpose = await tx.consent_purpose.findUnique({ where: { code: input.purposeCode } });
       if (!purpose) throw new PrivacyNotFoundError('consent purpose');
 
@@ -508,6 +537,249 @@ export class PrivacyService {
       });
 
       return { consentRecordId: record.id };
+    }
+  }
+
+  /**
+   * A guardian approves a student: one transaction that records the relationship, a VERIFIED
+   * verification, a CONSENT authority and the guardian's consent to the core purpose.
+   *
+   * Fail closed. Nothing is written unless
+   *  - the student is classified and actually needs guardian consent,
+   *  - the guardian account is not the student's own account,
+   *  - the student's jurisdiction has an ACTIVE, counsel-reviewed policy that accepts `method`, and
+   *  - the core purpose has live consent wording (otherwise ConsentTextUnavailableError).
+   * `method` is only a code: whether it is legally sufficient is the policy's decision, never this code's.
+   */
+  async establishGuardianApproval(
+    input: {
+      studentId: string;
+      guardianAccountId: string;
+      relationshipType: string;
+      method: string;
+      /** Opaque pointer to the evidence held elsewhere (for example the invitation id). */
+      evidenceReference: string;
+    },
+    now: Date = new Date(),
+    tx?: Prisma.TransactionClient,
+  ): Promise<{ consentRecordId: string; guardianAuthorityId: string }> {
+    const run = async (t: Prisma.TransactionClient) => {
+      if (!METHOD_CODE.test(input.method)) {
+        throw new MethodNotAcceptedError('Guardian verification method must be an UPPER_SNAKE_CASE code');
+      }
+      const classification = await t.age_classification.findFirst({
+        where: { student_id: input.studentId, superseded_at: null },
+        select: { requires_guardian_consent: true, jurisdiction_policy_id: true },
+      });
+      if (!classification) throw new PrivacyForbiddenError('The student has not been age-classified');
+      if (!classification.requires_guardian_consent) {
+        throw new PrivacyForbiddenError('This student does not need guardian consent');
+      }
+
+      const own = await t.account_student_access.findFirst({
+        where: {
+          account_id: input.guardianAccountId,
+          student_id: input.studentId,
+          access_kind: 'SELF',
+          revoked_at: null,
+        },
+        select: { id: true },
+      });
+      if (own) throw new PrivacyForbiddenError('A student cannot approve their own account');
+
+      // The rules that count are those in force NOW for the jurisdiction the student was classified under.
+      const classifiedUnder = classification.jurisdiction_policy_id
+        ? await t.jurisdiction_policy.findUnique({
+            where: { id: classification.jurisdiction_policy_id },
+            select: { jurisdiction_code: true },
+          })
+        : null;
+      if (!classifiedUnder) {
+        throw new MethodNotAcceptedError('No jurisdiction policy applies to this student yet');
+      }
+      const policyRow = await t.jurisdiction_policy.findFirst({
+        where: {
+          jurisdiction_code: classifiedUnder.jurisdiction_code,
+          status: 'ACTIVE',
+          legal_review: 'COUNSEL_REVIEWED',
+        },
+        orderBy: { version: 'desc' },
+      });
+      let accepted: string[] = [];
+      if (policyRow) {
+        try {
+          accepted = parsePolicyConfig(policyRow.config).acceptedGuardianVerificationMethods;
+        } catch {
+          accepted = []; // corrupt policy data: fail closed
+        }
+      }
+      if (!policyRow || !accepted.includes(input.method)) {
+        throw new MethodNotAcceptedError(
+          `Guardian verification method ${input.method} is not accepted under the active policy`,
+        );
+      }
+
+      const relationship = await t.guardian_relationship.upsert({
+        where: {
+          guardian_account_id_student_id: {
+            guardian_account_id: input.guardianAccountId,
+            student_id: input.studentId,
+          },
+        },
+        create: {
+          guardian_account_id: input.guardianAccountId,
+          student_id: input.studentId,
+          relationship_type: input.relationshipType,
+          status: 'VERIFIED',
+        },
+        update: { relationship_type: input.relationshipType, status: 'VERIFIED' },
+      });
+      const verification = await t.guardian_verification.create({
+        data: {
+          guardian_relationship_id: relationship.id,
+          method: input.method,
+          status: 'VERIFIED',
+          evidence_reference: input.evidenceReference,
+          jurisdiction_policy_id: policyRow.id,
+          verified_at: now,
+        },
+      });
+      const authority = await t.guardian_authority.create({
+        data: {
+          guardian_relationship_id: relationship.id,
+          guardian_verification_id: verification.id,
+          authority_type: CONSENT_AUTHORITY_TYPE,
+        },
+      });
+
+      const { consentRecordId } = await this.grantConsentIn(
+        t,
+        {
+          studentId: input.studentId,
+          purposeCode: CORE_PURPOSE,
+          capacity: 'GUARDIAN',
+          actorAccountId: input.guardianAccountId,
+          guardianAuthorityId: authority.id,
+        },
+        now,
+      );
+
+      await this.outbox.publish(t, {
+        aggregateType: 'student',
+        aggregateId: input.studentId,
+        eventType: 'privacy.guardian.verified.v1',
+        payload: {
+          studentId: input.studentId,
+          guardianRelationshipId: relationship.id,
+          method: input.method,
+          jurisdictionPolicyId: policyRow.id,
+        },
+        idempotencyKey: `guardian-verified:${verification.id}`,
+      });
+      await t.audit_event.create({
+        data: {
+          actor_account_id: input.guardianAccountId,
+          action: 'privacy.guardian.verified',
+          subject_type: 'guardian_verification',
+          subject_id: verification.id,
+          metadata: { method: input.method, relationshipType: input.relationshipType },
+        },
+      });
+      return { consentRecordId, guardianAuthorityId: authority.id as string };
+    };
+    if (tx) return run(tx);
+    return this.db.client.$transaction(run);
+  }
+
+  /** The students this account currently approves: live guardian grants, newest first. */
+  async listGuardianApprovals(
+    guardianAccountId: string,
+    now: Date = new Date(),
+  ): Promise<Array<{ consentRecordId: string; studentId: string; displayName: string | null; grantedAt: Date }>> {
+    const records = await this.db.client.consent_record.findMany({
+      where: {
+        granted_by_account_id: guardianAccountId,
+        capacity: 'GUARDIAN',
+        purpose: { code: CORE_PURPOSE },
+        withdrawal: null,
+      },
+      orderBy: { granted_at: 'desc' },
+      include: {
+        student: { select: { display_name: true } },
+        authority: { include: { guardian_verification: true } },
+      },
+    });
+    return records
+      .filter((r: (typeof records)[number]) =>
+        r.authority
+          ? isAuthorityValid(
+              {
+                id: r.authority.id,
+                revokedAt: r.authority.revoked_at,
+                verificationStatus: r.authority.guardian_verification.status,
+                verificationExpiresAt: r.authority.guardian_verification.expires_at,
+              },
+              now,
+            )
+          : false,
+      )
+      .map((r: (typeof records)[number]) => ({
+        consentRecordId: r.id as string,
+        studentId: r.student_id as string,
+        displayName: (r.student.display_name ?? null) as string | null,
+        grantedAt: r.granted_at as Date,
+      }));
+  }
+
+  /**
+   * Operator tooling: make sure a consent purpose exists, and add a new version of its wording.
+   * `textReference` points at the versioned text (a path or URL), it is not the text. A new version
+   * retires the previous live one, so grants always cite the wording the person actually saw.
+   */
+  async publishConsentWording(
+    input: { purposeCode: string; description: string; textReference: string },
+    now: Date = new Date(),
+  ): Promise<{ version: number }> {
+    if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(input.purposeCode)) {
+      throw new PrivacyForbiddenError('Purpose code must be UPPER_SNAKE_CASE');
+    }
+    if (input.textReference.trim() === '' || input.textReference.length > 255) {
+      throw new PrivacyForbiddenError('A text reference of 1 to 255 characters is required');
+    }
+    return this.db.client.$transaction(async (tx: Prisma.TransactionClient) => {
+      const purpose = await tx.consent_purpose.upsert({
+        where: { code: input.purposeCode },
+        create: { code: input.purposeCode, description: input.description.slice(0, 500) },
+        update: {},
+      });
+      const latest = await tx.consent_policy_version.findFirst({
+        where: { consent_purpose_id: purpose.id },
+        orderBy: { version: 'desc' },
+        select: { version: true },
+      });
+      const version = (latest?.version ?? 0) + 1;
+      await tx.consent_policy_version.updateMany({
+        where: { consent_purpose_id: purpose.id, retired_at: null },
+        data: { retired_at: now },
+      });
+      await tx.consent_policy_version.create({
+        data: {
+          consent_purpose_id: purpose.id,
+          version,
+          text_reference: input.textReference,
+          effective_from: now,
+        },
+      });
+      await tx.audit_event.create({
+        data: {
+          actor_account_id: null,
+          action: 'privacy.consent_wording.published',
+          subject_type: 'consent_purpose',
+          subject_id: purpose.id,
+          metadata: { purposeCode: input.purposeCode, version },
+        },
+      });
+      return { version };
     });
   }
 

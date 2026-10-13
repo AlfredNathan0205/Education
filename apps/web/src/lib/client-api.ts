@@ -145,3 +145,60 @@ export interface ExamResult {
     options: Array<{ slot: number; text: string; isCorrect: boolean; chosen: boolean }>;
   }>;
 }
+
+export interface GuardianStatus {
+  approvalNeeded: boolean;
+  approved: boolean;
+  pending: { maskedEmail: string; relationshipType: string; expiresAt: string; canResendAt: string } | null;
+}
+
+export interface GuardianPreview {
+  relationshipType: string;
+  expiresAt: string;
+  consent: { version: number; title: string; paragraphs: string[]; draft: boolean };
+}
+
+export interface GuardianApproval {
+  consentRecordId: string;
+  studentId: string;
+  displayName: string | null;
+  grantedAt: string;
+}
+
+export const GUARDIAN_TOKEN_KEY = 'guardian_invite_token';
+
+/** The approval link's token lives only in this tab's sessionStorage (never in a URL or cookie). */
+export function rememberGuardianToken(token: string | null): void {
+  try {
+    if (token) sessionStorage.setItem(GUARDIAN_TOKEN_KEY, token);
+    else sessionStorage.removeItem(GUARDIAN_TOKEN_KEY);
+  } catch {
+    /* storage unavailable: the link still works from the address bar fragment */
+  }
+}
+export function recalledGuardianToken(): string | null {
+  try {
+    return sessionStorage.getItem(GUARDIAN_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export interface CohortOption {
+  curriculumCode: string;
+  gradeCode: string;
+  label: string;
+}
+
+export interface AcademicView {
+  cohortOptions: CohortOption[];
+  grade: CohortOption | null;
+  school: { state: string; name: string; branchName: string | null; awaitingReview: boolean } | null;
+}
+
+export interface SchoolHit {
+  id: string;
+  name: string;
+  city: string | null;
+  branches: Array<{ id: string; name: string }>;
+}

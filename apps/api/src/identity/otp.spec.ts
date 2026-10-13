@@ -1,5 +1,6 @@
 import {
   OTP_LENGTH,
+  OTP_MAX_PER_HOUR,
   OTP_RESEND_COOLDOWN_MS,
   canIssueOtp,
   generateOtpCode,
@@ -8,6 +9,7 @@ import {
   hashSessionToken,
   precheckOtpAttempt,
   verifyOtpCode,
+  withinHourlyOtpLimit,
 } from './otp';
 
 const SECRET = 'unit-test-secret';
@@ -90,5 +92,14 @@ describe('session tokens', () => {
     expect(hashSessionToken(token)).toBe(hashSessionToken(token));
     expect(hashSessionToken(token)).not.toContain(token);
     expect(hashSessionToken(token)).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe('withinHourlyOtpLimit', () => {
+  it('allows up to the cap and refuses at it', () => {
+    expect(withinHourlyOtpLimit(0)).toBe(true);
+    expect(withinHourlyOtpLimit(OTP_MAX_PER_HOUR - 1)).toBe(true);
+    expect(withinHourlyOtpLimit(OTP_MAX_PER_HOUR)).toBe(false);
+    expect(withinHourlyOtpLimit(OTP_MAX_PER_HOUR + 3)).toBe(false);
   });
 });

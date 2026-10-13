@@ -10,5 +10,6 @@ import { StudentService } from './student.service';
   imports: [IdentityModule, PrivacyModule, OutboxModule],
   controllers: [StudentController],
   providers: [StudentService, SessionGuard],
+  exports: [StudentService],
 })
 export class StudentModule {}

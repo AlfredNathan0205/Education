@@ -2,15 +2,20 @@
 
 import Link from 'next/link';
 import { useEffect, useState, type FormEvent } from 'react';
-import { ApiError, bff, type StudentProfile } from '@/lib/client-api';
+import { ApiError, bff, type AcademicView, type SchoolHit, type StudentProfile } from '@/lib/client-api';
 import { profileStep, type ProfileStep } from '@/lib/profile-step';
+import { GuardianRequest } from '@/components/GuardianRequest';
 
-const ORDER: ProfileStep[] = ['DOB', 'NAME', 'READY'];
+const ORDER: ProfileStep[] = ['DOB', 'NAME', 'GRADE', 'SCHOOL', 'READY'];
 
 export function ProfileFlow() {
   const [profile, setProfile] = useState<StudentProfile | null>(null);
+  const [academic, setAcademic] = useState<AcademicView | null>(null);
+  const [skipped, setSkipped] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [value, setValue] = useState('');
+  const [hits, setHits] = useState<SchoolHit[] | null>(null);
+  const [typed, setTyped] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,18 +28,48 @@ export function ProfileFlow() {
       });
   }, []);
 
-  async function submit(e: FormEvent, path: string, body: unknown) {
-    e.preventDefault();
+  // Academic details are only read once the profile is complete enough to collect them.
+  const profileReady = !!profile && profile.ageClassified && !profile.requiresGuardianConsent && !!profile.displayName;
+  useEffect(() => {
+    if (!profileReady || academic) return;
+    bff<AcademicView>('GET', 'students/me/academic')
+      .then(setAcademic)
+      .catch((e) => setLoadError(e instanceof ApiError ? e.message : 'Could not load your details.'));
+  }, [profileReady, academic]);
+
+  async function run<T>(action: () => Promise<T>, onDone: (r: T) => void) {
     setBusy(true);
     setError(null);
     try {
-      setProfile(await bff<StudentProfile>('PUT', path, body));
-      setValue('');
+      onDone(await action());
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong.');
     } finally {
       setBusy(false);
     }
+  }
+
+  function submit(e: FormEvent, path: string, body: unknown) {
+    e.preventDefault();
+    return run(() => bff<StudentProfile>('PUT', path, body), (p) => {
+      setProfile(p);
+      setValue('');
+    });
+  }
+
+  function saveAcademic(method: string, path: string, body?: unknown) {
+    return run(() => bff<AcademicView>(method, path, body), (a) => {
+      setAcademic(a);
+      setValue('');
+      setHits(null);
+      setTyped(false);
+      setSkipped(false);
+    });
+  }
+
+  function search(e: FormEvent) {
+    e.preventDefault();
+    return run(() => bff<SchoolHit[]>('POST', 'students/me/schools/search', { query: value }), setHits);
   }
 
   if (loadError) {
@@ -46,9 +81,11 @@ export function ProfileFlow() {
     );
   }
   if (!profile) return <p className="muted" role="status">Loading…</p>;
+  if (profileReady && !academic) return <p className="muted" role="status">Loading…</p>;
 
-  const step = profileStep(profile);
+  const step = profileStep(profile, academic, skipped);
   const idx = Math.max(0, ORDER.indexOf(step === 'GUARDIAN_NEEDED' ? 'NAME' : step));
+  const errorBox = <div role="alert" aria-live="polite">{error && <p className="error">{error}</p>}</div>;
 
   return (
     <>
@@ -66,20 +103,13 @@ export function ProfileFlow() {
             <label htmlFor="dob">Date of birth</label>
             <input id="dob" type="date" required value={value} onChange={(e) => setValue(e.target.value)} max={new Date().toISOString().slice(0, 10)} />
           </div>
-          <div role="alert" aria-live="polite">{error && <p className="error">{error}</p>}</div>
+          {errorBox}
           <button className="btn" type="submit" disabled={busy || value === ''}>{busy ? 'Saving…' : 'Continue'}</button>
         </form>
       )}
 
       {step === 'GUARDIAN_NEEDED' && (
-        <section className="card" aria-labelledby="g">
-          <h1 id="g">A parent or guardian needs to approve first</h1>
-          <p>To protect students, we need a parent or guardian to approve your account before we ask for anything else.</p>
-          <p className="muted" style={{ marginBottom: 0 }}>
-            Guardian approval is being set up and is not available yet. Your account is saved, so you can come back and sign in with the same {''}
-            email or number later.
-          </p>
-        </section>
+        <GuardianRequest onApproved={() => void bff<StudentProfile>('GET', 'students/me').then(setProfile).catch(() => undefined)} />
       )}
 
       {step === 'NAME' && (
@@ -89,18 +119,98 @@ export function ProfileFlow() {
             <label htmlFor="name">Your name</label>
             <input id="name" type="text" autoComplete="given-name" maxLength={60} required value={value} onChange={(e) => setValue(e.target.value)} />
           </div>
-          <div role="alert" aria-live="polite">{error && <p className="error">{error}</p>}</div>
+          {errorBox}
           <button className="btn" type="submit" disabled={busy || value.trim() === ''}>{busy ? 'Saving…' : 'Continue'}</button>
         </form>
+      )}
+
+      {step === 'GRADE' && academic && (
+        <section className="card" aria-labelledby="gr">
+          <h1 id="gr">What are you studying?</h1>
+          <p className="muted">We are starting with these. Choose the one that matches your class.</p>
+          {academic.cohortOptions.map((o) => (
+            <button
+              key={`${o.curriculumCode}-${o.gradeCode}`}
+              className="btn"
+              style={{ marginBottom: 8 }}
+              disabled={busy}
+              onClick={() => saveAcademic('PUT', 'students/me/grade', { curriculumCode: o.curriculumCode, gradeCode: o.gradeCode })}
+            >
+              {o.label}
+            </button>
+          ))}
+          {errorBox}
+        </section>
+      )}
+
+      {step === 'SCHOOL' && (
+        <section className="card" aria-labelledby="sc">
+          <h1 id="sc">Which school are you at?</h1>
+          <p className="muted">Optional. This is just so we can tailor things for you. It does not give your school access to anything.</p>
+
+          {!typed ? (
+            <>
+              <form onSubmit={search} noValidate>
+                <div className="field">
+                  <label htmlFor="q">Search for your school</label>
+                  <input id="q" type="text" maxLength={100} value={value} onChange={(e) => setValue(e.target.value)} />
+                </div>
+                <button className="btn" type="submit" disabled={busy || value.trim().length < 2}>{busy ? 'Searching…' : 'Search'}</button>
+              </form>
+              {hits && hits.length === 0 && <p className="muted">No match yet.</p>}
+              {hits && hits.map((h) => (
+                <div key={h.id} style={{ marginTop: 8 }}>
+                  <button className="btn secondary" disabled={busy} onClick={() => saveAcademic('PUT', 'students/me/school', { schoolId: h.id })}>
+                    {h.name}{h.city ? `, ${h.city}` : ''}
+                  </button>
+                </div>
+              ))}
+              <p style={{ marginTop: 16 }}>
+                <button className="btn secondary" onClick={() => { setTyped(true); setHits(null); setValue(''); }}>My school is not listed</button>
+              </p>
+            </>
+          ) : (
+            <form onSubmit={(e) => { e.preventDefault(); void saveAcademic('PUT', 'students/me/school', { schoolName: value }); }} noValidate>
+              <div className="field">
+                <label htmlFor="sn">Your school's name</label>
+                <input id="sn" type="text" maxLength={200} value={value} onChange={(e) => setValue(e.target.value)} />
+              </div>
+              <p className="muted">We will check it before it is shown as confirmed.</p>
+              <button className="btn" type="submit" disabled={busy || value.trim().length < 2}>{busy ? 'Saving…' : 'Save'}</button>
+              <button className="btn secondary" type="button" onClick={() => { setTyped(false); setValue(''); }}>Back to search</button>
+            </form>
+          )}
+          {errorBox}
+          <p style={{ marginTop: 16, marginBottom: 0 }}>
+            <button className="btn secondary" onClick={() => setSkipped(true)}>Skip for now</button>
+          </p>
+        </section>
       )}
 
       {step === 'READY' && (
         <section className="card" aria-labelledby="r">
           <h1 id="r">Welcome, {profile.displayName}.</h1>
           <p className="muted">
-            Your profile is set. Choosing your grade and school comes next and is not built yet.
+            {academic?.grade?.label ?? ''}
+            {academic?.school
+              ? ` · ${academic.school.name}${academic.school.awaitingReview ? ' (we will check this)' : ''}`
+              : ''}
           </p>
-          <Link className="btn" href="/tests">Go to tests</Link>
+          <p className="muted">Your profile is set.</p>
+          <Link className="btn" href="/tests">Go to tests</Link>{' '}
+          <Link className="btn secondary" href="/profile/chapters">Choose my chapters</Link>
+          {errorBox}
+          {academic?.school ? (
+            <p>
+              <button className="btn secondary" disabled={busy} onClick={() => saveAcademic('POST', 'students/me/school/leave')}>
+                I have left this school
+              </button>
+            </p>
+          ) : (
+            <p>
+              <button className="btn secondary" onClick={() => setSkipped(false)}>Add my school</button>
+            </p>
+          )}
         </section>
       )}
 
