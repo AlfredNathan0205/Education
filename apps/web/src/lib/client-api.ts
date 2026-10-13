@@ -59,7 +59,8 @@ export interface QuestionRow {
   objectivePath: string;
   stem: string;
   difficulty: 'EASY' | 'MEDIUM' | 'HARD';
-  state: 'DRAFT' | 'IN_REVIEW' | 'CHANGES_REQUIRED' | 'APPROVED' | 'RETIRED' | 'SUPERSEDED';
+  cognitive: 'C1' | 'C2' | 'C3' | 'C4' | null;
+  state: 'DRAFT' | 'IN_REVIEW' | 'CHANGES_REQUIRED' | 'APPROVED' | 'RETIRED' | 'SUPERSEDED' | 'QUARANTINED';
   revision: number;
   origin: 'HUMAN' | 'AI_DRAFT';
 }
@@ -70,8 +71,26 @@ export interface QuestionDetail extends QuestionRow {
   reviewNote: string | null;
   answerVerified: boolean;
   aiSource: string | null;
-  history: Array<{ from: string | null; to: string; actorKind: string; note: string | null; at: string }>;
+  validation: { validatorVersion: string; passed: boolean; findings: Array<{ code: string; severity: 'CRITICAL' | 'MAJOR' | 'MINOR'; message: string }>; at: string } | null;
+  history: Array<{ from: string | null; to: string; actorKind: string; reasonCode: string | null; note: string | null; at: string }>;
 }
+
+/** Same list as the server (apps/api/src/question/reason-codes.ts); the server rejects anything else. */
+export const REASON_CODE_LABELS: Record<string, string> = {
+  ANSWER_WRONG: 'The answer key is wrong',
+  ANSWER_AMBIGUOUS: 'More than one answer could be right',
+  OFF_CURRICULUM: 'Outside the curriculum',
+  EXPLANATION_WRONG: 'The explanation is wrong',
+  EXPLANATION_WEAK: 'The explanation is weak',
+  DISTRACTOR_WEAK: 'The wrong options are weak',
+  DIFFICULTY_MISMATCH: 'Difficulty does not match',
+  COGNITIVE_MISMATCH: 'Cognitive level does not match',
+  DUPLICATE_OR_NEAR_DUPLICATE: 'Duplicate or near duplicate',
+  LANGUAGE_OR_READABILITY: 'Language or readability',
+  UNSAFE_OR_INAPPROPRIATE: 'Unsafe or inappropriate',
+  LIVE_PERFORMANCE_SIGNAL: 'Students\' answers suggest a problem',
+  OTHER: 'Other',
+};
 
 export interface QuestionUploadResult {
   ok: boolean;

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
 import {
+  REASON_CODE_LABELS,
   ApiError,
   bff,
   type AdminUnit,
@@ -18,6 +19,7 @@ const STATE_LABEL: Record<QuestionRow['state'], string> = {
   APPROVED: 'Approved',
   RETIRED: 'Retired',
   SUPERSEDED: 'Replaced',
+  QUARANTINED: 'Quarantined',
 };
 const FILTERS: Array<{ key: 'ALL' | QuestionRow['state']; label: string }> = [
   { key: 'ALL', label: 'All' },
@@ -25,6 +27,7 @@ const FILTERS: Array<{ key: 'ALL' | QuestionRow['state']; label: string }> = [
   { key: 'IN_REVIEW', label: 'In review' },
   { key: 'CHANGES_REQUIRED', label: 'Sent back' },
   { key: 'APPROVED', label: 'Approved' },
+  { key: 'QUARANTINED', label: 'Quarantined' },
 ];
 
 /** One entry per subject (the newest revision), so a corrected curriculum does not list the subject twice. */
@@ -48,6 +51,7 @@ export function QuestionBank() {
   const [preview, setPreview] = useState<QuestionUploadResult | null>(null);
   const [detail, setDetail] = useState<QuestionDetail | null>(null);
   const [note, setNote] = useState('');
+  const [reason, setReason] = useState('');
   const [verified, setVerified] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -123,12 +127,13 @@ export function QuestionBank() {
 
   async function open(row: QuestionRow) {
     setNote('');
+    setReason('');
     setVerified(false);
     setMessage(null);
     await guarded(async () => setDetail(await bff<QuestionDetail>('GET', `admin/questions/revisions/${row.revisionId}`)));
   }
 
-  const act = (action: 'submit' | 'approve' | 'request-changes' | 'retire', body?: unknown, done?: string) =>
+  const act = (action: 'submit' | 'approve' | 'request-changes' | 'retire' | 'quarantine' | 'restore', body?: unknown, done?: string) =>
     guarded(async () => {
       if (!detail) return;
       await bff('POST', `admin/questions/revisions/${detail.revisionId}/${action}`, body);
@@ -136,6 +141,7 @@ export function QuestionBank() {
       const fresh = await bff<QuestionDetail>('GET', `admin/questions/revisions/${detail.revisionId}`);
       setDetail(fresh);
       setNote('');
+      setReason('');
       setVerified(false);
       await loadRows(unitId);
     });
@@ -226,7 +232,7 @@ export function QuestionBank() {
                   <button type="button" className="btn secondary" onClick={() => open(r)} aria-label={`Open question ${r.code}`}>
                     {r.code}
                   </button>{' '}
-                  <span className="muted">{STATE_LABEL[r.state]} · {r.difficulty.toLowerCase()} · v{r.revision}{r.origin === 'AI_DRAFT' ? ' · AI draft' : ''}</span>
+                  <span className="muted">{STATE_LABEL[r.state]} · {r.difficulty.toLowerCase()} · {r.cognitive ?? 'no cognitive level'} · v{r.revision}{r.origin === 'AI_DRAFT' ? ' · AI draft' : ''}</span>
                   <div>{r.stem}</div>
                   <div className="muted">{r.objectivePath}</div>
                 </li>
@@ -245,7 +251,22 @@ export function QuestionBank() {
               <li key={o.label}>{o.text}{o.isCorrect ? <strong> ✔ correct</strong> : null}</li>
             ))}
           </ol>
+          <p className="muted">Difficulty {detail.difficulty.toLowerCase()} · cognitive level {detail.cognitive ?? 'not set (needed before review)'}</p>
           {detail.explanation && <p className="muted">Explanation: {detail.explanation}</p>}
+          {detail.validation && (
+            <div aria-label="Automatic checks">
+              <p className="muted">
+                Automatic checks ({detail.validation.validatorVersion}): {detail.validation.passed ? 'passed' : 'did not pass'}. These only show the question is well formed; they do not check that the answer is right.
+              </p>
+              {detail.validation.findings.length > 0 && (
+                <ul>
+                  {detail.validation.findings.map((f, n) => (
+                    <li key={n} className="muted">{f.severity.toLowerCase()}: {f.message}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
           {detail.aiSource && <p className="muted">AI draft ({detail.aiSource}). Its answer key has not been checked by a person.</p>}
           {detail.reviewNote && <p className="muted">Reviewer note: {detail.reviewNote}</p>}
 
@@ -262,21 +283,61 @@ export function QuestionBank() {
                 </label>
               </div>
               <div className="field">
+                <label htmlFor="reason">Reason</label>
+                <select id="reason" value={reason} onChange={(e) => setReason(e.target.value)}>
+                  <option value="">Choose a reason</option>
+                  {Object.entries(REASON_CODE_LABELS).map(([k, v]) => (
+                    <option key={k} value={k}>{v}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
                 <label htmlFor="note">Note (needed to send back)</label>
                 <input id="note" value={note} onChange={(e) => setNote(e.target.value)} />
               </div>
               <button className="btn" disabled={busy || !verified} onClick={() => act('approve', { answerVerified: true, note: note || undefined }, 'Approved.')}>Approve</button>{' '}
-              <button className="btn secondary" disabled={busy || note.trim().length < 5} onClick={() => act('request-changes', { note }, 'Sent back to the editor.')}>Send back</button>
+              <button className="btn secondary" disabled={busy || !reason || note.trim().length < 5} onClick={() => act('request-changes', { reasonCode: reason, note }, 'Sent back to the editor.')}>Send back</button>
             </>
           )}
 
           {detail.state === 'APPROVED' && (
             <>
               <div className="field">
-                <label htmlFor="note2">Reason for retiring</label>
+                <label htmlFor="reason2">Reason</label>
+                <select id="reason2" value={reason} onChange={(e) => setReason(e.target.value)}>
+                  <option value="">Choose a reason</option>
+                  {Object.entries(REASON_CODE_LABELS).map(([k, v]) => (
+                    <option key={k} value={k}>{v}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="note2">Note (what you found, at least 5 characters)</label>
                 <input id="note2" value={note} onChange={(e) => setNote(e.target.value)} />
               </div>
-              <button className="btn secondary" disabled={busy || note.trim().length < 5} onClick={() => act('retire', { note }, 'Retired.')}>Retire this question</button>
+              <button className="btn secondary" disabled={busy || !reason || note.trim().length < 5} onClick={() => act('quarantine', { reasonCode: reason, note }, 'Quarantined: it will not appear in any new test.')}>Quarantine (stop using it now)</button>{' '}
+              <button className="btn secondary" disabled={busy || !reason || note.trim().length < 5} onClick={() => act('retire', { reasonCode: reason, note }, 'Retired.')}>Retire this question</button>
+            </>
+          )}
+
+          {detail.state === 'QUARANTINED' && (
+            <>
+              <p className="muted">This question is not used in any new test. Only an approver can bring it back; anyone with review rights can retire it.</p>
+              <div className="field">
+                <label htmlFor="reason3">Reason</label>
+                <select id="reason3" value={reason} onChange={(e) => setReason(e.target.value)}>
+                  <option value="">Choose a reason</option>
+                  {Object.entries(REASON_CODE_LABELS).map(([k, v]) => (
+                    <option key={k} value={k}>{v}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="note3">Note (what was checked, at least 5 characters)</label>
+                <input id="note3" value={note} onChange={(e) => setNote(e.target.value)} />
+              </div>
+              <button className="btn" disabled={busy || !reason || note.trim().length < 5} onClick={() => act('restore', { reasonCode: reason, note }, 'Restored.')}>Restore (approvers only)</button>{' '}
+              <button className="btn secondary" disabled={busy || !reason || note.trim().length < 5} onClick={() => act('retire', { reasonCode: reason, note }, 'Retired.')}>Retire this question</button>
             </>
           )}
 
@@ -284,7 +345,7 @@ export function QuestionBank() {
           <ul>
             {detail.history.map((h, n) => (
               <li key={n} className="muted">
-                {new Date(h.at).toLocaleString()} · {h.actorKind.toLowerCase()} · {h.from ? `${h.from} → ` : ''}{h.to}{h.note ? ` · ${h.note}` : ''}
+                {new Date(h.at).toLocaleString()} · {h.actorKind.toLowerCase()} · {h.from ? `${h.from} → ` : ''}{h.to}{h.reasonCode ? ` · ${REASON_CODE_LABELS[h.reasonCode] ?? h.reasonCode}` : ''}{h.note ? ` · ${h.note}` : ''}
               </li>
             ))}
           </ul>

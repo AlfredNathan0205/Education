@@ -16,6 +16,7 @@ function make(roles: string[], planIssues: { where: string; message: string }[] 
     transition: jest.fn().mockResolvedValue('IN_REVIEW'),
     list: jest.fn().mockResolvedValue([]),
     detail: jest.fn().mockResolvedValue({}),
+    approvedRevisionIdsFromSource: jest.fn().mockResolvedValue([]),
   };
   const curriculum = { listSubjectVersions: jest.fn().mockResolvedValue([]) };
   const authz = { curriculumRolesFor: jest.fn().mockResolvedValue(roles) };
@@ -50,8 +51,8 @@ describe('QuestionBankService: who may do what', () => {
     const { service } = make(['EDITOR']);
     await expect(service.submit('a', 'r')).resolves.toEqual({ state: 'IN_REVIEW' });
     await expect(service.approve('a', 'r', { answerVerified: true })).rejects.toBeInstanceOf(QuestionForbiddenError);
-    await expect(service.requestChanges('a', 'r', 'needs work')).rejects.toBeInstanceOf(QuestionForbiddenError);
-    await expect(service.retire('a', 'r', 'old syllabus')).rejects.toBeInstanceOf(QuestionForbiddenError);
+    await expect(service.requestChanges('a', 'r', { reasonCode: 'OTHER', note: 'needs work' })).rejects.toBeInstanceOf(QuestionForbiddenError);
+    await expect(service.retire('a', 'r', { reasonCode: 'OFF_CURRICULUM', note: 'old syllabus' })).rejects.toBeInstanceOf(QuestionForbiddenError);
   });
 });
 
@@ -81,5 +82,38 @@ describe('QuestionBankService: upload', () => {
     const { service } = make(['EDITOR']);
     const r = await service.preview('a', 'u', 'json', '{ not json');
     expect(r).toMatchObject({ ok: false, issues: [{ where: 'file', message: expect.stringMatching(/not valid JSON/) }] });
+  });
+});
+
+describe('QuestionBankService: quarantine', () => {
+  const why = { reasonCode: 'ANSWER_WRONG', note: 'The key is wrong.' };
+
+  it('a reviewer can quarantine, an editor and a student cannot', async () => {
+    const { service, questions } = make(['REVIEWER']);
+    await service.quarantine('a', 'r', why);
+    expect(questions.transition).toHaveBeenCalledWith('r', 'QUARANTINED', expect.objectContaining({ role: 'REVIEWER' }), why);
+    await expect(make(['EDITOR']).service.quarantine('a', 'r', why)).rejects.toBeInstanceOf(QuestionForbiddenError);
+    await expect(make([]).service.quarantine('a', 'r', why)).rejects.toBeInstanceOf(QuestionForbiddenError);
+  });
+
+  it('restore goes through the transition rules as APPROVED', async () => {
+    const { service, questions } = make(['APPROVER']);
+    await service.restore('a', 'r', why);
+    expect(questions.transition).toHaveBeenCalledWith('r', 'APPROVED', expect.objectContaining({ role: 'APPROVER' }), why);
+  });
+
+  it('a batch quarantines each approved question from the source and reports failures without stopping', async () => {
+    const { service, questions } = make(['REVIEWER']);
+    questions.approvedRevisionIdsFromSource.mockResolvedValue(['r1', 'r2', 'r3']);
+    questions.transition.mockResolvedValueOnce('QUARANTINED').mockRejectedValueOnce(new Error('changed state')).mockResolvedValueOnce('QUARANTINED');
+    const out = await service.quarantineBatch('a', 'operator x; file sha256 abc', why);
+    expect(out).toEqual({ quarantined: 2, failed: [{ revisionId: 'r2', message: 'changed state' }] });
+    expect(questions.approvedRevisionIdsFromSource).toHaveBeenCalledWith('operator x; file sha256 abc');
+  });
+
+  it('a batch for a non-reviewer touches nothing', async () => {
+    const { service, questions } = make(['EDITOR']);
+    await expect(service.quarantineBatch('a', 'src', why)).rejects.toBeInstanceOf(QuestionForbiddenError);
+    expect(questions.approvedRevisionIdsFromSource).not.toHaveBeenCalled();
   });
 });

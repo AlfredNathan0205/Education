@@ -17,13 +17,14 @@ import {
 import { SessionGuard, type AuthenticatedRequest } from '../student/session.guard';
 import type { UnitSummary } from '../curriculum/curriculum.service';
 import { QuestionBankService, type QuestionImportResult } from './question-bank.service';
+import { isReasonCode } from './reason-codes';
 import { QuestionTransitionError, type QuestionState } from './question-domain';
 import { QuestionConflictError, QuestionForbiddenError, QuestionNotFoundError } from './question.errors';
 import type { QuestionDetail, QuestionRow } from './question.service';
 import type { QuestionFormat } from './import/question-import';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const STATES: readonly QuestionState[] = ['DRAFT', 'IN_REVIEW', 'CHANGES_REQUIRED', 'APPROVED', 'RETIRED', 'SUPERSEDED'];
+const STATES: readonly QuestionState[] = ['DRAFT', 'IN_REVIEW', 'CHANGES_REQUIRED', 'APPROVED', 'RETIRED', 'SUPERSEDED', 'QUARANTINED'];
 
 function id(raw: string, what: string): string {
   if (!UUID.test(raw)) throw new BadRequestException(`${what} id is not valid`);
@@ -42,10 +43,12 @@ export function parseQuestionUpload(raw: unknown): { format: QuestionFormat; tex
   return { format: b.format, text: b.text };
 }
 
-function note(raw: unknown): string {
+/** A structured reason (from the list) and a free-text note, both required. */
+export function decision(raw: unknown): { reasonCode: string; note: string } {
   const b = obj(raw);
+  if (!isReasonCode(b.reasonCode)) throw new BadRequestException('reasonCode must be one of the listed reason codes');
   if (typeof b.note !== 'string') throw new BadRequestException('note must be text');
-  return b.note;
+  return { reasonCode: b.reasonCode, note: b.note };
 }
 
 /**
@@ -106,13 +109,39 @@ export class QuestionController {
   @Post('revisions/:id/request-changes')
   @HttpCode(200)
   requestChanges(@Req() req: AuthenticatedRequest, @Param('id') rev: string, @Body() raw: unknown) {
-    return this.map(() => this.bank.requestChanges(req.accountId as string, id(rev, 'question'), note(raw)));
+    const d = decision(raw);
+    return this.map(() => this.bank.requestChanges(req.accountId as string, id(rev, 'question'), d));
   }
 
   @Post('revisions/:id/retire')
   @HttpCode(200)
   retire(@Req() req: AuthenticatedRequest, @Param('id') rev: string, @Body() raw: unknown) {
-    return this.map(() => this.bank.retire(req.accountId as string, id(rev, 'question'), note(raw)));
+    const d = decision(raw);
+    return this.map(() => this.bank.retire(req.accountId as string, id(rev, 'question'), d));
+  }
+
+  @Post('revisions/:id/quarantine')
+  @HttpCode(200)
+  quarantine(@Req() req: AuthenticatedRequest, @Param('id') rev: string, @Body() raw: unknown) {
+    const d = decision(raw);
+    return this.map(() => this.bank.quarantine(req.accountId as string, id(rev, 'question'), d));
+  }
+
+  @Post('revisions/:id/restore')
+  @HttpCode(200)
+  restore(@Req() req: AuthenticatedRequest, @Param('id') rev: string, @Body() raw: unknown) {
+    const d = decision(raw);
+    return this.map(() => this.bank.restore(req.accountId as string, id(rev, 'question'), d));
+  }
+
+  /** Quarantine every approved question from one AI import file, identified by the hash shown on each question. */
+  @Post('batches/quarantine')
+  @HttpCode(200)
+  quarantineBatch(@Req() req: AuthenticatedRequest, @Body() raw: unknown) {
+    const b = obj(raw);
+    if (typeof b.aiSource !== 'string' || b.aiSource.length < 1 || b.aiSource.length > 255 || /[\u0000-\u001f]/.test(b.aiSource)) throw new BadRequestException('aiSource is not valid');
+    const d = decision(raw);
+    return this.map(() => this.bank.quarantineBatch(req.accountId as string, b.aiSource as string, d));
   }
 
   private async map<T>(fn: () => Promise<T>): Promise<T> {

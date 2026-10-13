@@ -731,6 +731,21 @@ enum question_state {
   APPROVED
   RETIRED
   SUPERSEDED
+  /// Pulled from serving after a defect or a live-performance signal. Kept as evidence; never assembled.
+  QUARANTINED
+}
+
+/// Cognitive level C1 to C4 (spec: cognitive C1-C4). The meaning of each level is a curriculum decision, not stored here.
+enum question_cognitive {
+  C1
+  C2
+  C3
+  C4
+}
+
+/// Only multiple choice is built. Other types arrive with their own runner and validation.
+enum question_type {
+  MCQ
 }
 
 enum question_difficulty {
@@ -770,6 +785,9 @@ model question_revision {
   stem          String              @db.VarChar(2000)
   explanation   String?             @db.VarChar(2000)
   difficulty    question_difficulty
+  /// Null on questions written before tagging existed. Required to submit a question for review.
+  cognitive     question_cognitive?
+  question_type question_type       @default(MCQ)
   /// SHA-256 of the normalised stem, to refuse the same question twice in a unit.
   stem_hash     String              @db.VarChar(64)
   /// Account ids are stored without a foreign key, as in curriculum governance. Null for the AI.
@@ -789,6 +807,7 @@ model question_revision {
   question question          @relation(fields: [question_id], references: [id])
   options  question_option[]
   events   question_event[]
+  validation_runs question_validation_run[]
   instance_items assessment_instance_question[]
 
   @@unique([question_id, revision])
@@ -817,6 +836,8 @@ model question_event {
   actor_kind  String          @db.VarChar(16)
   actor_account_id String?    @db.Uuid
   note        String?         @db.VarChar(1000)
+  /// Structured reason (registry in code). Required for sending back, retiring and quarantining.
+  reason_code String?         @db.VarChar(32)
   occurred_at DateTime        @default(now())
 
   revision question_revision @relation(fields: [revision_id], references: [id], onDelete: Cascade)
@@ -1205,4 +1226,22 @@ model student_chapter_selection {
   student student @relation(fields: [student_id], references: [id])
 
   @@unique([student_id, subject_code, chapter_code])
+}
+
+/// One run of the deterministic checks against one exact revision. Append-only evidence.
+model question_validation_run {
+  id                String   @id @default(uuid()) @db.Uuid
+  revision_id       String   @db.Uuid
+  /// Version of the check set, so old runs stay interpretable when the checks change.
+  validator_version String   @db.VarChar(32)
+  passed            Boolean
+  critical_count    Int
+  major_count       Int
+  minor_count       Int
+  findings          Json
+  created_at        DateTime @default(now())
+
+  revision question_revision @relation(fields: [revision_id], references: [id], onDelete: Cascade)
+
+  @@index([revision_id, created_at])
 }

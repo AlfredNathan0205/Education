@@ -4,11 +4,13 @@
  */
 import { parseCsv } from '../../curriculum/import/content-import';
 import {
+  COGNITIVE_LEVELS,
   DIFFICULTIES,
   LIMITS,
   OPTION_COUNT,
   OPTION_LABELS,
   validateQuestionDraft,
+  type QuestionCognitive,
   type QuestionDifficulty,
   type QuestionDraft,
 } from '../question-domain';
@@ -64,6 +66,16 @@ function difficulty(raw: string, where: string, issues: QuestionIssue[]): Questi
   return v;
 }
 
+function cognitive(raw: string, where: string, issues: QuestionIssue[]): QuestionCognitive | null {
+  if (raw.trim() === '') return null;
+  const v = raw.trim().toUpperCase() as QuestionCognitive;
+  if (!COGNITIVE_LEVELS.includes(v)) {
+    issues.push({ where, message: `cognitive must be C1, C2, C3 or C4 (got "${raw}")` });
+    return null;
+  }
+  return v;
+}
+
 function finish(drafts: { where: string; draft: QuestionDraft }[], issues: QuestionIssue[]): void {
   const codes = new Map<string, string>();
   const stems = new Map<string, string>();
@@ -80,7 +92,7 @@ function finish(drafts: { where: string; draft: QuestionDraft }[], issues: Quest
 
 const CSV_HEADERS = [
   'question_code', 'objective_code', 'stem', 'option_a', 'option_b', 'option_c', 'option_d',
-  'correct', 'difficulty', 'explanation',
+  'correct', 'difficulty', 'cognitive', 'explanation',
 ] as const;
 
 export function parseQuestionsCsv(src: string): ParsedQuestions {
@@ -89,7 +101,7 @@ export function parseQuestionsCsv(src: string): ParsedQuestions {
   if (rows.length < 2) throw new QuestionFormatError('the file needs a header row and at least one question');
   if (rows.length - 1 > MAX_QUESTIONS) throw new QuestionFormatError(`more than ${MAX_QUESTIONS} questions in one file`);
   const header = rows[0].map((h) => h.trim().toLowerCase());
-  const required = CSV_HEADERS.filter((h) => h !== 'explanation');
+  const required = CSV_HEADERS.filter((h) => h !== 'explanation' && h !== 'cognitive');
   const missing = required.filter((h) => !header.includes(h));
   if (missing.length) throw new QuestionFormatError(`missing column(s): ${missing.join(', ')}`);
   const col = (h: string) => header.indexOf(h);
@@ -108,6 +120,7 @@ export function parseQuestionsCsv(src: string): ParsedQuestions {
         options: ['option_a', 'option_b', 'option_c', 'option_d'].map(cell),
         correctIndex: correctIndex(cell('correct'), where, issues),
         difficulty: difficulty(cell('difficulty'), where, issues),
+        cognitive: cognitive(cell('cognitive'), where, issues),
         explanation: explanation === '' ? null : explanation,
       },
     });
@@ -151,6 +164,7 @@ export function parseQuestionsJson(src: string): ParsedQuestions {
         options,
         correctIndex: correctIndex(text(o.correct, where, 'correct', issues), where, issues),
         difficulty: difficulty(text(o.difficulty, where, 'difficulty', issues), where, issues),
+        cognitive: cognitive(text(o.cognitive, where, 'cognitive', issues), where, issues),
         explanation: explanation === '' ? null : explanation,
       },
     });

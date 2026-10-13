@@ -21,6 +21,7 @@ function makeDb(tree: any[] = TREE) {
   const revisions: any[] = [];
   const options: any[] = [];
   const events: any[] = [];
+  const runs: any[] = [];
   let currentTree = tree;
 
   const withRevs = (q: any, take?: number) => ({
@@ -63,7 +64,7 @@ function makeDb(tree: any[] = TREE) {
       findUnique: jest.fn(async ({ where }: any) => {
         const r = revisions.find((x) => x.id === where.id);
         if (!r) return null;
-        return { ...r, options: options.filter((o) => o.revision_id === r.id), question: questions.find((q) => q.id === r.question_id), events: events.filter((e) => e.revision_id === r.id) };
+        return { ...r, options: options.filter((o) => o.revision_id === r.id), question: questions.find((q) => q.id === r.question_id), events: events.filter((e) => e.revision_id === r.id), validation_runs: runs.filter((x) => x.revision_id === r.id).slice(-1) };
       }),
       create: jest.fn(async ({ data }: any) => {
         const { options: opts, ...rest } = data;
@@ -73,6 +74,11 @@ function makeDb(tree: any[] = TREE) {
         return { id: r.id };
       }),
       update: jest.fn(async ({ where, data }: any) => Object.assign(revisions.find((r) => r.id === where.id), data)),
+      count: jest.fn(async ({ where }: any) => revisions.filter((r) => r.question_id === where.question_id && r.state === where.state && r.id !== where.id.not).length),
+    },
+    question_validation_run: {
+      create: jest.fn(async ({ data }: any) => runs.push({ created_at: new Date(), ...data })),
+      findFirst: jest.fn(async ({ where }: any) => [...runs].reverse().find((x) => x.revision_id === where.revision_id) ?? null),
     },
     question_option: {
       deleteMany: jest.fn(async ({ where }: any) => {
@@ -84,12 +90,12 @@ function makeDb(tree: any[] = TREE) {
   };
   client.$transaction = jest.fn((cb: any) => cb(client));
   const service = new QuestionService({ client } as any);
-  return { client, service, questions, revisions, options, events, setTree: (t: any[]) => (currentTree = t) };
+  return { client, service, questions, revisions, options, events, runs, setTree: (t: any[]) => (currentTree = t) };
 }
 
-const HEAD = 'question_code,objective_code,stem,option_a,option_b,option_c,option_d,correct,difficulty,explanation';
+const HEAD = 'question_code,objective_code,stem,option_a,option_b,option_c,option_d,correct,difficulty,cognitive,explanation';
 const csv = (...rows: string[]) => parseQuestionsCsv([HEAD, ...rows].join('\n'));
-const r = (code: string, obj = 'O1', stem = `Which unit measures quantity ${code}?`, correct = 'B') => `${code},${obj},${stem},Volt,Ampere,Ohm,Watt,${correct},EASY,`;
+const r = (code: string, obj = 'O1', stem = `Which unit measures quantity ${code}?`, correct = 'B') => `${code},${obj},${stem},Volt,Ampere,Ohm,Watt,${correct},EASY,C1,Because the ampere measures current.`;
 const editor: QuestionActor = { kind: 'HUMAN', accountId: 'acc-editor', role: 'EDITOR' };
 const ctx = (actor: QuestionActor = editor) => ({ actor, origin: 'HUMAN' as const });
 
@@ -267,8 +273,9 @@ describe('QuestionService.transition', () => {
   it('sends back and retires with a note, and unknown ids are not found', async () => {
     const db = makeDb();
     const rev = await inReview(db);
-    await db.service.transition(rev.id, 'CHANGES_REQUIRED', reviewer, { note: 'Option C is also correct.' });
+    await db.service.transition(rev.id, 'CHANGES_REQUIRED', reviewer, { note: 'Option C is also correct.', reasonCode: 'ANSWER_AMBIGUOUS' });
     expect(rev).toMatchObject({ state: 'CHANGES_REQUIRED', review_note: 'Option C is also correct.' });
+    expect(db.events[db.events.length - 1]).toMatchObject({ to_state: 'CHANGES_REQUIRED', reason_code: 'ANSWER_AMBIGUOUS' });
     await expect(db.service.transition('nope', 'IN_REVIEW', editor, {})).rejects.toBeInstanceOf(QuestionNotFoundError);
   });
 });
@@ -282,5 +289,80 @@ describe('QuestionService.list / detail', () => {
     const d = await db.service.detail(db.revisions[0].id);
     expect(d.options.map((o) => [o.label, o.isCorrect])).toEqual([['A', false], ['B', true], ['C', false], ['D', false]]);
     expect(d.history[0].to).toBe('DRAFT');
+  });
+});
+
+describe('QuestionService: governance', () => {
+  const approver: QuestionActor = { kind: 'HUMAN', accountId: 'acc-appr', role: 'APPROVER' };
+  const reviewer2: QuestionActor = { kind: 'HUMAN', accountId: 'acc-rev', role: 'REVIEWER' };
+
+  it('refuses to submit without a cognitive level and stores nothing', async () => {
+    const db = makeDb();
+    const noCog = parseQuestionsCsv(['question_code,objective_code,stem,option_a,option_b,option_c,option_d,correct,difficulty', 'Q1,O1,Which unit measures electric current?,Volt,Ampere,Ohm,Watt,B,EASY'].join('\n'));
+    await db.service.apply(UNIT, await db.service.plan(UNIT, noCog), ctx());
+    await expect(db.service.transition(db.revisions[0].id, 'IN_REVIEW', editor, {})).rejects.toThrow(/cognitive level/);
+    expect(db.runs).toHaveLength(0);
+    expect(db.revisions[0].state).toBe('DRAFT');
+  });
+
+  it('records the deterministic run on submit and shows it with the question', async () => {
+    const db = makeDb();
+    const rev = await seedApproved(db);
+    expect(db.runs).toHaveLength(1);
+    expect(db.runs[0]).toMatchObject({ revision_id: rev.id, passed: true, validator_version: 'det-1', critical_count: 0 });
+    const d = await db.service.detail(rev.id);
+    expect(d.cognitive).toBe('C1');
+    expect(d.validation).toMatchObject({ passed: true, validatorVersion: 'det-1' });
+  });
+
+  it('runs the checks at approval for a question that was submitted before they existed', async () => {
+    const db = makeDb();
+    const plan = await db.service.plan(UNIT, csv(r('Q1')));
+    await db.service.apply(UNIT, plan, ctx());
+    const rev = db.revisions[0];
+    rev.state = 'IN_REVIEW'; // legacy: in review, no run on record
+    rev.submitted_by = 'acc-editor';
+    await db.service.transition(rev.id, 'APPROVED', reviewer2, { answerVerified: true });
+    expect(db.runs).toHaveLength(1);
+    expect(rev.state).toBe('APPROVED');
+  });
+
+  it('blocks approval of a legacy in-review question that still has no cognitive level', async () => {
+    const db = makeDb();
+    const noCog = parseQuestionsCsv(['question_code,objective_code,stem,option_a,option_b,option_c,option_d,correct,difficulty', 'Q1,O1,Which unit measures electric current?,Volt,Ampere,Ohm,Watt,B,EASY'].join('\n'));
+    await db.service.apply(UNIT, await db.service.plan(UNIT, noCog), ctx());
+    const rev = db.revisions[0];
+    rev.state = 'IN_REVIEW';
+    await expect(db.service.transition(rev.id, 'APPROVED', reviewer2, { answerVerified: true })).rejects.toThrow(/automatic checks/);
+    expect(rev.state).toBe('IN_REVIEW');
+  });
+
+  it('quarantines an approved question with a reason, and keeps the history', async () => {
+    const db = makeDb();
+    const rev = await seedApproved(db);
+    await db.service.transition(rev.id, 'QUARANTINED', reviewer2, { reasonCode: 'ANSWER_WRONG', note: 'A student reported the key is wrong.' });
+    expect(rev.state).toBe('QUARANTINED');
+    expect(db.events[db.events.length - 1]).toMatchObject({ from_state: 'APPROVED', to_state: 'QUARANTINED', reason_code: 'ANSWER_WRONG' });
+  });
+
+  it('restores only by an approver, and not when a newer version is already approved', async () => {
+    const db = makeDb();
+    const rev = await seedApproved(db);
+    await db.service.transition(rev.id, 'QUARANTINED', reviewer2, { reasonCode: 'OTHER', note: 'Pulled while checked.' });
+    await expect(db.service.transition(rev.id, 'APPROVED', reviewer2, { reasonCode: 'OTHER', note: 'Checked, fine.' })).rejects.toBeInstanceOf(QuestionTransitionError);
+    await db.service.transition(rev.id, 'APPROVED', approver, { reasonCode: 'OTHER', note: 'Checked, fine.' });
+    expect(rev.state).toBe('APPROVED');
+
+    await db.service.transition(rev.id, 'QUARANTINED', reviewer2, { reasonCode: 'OTHER', note: 'Pulled again.' });
+    db.revisions.push({ id: 'r-new', question_id: rev.question_id, state: 'APPROVED', revision: 2 });
+    await expect(db.service.transition(rev.id, 'APPROVED', approver, { reasonCode: 'OTHER', note: 'Try to restore.' })).rejects.toThrow(/newer version/);
+    expect(rev.state).toBe('QUARANTINED');
+  });
+
+  it('a quarantined question is not counted as approved for the exam pool filter', async () => {
+    const db = makeDb();
+    const rev = await seedApproved(db);
+    await db.service.transition(rev.id, 'QUARANTINED', reviewer2, { reasonCode: 'ANSWER_WRONG', note: 'Key is wrong.' });
+    expect(db.revisions.filter((x) => x.state === 'APPROVED')).toHaveLength(0);
   });
 });

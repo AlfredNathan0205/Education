@@ -94,3 +94,6 @@ Built on the guardian/school branch. See CONSTRUCTION-005-PLAN_INTERPRETATION.md
 
 ## Step 6 (coverage and generation demand, measurement part)
 See CONSTRUCTION-006_COVERAGE_INTERPRETATION.md. Read-only report, no schema change. Unit tests: 703 pass in sandbox.
+
+## Step 7 (Question Governance core, non-AI part)
+See CONSTRUCTION-007_GOVERNANCE_INTERPRETATION.md. Needs migration `question_governance`. Unit tests: 733 pass in sandbox.
