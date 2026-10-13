@@ -40,3 +40,22 @@ export interface StudentProfile {
   ageClassified: boolean;
   requiresGuardianConsent: boolean;
 }
+
+export interface CohortOption {
+  curriculumCode: string;
+  gradeCode: string;
+  label: string;
+}
+
+export interface AcademicView {
+  cohortOptions: CohortOption[];
+  grade: CohortOption | null;
+  school: { state: string; name: string; branchName: string | null; awaitingReview: boolean } | null;
+}
+
+export interface SchoolHit {
+  id: string;
+  name: string;
+  city: string | null;
+  branches: Array<{ id: string; name: string }>;
+}

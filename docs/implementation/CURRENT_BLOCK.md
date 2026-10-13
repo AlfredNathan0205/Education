@@ -68,6 +68,8 @@ Done: Prisma models for 01a/01b/01c plus minimal `student` and `audit_event`; pu
 
 - **Authorization — role assignment resolved from the database.** AuthzService, CurriculumAdminService, roles CLI. Unit and integration tests written.
 
+- **CONSTRUCTION-005 — School & Academic Plan, first cut (registry + student selection).** See [`CONSTRUCTION-005_INTERPRETATION.md`](./CONSTRUCTION-005_INTERPRETATION.md). Needs a migration (with a partial unique index and a CHECK constraint, both listed in that doc), CI, and a real-database pass. Plan mapping is deliberately deferred.
+
 ## Still gated, not part of this block
 
 - Activating any ICSE Grade 8 curriculum, and the AI Question Factory (step 8), remain gated on the ICSE Grade 8 syllabus source / human approver details.

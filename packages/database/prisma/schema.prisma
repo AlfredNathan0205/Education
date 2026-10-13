@@ -166,6 +166,8 @@ model student {
   guardian_relationships guardian_relationship[]
   age_classifications    age_classification[]
   consent_records        consent_record[]
+  school_associations    student_school_association[]
+  academic_context       student_academic_context?
 }
 
 /// Which login account may act for which student, and in what capacity.
@@ -708,4 +710,121 @@ model curriculum_event_log {
   subject_version curriculum_subject_version @relation(fields: [subject_version_id], references: [id])
 
   @@index([subject_version_id, occurred_at])
+}
+
+// ---------------------------------------------------------------------------
+// Block 005 — School & Academic Plan (Domain 04), first cut: registry + student selection.
+// Official curriculum != school academic plan. A student-selected association grants no
+// school access. Term/chapter plan mapping is NOT modelled here (needs Grade 8 chapters).
+// Coarse geography only (country, city) — never exact location.
+// ---------------------------------------------------------------------------
+
+enum school_registry_status {
+  ACTIVE
+  RETIRED
+}
+
+enum school_candidate_status {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+enum school_association_state {
+  UNVERIFIED
+  STUDENT_SELECTED
+  VERIFIED
+  SCHOOL_CONFIRMED
+}
+
+model school {
+  id           String                 @id @default(uuid()) @db.Uuid
+  name         String                 @db.VarChar(200)
+  country_code String                 @db.VarChar(2)
+  city         String?                @db.VarChar(100)
+  status       school_registry_status @default(ACTIVE)
+  created_at   DateTime               @default(now())
+  updated_at   DateTime               @updatedAt
+
+  aliases      school_alias[]
+  branches     school_branch[]
+  candidates   school_candidate[]
+  associations student_school_association[]
+
+  @@unique([country_code, name])
+}
+
+model school_alias {
+  id        String @id @default(uuid()) @db.Uuid
+  school_id String @db.Uuid
+  alias     String @db.VarChar(200)
+
+  school school @relation(fields: [school_id], references: [id])
+
+  @@unique([school_id, alias])
+}
+
+model school_branch {
+  id        String                 @id @default(uuid()) @db.Uuid
+  school_id String                 @db.Uuid
+  name      String                 @db.VarChar(200)
+  city      String?                @db.VarChar(100)
+  status    school_registry_status @default(ACTIVE)
+
+  school       school                       @relation(fields: [school_id], references: [id])
+  associations student_school_association[]
+
+  @@unique([school_id, name])
+}
+
+/// A school name a student typed that is not in the registry. Never trusted; admin resolves it.
+model school_candidate {
+  id                  String                  @id @default(uuid()) @db.Uuid
+  name_as_entered     String                  @db.VarChar(200)
+  country_code        String                  @db.VarChar(2)
+  status              school_candidate_status @default(PENDING)
+  resolved_school_id  String?                 @db.Uuid
+  resolved_by         String?                 @db.VarChar(255)
+  resolved_at         DateTime?
+  created_at          DateTime                @default(now())
+
+  resolved_school school?                      @relation(fields: [resolved_school_id], references: [id])
+  associations    student_school_association[]
+
+  @@index([status])
+}
+
+/// Append-only history: changing or leaving a school ends the open row and (optionally) adds a new one.
+/// Invariants enforced in code and by the migration: at most ONE open row per student
+/// (partial unique index on student_id WHERE ended_at IS NULL), and exactly one of
+/// school_id / candidate_id is set (CHECK).
+model student_school_association {
+  id           String                    @id @default(uuid()) @db.Uuid
+  student_id   String                    @db.Uuid
+  school_id    String?                   @db.Uuid
+  branch_id    String?                   @db.Uuid
+  candidate_id String?                   @db.Uuid
+  state        school_association_state
+  started_at   DateTime                  @default(now())
+  ended_at     DateTime?
+  end_reason   String?                   @db.VarChar(32)
+
+  student   student           @relation(fields: [student_id], references: [id])
+  school    school?           @relation(fields: [school_id], references: [id])
+  branch    school_branch?    @relation(fields: [branch_id], references: [id])
+  candidate school_candidate? @relation(fields: [candidate_id], references: [id])
+
+  @@index([student_id, ended_at])
+}
+
+/// Which curriculum and grade the student studies. Launch cohort is enforced in code
+/// (ICSE / GRADE_8); this is the student's own statement, not a verified fact.
+model student_academic_context {
+  id              String   @id @default(uuid()) @db.Uuid
+  student_id      String   @unique @db.Uuid
+  curriculum_code String   @db.VarChar(32)
+  grade_code      String   @db.VarChar(16)
+  updated_at      DateTime @updatedAt
+
+  student student @relation(fields: [student_id], references: [id])
 }

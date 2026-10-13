@@ -46,6 +46,15 @@ docker compose logs api | grep "DEV ONLY"
 docker compose exec api node apps/api/dist/authz/cli/roles.js <command> [args...]
 ```
 
+**School registry CLI** — schools are entered by a person, never invented.
+Needs `ADMIN_OPERATOR` set:
+
+```bash
+docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/school/cli/schools.js add "Example School" AE "Dubai"
+docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/school/cli/schools.js list
+docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/school/cli/schools.js candidates
+```
+
 Data is stored in a Docker named volume (`pgdata`) and survives restarts.
 Run `docker compose down -v` to wipe everything and start fresh.
 

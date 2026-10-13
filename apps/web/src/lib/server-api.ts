@@ -10,6 +10,11 @@ const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
   { method: 'GET', path: 'students/me' },
   { method: 'PUT', path: 'students/me/date-of-birth' },
   { method: 'PUT', path: 'students/me/display-name' },
+  { method: 'GET', path: 'students/me/academic' },
+  { method: 'PUT', path: 'students/me/grade' },
+  { method: 'POST', path: 'students/me/schools/search' },
+  { method: 'PUT', path: 'students/me/school' },
+  { method: 'POST', path: 'students/me/school/leave' },
 ];
 
 export function isAllowed(method: string, path: string): boolean {

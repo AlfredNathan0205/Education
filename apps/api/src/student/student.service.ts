@@ -102,7 +102,18 @@ export class StudentService {
     return this.view(studentId);
   }
 
-  private async ownStudentId(accountId: string): Promise<string> {
+  /**
+   * Student id for collecting NEW personal data (school, grade, ...). Fail closed: refused
+   * while guardian consent is required or age is not classified.
+   */
+  async studentIdForDataCollection(accountId: string): Promise<string> {
+    const studentId = await this.ownStudentId(accountId);
+    const summary = await this.privacy.getClassificationSummary(studentId);
+    if (summary.requiresGuardianConsent) throw new GuardianConsentRequiredError();
+    return studentId;
+  }
+
+  async ownStudentId(accountId: string): Promise<string> {
     const access = await this.db.client.account_student_access.findFirst({
       where: { account_id: accountId, access_kind: 'SELF', revoked_at: null },
     });
