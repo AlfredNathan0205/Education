@@ -35,8 +35,8 @@ type Tx = Prisma.TransactionClient;
 const EXPIRED = Symbol('expired');
 const expiredError = () => new ExamConflictError('This assessment has expired');
 
-const SERVED_STATES = ['ACTIVE'];
-const DEV_STATES = ['DRAFT', 'AI_STRUCTURED', 'VALIDATION_PENDING', 'VALIDATED', 'ADMIN_REVIEW', 'CHANGES_REQUIRED', 'APPROVED', 'ACTIVE', 'ACTIVE_WITH_REVIEW'];
+const SERVED_STATES = ['ACTIVE'] as const;
+const DEV_STATES = ['DRAFT', 'AI_STRUCTURED', 'VALIDATION_PENDING', 'VALIDATED', 'ADMIN_REVIEW', 'CHANGES_REQUIRED', 'APPROVED', 'ACTIVE', 'ACTIVE_WITH_REVIEW'] as const;
 
 export interface ExamUnitView {
   subjectVersionId: string;
@@ -521,8 +521,8 @@ export class ExamService {
 
   // ── internals ──────────────────────────────────────────────────────────────
 
-  private servedStates(): string[] {
-    return this.config.allowUnactivatedCurriculum ? DEV_STATES : SERVED_STATES;
+  private servedStates() {
+    return (this.config.allowUnactivatedCurriculum ? [...DEV_STATES] : [...SERVED_STATES]) as any[];
   }
 
   /** The account's own student, who must be age-classified and not awaiting guardian consent. Fails closed. */
