@@ -314,40 +314,62 @@ export class PrivacyService {
     jurisdictionCode: string,
     now: Date = new Date(),
   ): Promise<void> {
-    const current = await this.db.client.age_classification.findFirst({
+    // Quick check outside the transaction to avoid locking on every GET.
+    const peek = await this.db.client.age_classification.findFirst({
       where: { student_id: studentId, superseded_at: null },
-      select: {
-        id: true,
-        basis: true,
-        date_of_birth: true,
-        dob_evidence_method: true,
-      },
+      select: { basis: true },
     });
-    if (!current) return; // not classified at all — nothing to re-evaluate
-    if (current.basis !== 'FAIL_CLOSED_NO_ACTIVE_POLICY') return; // authoritative classification
+    if (!peek || peek.basis !== 'FAIL_CLOSED_NO_ACTIVE_POLICY') return;
 
-    // Is there now an active, counsel-reviewed policy for this jurisdiction?
-    const policyRow = await this.db.client.jurisdiction_policy.findFirst({
-      where: {
-        jurisdiction_code: jurisdictionCode,
-        status: 'ACTIVE',
-        legal_review: 'COUNSEL_REVIEWED',
-      },
-      orderBy: { version: 'desc' },
-    });
-    if (!policyRow) return; // still no policy
-
-    let config: JurisdictionPolicyConfig | null = null;
-    try {
-      config = parsePolicyConfig(policyRow.config);
-    } catch {
-      return; // corrupt policy — don't re-classify with bad data
-    }
-
-    const dateOfBirth = current.date_of_birth as Date;
-    const result = classifyAge({ dateOfBirth, asOf: now, policy: config });
-
+    // All reads and writes inside a single transaction with a row lock on the
+    // student, so two concurrent GETs cannot both create a new classification.
     await this.db.client.$transaction(async (tx: Prisma.TransactionClient) => {
+      // Serialize: same pattern as recordAgeClassification.
+      await tx.$queryRaw`SELECT id FROM student WHERE id = ${studentId}::uuid FOR UPDATE`;
+
+      // Re-read under lock — another request may have already reclassified.
+      const current = await tx.age_classification.findFirst({
+        where: { student_id: studentId, superseded_at: null },
+        select: {
+          id: true,
+          basis: true,
+          date_of_birth: true,
+          dob_evidence_method: true,
+        },
+      });
+      if (!current || current.basis !== 'FAIL_CLOSED_NO_ACTIVE_POLICY') return;
+
+      const policyRow = await tx.jurisdiction_policy.findFirst({
+        where: {
+          jurisdiction_code: jurisdictionCode,
+          status: 'ACTIVE',
+          legal_review: 'COUNSEL_REVIEWED',
+        },
+        orderBy: { version: 'desc' },
+      });
+      if (!policyRow) return;
+
+      let config: JurisdictionPolicyConfig | null = null;
+      try {
+        config = parsePolicyConfig(policyRow.config);
+      } catch {
+        return;
+      }
+
+      // If the stored DOB evidence method is not accepted by the new policy,
+      // the classification is unverified — do not reclassify. The student must
+      // re-submit their DOB through the normal flow with an accepted method.
+      const method = current.dob_evidence_method as string;
+      if (
+        config.acceptedDobEvidenceMethods.length > 0 &&
+        !config.acceptedDobEvidenceMethods.includes(method)
+      ) {
+        return;
+      }
+
+      const dateOfBirth = current.date_of_birth as Date;
+      const result = classifyAge({ dateOfBirth, asOf: now, policy: config });
+
       await tx.age_classification.updateMany({
         where: { student_id: studentId, superseded_at: null },
         data: { superseded_at: now },
@@ -360,7 +382,7 @@ export class PrivacyService {
           is_minor: result.isMinor,
           requires_guardian_consent: result.requiresGuardianConsent,
           basis: result.basis,
-          dob_evidence_method: current.dob_evidence_method as string,
+          dob_evidence_method: method,
         },
       });
 

@@ -581,6 +581,73 @@ describe('PrivacyService.reclassifyIfStale', () => {
     expect(client.jurisdiction_policy.findFirst).not.toHaveBeenCalled();
     expect(client.age_classification.create).not.toHaveBeenCalled();
   });
+
+  it('does NOT reclassify when stored evidence method is not accepted by the active policy', async () => {
+    const { client, service } = makeFakes();
+    // Student classified with SELF_DECLARED before any policy existed
+    client.age_classification.findFirst.mockResolvedValue({
+      id: 'ac-old',
+      basis: 'FAIL_CLOSED_NO_ACTIVE_POLICY',
+      date_of_birth: DOB,
+      dob_evidence_method: 'SELF_DECLARED',
+    });
+    // Active policy only accepts GOVERNMENT_ID_DOCUMENT
+    client.jurisdiction_policy.findFirst.mockResolvedValue({
+      id: 'p1',
+      config: {
+        ...completeConfig,
+        acceptedDobEvidenceMethods: ['GOVERNMENT_ID_DOCUMENT'],
+      },
+    });
+
+    await service.reclassifyIfStale(STUDENT, 'AE', NOW);
+
+    // No reclassification — student stays fail-closed
+    expect(client.age_classification.updateMany).not.toHaveBeenCalled();
+    expect(client.age_classification.create).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent: a second call after reclassification is a no-op', async () => {
+    const { client, outbox, service } = makeFakes();
+    // First call: fail-closed row triggers reclassification
+    client.age_classification.findFirst.mockResolvedValueOnce({
+      id: 'ac-old',
+      basis: 'FAIL_CLOSED_NO_ACTIVE_POLICY',
+      date_of_birth: DOB,
+      dob_evidence_method: 'SELF_DECLARED',
+    });
+    // In-transaction re-read also sees the fail-closed row (same call in fake)
+    client.age_classification.findFirst.mockResolvedValueOnce({
+      id: 'ac-old',
+      basis: 'FAIL_CLOSED_NO_ACTIVE_POLICY',
+      date_of_birth: DOB,
+      dob_evidence_method: 'SELF_DECLARED',
+    });
+    client.jurisdiction_policy.findFirst.mockResolvedValue({
+      id: 'p1',
+      config: completeConfig,
+    });
+    client.age_classification.create.mockResolvedValue({ id: 'ac-new' });
+
+    await service.reclassifyIfStale(STUDENT, 'AE', NOW);
+    expect(client.age_classification.create).toHaveBeenCalledTimes(1);
+    expect(outbox.publish).toHaveBeenCalledTimes(1);
+
+    // Second call: now the classification has basis POLICY (simulates the
+    // re-read after the first call committed).
+    client.age_classification.findFirst.mockResolvedValue({
+      id: 'ac-new',
+      basis: 'POLICY',
+      date_of_birth: DOB,
+      dob_evidence_method: 'SELF_DECLARED',
+    });
+
+    await service.reclassifyIfStale(STUDENT, 'AE', NOW);
+
+    // No additional writes
+    expect(client.age_classification.create).toHaveBeenCalledTimes(1);
+    expect(outbox.publish).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('PrivacyService.createJurisdictionPolicyDraft', () => {
