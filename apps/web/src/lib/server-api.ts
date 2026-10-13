@@ -12,8 +12,20 @@ const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
   { method: 'PUT', path: 'students/me/display-name' },
 ];
 
+/** Admin curriculum routes carry a unit id, so they are matched by an exact pattern, never a prefix. */
+const UUID = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
+const ALLOWED_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
+  { method: 'GET', pattern: /^admin\/curriculum\/units$/ },
+  { method: 'POST', pattern: new RegExp(`^admin/curriculum/units/${UUID}/content/preview$`) },
+  { method: 'PUT', pattern: new RegExp(`^admin/curriculum/units/${UUID}/content$`) },
+  { method: 'POST', pattern: new RegExp(`^admin/curriculum/units/${UUID}/submit$`) },
+];
+
 export function isAllowed(method: string, path: string): boolean {
-  return ALLOWED.some((a) => a.method === method && a.path === path);
+  return (
+    ALLOWED.some((a) => a.method === method && a.path === path) ||
+    ALLOWED_PATTERNS.some((a) => a.method === method && a.pattern.test(path))
+  );
 }
 
 export async function callApi(

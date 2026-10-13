@@ -37,6 +37,17 @@ const OPEN_STATES: CurriculumState[] = [
 ];
 const LIVE_STATES: CurriculumState[] = ['ACTIVE', 'ACTIVE_WITH_REVIEW', 'SUSPENDED'];
 
+export interface UnitSummary {
+  id: string;
+  curriculumCode: string;
+  versionLabel: string;
+  gradeCode: string;
+  subjectCode: string;
+  subjectName: string;
+  revision: number;
+  state: CurriculumState;
+}
+
 export interface SubjectVersionKey {
   curriculumCode: string;
   curriculumName: string;
@@ -280,6 +291,54 @@ export class CurriculumService {
       await this.afterEdit(tx, sv, next, actor, 'content_replaced');
       return { state: next };
     });
+  }
+
+  /** Read-only list of every subject version (latest revisions first) for the admin screens. */
+  async listSubjectVersions(): Promise<UnitSummary[]> {
+    const rows = await this.db.client.curriculum_subject_version.findMany({
+      include: { curriculum_version: { include: { curriculum: true } }, grade: true, subject: true },
+      orderBy: [{ created_at: 'desc' }],
+      take: 200,
+    });
+    return (rows as any[]).map((r) => ({
+      id: r.id,
+      curriculumCode: r.curriculum_version.curriculum.code,
+      versionLabel: r.curriculum_version.label,
+      gradeCode: r.grade.code,
+      subjectCode: r.subject.code,
+      subjectName: r.subject.name,
+      revision: r.revision,
+      state: r.state,
+    }));
+  }
+
+  /** The unit's evidence reference ids in a stable order: reference number N is index N-1. */
+  async evidenceReferenceIds(subjectVersionId: string): Promise<string[]> {
+    const refs = await this.db.client.curriculum_evidence_reference.findMany({
+      where: { pack: { subject_version_id: subjectVersionId } },
+      orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
+      select: { id: true },
+    });
+    return (refs as any[]).map((r) => r.id as string);
+  }
+
+  /** Latest revision of a unit by its natural key, or null. */
+  async findSubjectVersion(key: {
+    curriculumCode: string;
+    versionLabel: string;
+    gradeCode: string;
+    subjectCode: string;
+  }): Promise<{ id: string; state: CurriculumState } | null> {
+    const row = await this.db.client.curriculum_subject_version.findFirst({
+      where: {
+        curriculum_version: { label: key.versionLabel, curriculum: { code: key.curriculumCode } },
+        grade: { code: key.gradeCode },
+        subject: { code: key.subjectCode },
+      },
+      orderBy: { revision: 'desc' },
+      select: { id: true, state: true },
+    });
+    return row ? { id: row.id as string, state: row.state as CurriculumState } : null;
   }
 
   /** Current state of a subject version (used by the account-based admin layer). */
