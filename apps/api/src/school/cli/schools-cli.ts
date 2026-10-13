@@ -10,7 +10,9 @@
  *   schools candidates
  *   schools accept     <candidateId> <schoolId>
  *   schools reject     <candidateId>
+ *   schools plan ...   (school academic plans; run `schools plan` for the list)
  */
+import type { SchoolPlanService } from '../school-plan.service';
 import type { SchoolRegistryService } from '../school-registry.service';
 
 export class CliUsageError extends Error {
@@ -29,6 +31,14 @@ export const USAGE = `Usage:
   schools candidates
   schools accept     <candidateId> <schoolId>
   schools reject     <candidateId>
+  schools plan chapters <curriculumCode> <gradeCode>
+  schools plan create   <schoolId> <curriculumCode> <gradeCode> <academicYear>
+  schools plan add      <planId> "<term>" "<assessment or ->" <subjectCode> <chapterCode>
+  schools plan remove   <planId> "<term>" "<assessment or ->" <subjectCode> <chapterCode>
+  schools plan publish  <planId>
+  schools plan reopen   <planId>
+  schools plan show     <planId>
+  schools plan list     [schoolId]
 Set ADMIN_OPERATOR to your name or email for the audit trail.`;
 
 type Deps = {
@@ -36,6 +46,7 @@ type Deps = {
     SchoolRegistryService,
     'addSchool' | 'addAlias' | 'addBranch' | 'retireSchool' | 'listSchools' | 'listPendingCandidates' | 'resolveCandidate'
   >;
+  plans?: Pick<SchoolPlanService, 'createPlan' | 'addEntry' | 'removeEntry' | 'publish' | 'reopen' | 'show' | 'list' | 'chapters'>;
   operator?: string;
 };
 
@@ -92,8 +103,66 @@ export async function runSchoolsCli(argv: string[], deps: Deps): Promise<string>
       await deps.registry.resolveCandidate({ candidateId: a, decision: { action: 'reject' }, operator });
       return 'Suggestion rejected; affected students can choose again.';
     }
+    case 'plan': {
+      if (!deps.plans) throw new CliUsageError(USAGE);
+      return runPlan(argv.slice(1), deps.plans, operator);
+    }
     default:
       void extra;
+      throw new CliUsageError(USAGE);
+  }
+}
+
+async function runPlan(args: string[], plans: NonNullable<Deps['plans']>, operator: string): Promise<string> {
+  const [cmd, ...r] = args;
+  const need = (n: number) => {
+    if (r.length !== n) throw new CliUsageError(USAGE);
+  };
+  const dash = (v: string) => (v === '-' ? '' : v);
+  switch (cmd) {
+    case 'chapters': {
+      need(2);
+      const subjects = await plans.chapters(r[0], r[1]);
+      if (!subjects.length) return 'No chapters available for that curriculum and grade (is the curriculum loaded and open for tests?).';
+      return subjects.map((s) => `${s.subjectCode}  ${s.subjectName}\n${s.chapters.map((c) => `    ${c.code}  ${c.title}`).join('\n')}`).join('\n');
+    }
+    case 'create': {
+      need(4);
+      const x = await plans.createPlan({ schoolId: r[0], curriculumCode: r[1], gradeCode: r[2], academicYear: r[3], operator });
+      return x.created ? `Created draft plan ${x.id}.` : `A plan for that school, grade and year already exists: ${x.id}.`;
+    }
+    case 'add': {
+      need(5);
+      const x = await plans.addEntry({ planId: r[0], termLabel: r[1], assessmentLabel: dash(r[2]), subjectCode: r[3], chapterCode: r[4], operator });
+      return x.added ? 'Chapter added to the plan.' : 'That chapter is already in the plan for that term and assessment.';
+    }
+    case 'remove': {
+      need(5);
+      const x = await plans.removeEntry({ planId: r[0], termLabel: r[1], assessmentLabel: dash(r[2]), subjectCode: r[3], chapterCode: r[4], operator });
+      return x.removed ? 'Chapter removed from the plan.' : 'Nothing matched; the plan is unchanged.';
+    }
+    case 'publish': {
+      need(1);
+      const x = await plans.publish({ planId: r[0], operator });
+      return x.published ? 'Plan published: students of this school will see it as a suggestion.' : 'Plan was already published.';
+    }
+    case 'reopen': {
+      need(1);
+      const x = await plans.reopen({ planId: r[0], operator });
+      return x.reopened ? 'Plan is a draft again and no longer shown to students.' : 'Plan was already a draft.';
+    }
+    case 'show': {
+      need(1);
+      const p = await plans.show(r[0]);
+      const lines = p.entries.map((e) => `  ${e.termLabel}${e.assessmentLabel ? ` / ${e.assessmentLabel}` : ''}: ${e.subjectCode} ${e.chapterCode}`);
+      return [`${p.schoolName} · ${p.curriculumCode} ${p.gradeCode} · ${p.academicYear} · ${p.status}`, ...(lines.length ? lines : ['  (no chapters yet)'])].join('\n');
+    }
+    case 'list': {
+      if (r.length > 1) throw new CliUsageError(USAGE);
+      const rows = await plans.list(r[0]);
+      return rows.length ? rows.map((x) => `${x.id}  ${x.schoolName}  ${x.gradeCode}  ${x.academicYear}  ${x.status}  ${x.entries} chapters`).join('\n') : 'No plans yet.';
+    }
+    default:
       throw new CliUsageError(USAGE);
   }
 }

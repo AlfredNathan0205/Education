@@ -88,3 +88,6 @@ Done: Prisma models for 01a/01b/01c plus minimal `student` and `audit_event`; pu
 ## Previous Block
 
 CONSTRUCTION-001 — Engineering Foundation — **COMPLETED** (2026-09-13). See `COMPLETED_BLOCKS.md`.
+
+## Step 5 completion (school plan mapping, chapter selection)
+Built on the guardian/school branch. See CONSTRUCTION-005-PLAN_INTERPRETATION.md. Unit tests: 689 pass in sandbox; integration tests not run here.

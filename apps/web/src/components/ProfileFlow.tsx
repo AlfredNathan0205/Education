@@ -197,7 +197,8 @@ export function ProfileFlow() {
               : ''}
           </p>
           <p className="muted">Your profile is set.</p>
-          <Link className="btn" href="/tests">Go to tests</Link>
+          <Link className="btn" href="/tests">Go to tests</Link>{' '}
+          <Link className="btn secondary" href="/profile/chapters">Choose my chapters</Link>
           {errorBox}
           {academic?.school ? (
             <p>

@@ -80,6 +80,9 @@ async function cleanAll() {
   await prisma.consent_record.deleteMany();
   await prisma.consent_policy_version.deleteMany();
   await prisma.consent_purpose.deleteMany();
+  await prisma.student_chapter_selection.deleteMany();
+  await prisma.school_plan_entry.deleteMany();
+  await prisma.school_academic_plan.deleteMany();
   await prisma.student_school_association.deleteMany();
   await prisma.student_academic_context.deleteMany();
   await prisma.school_candidate.deleteMany();
@@ -1256,5 +1259,27 @@ describe('School association constraints (real DB)', () => {
     await expect(
       prisma.student_school_association.create({ data: { student_id: st.id, school_id: school.id, candidate_id: cand.id, state: 'UNVERIFIED' } }),
     ).rejects.toThrow();
+  });
+});
+
+describe('School plans and chapter selection constraints (real DB)', () => {
+  it('keeps one plan per school, grade and year, and one entry per term, assessment and chapter', async () => {
+    const school = await prisma.school.create({ data: { name: 'Plan School', country_code: 'AE' } });
+    const plan = await prisma.school_academic_plan.create({
+      data: { school_id: school.id, curriculum_code: 'ICSE', grade_code: 'GRADE_8', academic_year: '2026-27', created_by: 'test' },
+    });
+    await expect(
+      prisma.school_academic_plan.create({ data: { school_id: school.id, curriculum_code: 'ICSE', grade_code: 'GRADE_8', academic_year: '2026-27', created_by: 'test' } }),
+    ).rejects.toThrow();
+    const entry = { plan_id: plan.id, term_label: 'Term 1', assessment_label: '', subject_code: 'PHYSICS', chapter_code: 'FORCE', position: 0 };
+    await prisma.school_plan_entry.create({ data: entry });
+    await expect(prisma.school_plan_entry.create({ data: { ...entry, position: 1 } })).rejects.toThrow();
+  });
+
+  it('stores a chapter once per student', async () => {
+    const st = await prisma.student.create({ data: {} });
+    const row = { student_id: st.id, subject_code: 'PHYSICS', chapter_code: 'FORCE' };
+    await prisma.student_chapter_selection.create({ data: row });
+    await expect(prisma.student_chapter_selection.create({ data: row })).rejects.toThrow();
   });
 });

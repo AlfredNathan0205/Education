@@ -171,6 +171,7 @@ model student {
   guardian_invitations   guardian_invitation[]
   school_associations    student_school_association[]
   academic_context       student_academic_context?
+  chapter_selections     student_chapter_selection[]
 }
 
 /// Which login account may act for which student, and in what capacity.
@@ -1038,7 +1039,7 @@ model guardian_invitation {
 // ---------------------------------------------------------------------------
 // Block 005 — School & Academic Plan (Domain 04), first cut: registry + student selection.
 // Official curriculum != school academic plan. A student-selected association grants no
-// school access. Term/chapter plan mapping is NOT modelled here (needs Grade 8 chapters).
+// school access. School plans (term/chapter mapping) are modelled further below.
 // Coarse geography only (country, city) — never exact location.
 // ---------------------------------------------------------------------------
 
@@ -1073,6 +1074,7 @@ model school {
   branches     school_branch[]
   candidates   school_candidate[]
   associations student_school_association[]
+  academic_plans school_academic_plan[]
 
   @@unique([country_code, name])
 }
@@ -1150,4 +1152,57 @@ model student_academic_context {
   updated_at      DateTime @updatedAt
 
   student student @relation(fields: [student_id], references: [id])
+}
+
+enum school_plan_status {
+  DRAFT
+  PUBLISHED
+}
+
+/// A school's own plan for one academic year, entered by an operator from what the school provided.
+/// There is NO universal Term 1 / Term 2 mapping: term and assessment labels are the school's words,
+/// and chapters are referenced by canonical chapter code (validated against the curriculum at entry).
+model school_academic_plan {
+  id              String             @id @default(uuid()) @db.Uuid
+  school_id       String             @db.Uuid
+  curriculum_code String             @db.VarChar(32)
+  grade_code      String             @db.VarChar(16)
+  academic_year   String             @db.VarChar(9)
+  status          school_plan_status @default(DRAFT)
+  created_by      String             @db.VarChar(255)
+  created_at      DateTime           @default(now())
+  published_at    DateTime?
+
+  school  school             @relation(fields: [school_id], references: [id])
+  entries school_plan_entry[]
+
+  @@unique([school_id, curriculum_code, grade_code, academic_year])
+}
+
+model school_plan_entry {
+  id               String @id @default(uuid()) @db.Uuid
+  plan_id          String @db.Uuid
+  term_label       String @db.VarChar(40)
+  /// Empty string when the entry is for the term as a whole.
+  assessment_label String @default("") @db.VarChar(60)
+  subject_code     String @db.VarChar(64)
+  chapter_code     String @db.VarChar(64)
+  position         Int
+
+  plan school_academic_plan @relation(fields: [plan_id], references: [id], onDelete: Cascade)
+
+  @@unique([plan_id, term_label, assessment_label, subject_code, chapter_code])
+}
+
+/// The chapters a student chose to focus on. Their own choice; a school plan is only a suggestion.
+model student_chapter_selection {
+  id           String   @id @default(uuid()) @db.Uuid
+  student_id   String   @db.Uuid
+  subject_code String   @db.VarChar(64)
+  chapter_code String   @db.VarChar(64)
+  created_at   DateTime @default(now())
+
+  student student @relation(fields: [student_id], references: [id])
+
+  @@unique([student_id, subject_code, chapter_code])
 }

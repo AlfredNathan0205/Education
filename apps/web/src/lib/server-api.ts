@@ -24,6 +24,9 @@ const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
   { method: 'POST', path: 'students/me/schools/search' },
   { method: 'PUT', path: 'students/me/school' },
   { method: 'POST', path: 'students/me/school/leave' },
+  // Chapter focus and school-plan suggestion (Step 5).
+  { method: 'GET', path: 'students/me/chapters' },
+  { method: 'PUT', path: 'students/me/chapters' },
 ];
 
 /** Admin curriculum routes carry a unit id, so they are matched by an exact pattern, never a prefix. */

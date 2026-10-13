@@ -94,6 +94,19 @@ docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/school/cl
 docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/school/cli/schools.js candidates
 ```
 
+**School plans** — a school's own term/assessment plan, mapped to canonical chapters.
+Term and assessment names are the school's words; chapter codes are checked against the loaded curriculum.
+Only a *published* plan is shown to students, and only as a suggestion.
+
+```bash
+S="docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/school/cli/schools.js"
+$S plan chapters ICSE GRADE_8                       # lists valid subject and chapter codes
+$S plan create <schoolId> ICSE GRADE_8 2026-27      # prints the plan id
+$S plan add <planId> "Term 1" "Unit Test 1" PHYSICS <chapterCode>   # use - for no assessment
+$S plan show <planId>
+$S plan publish <planId>                            # plan reopen <planId> to edit again
+```
+
 Data is stored in a Docker named volume (`pgdata`) and survives restarts.
 Run `docker compose down -v` to wipe everything and start fresh.
 

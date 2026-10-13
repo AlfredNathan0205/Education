@@ -15,6 +15,8 @@ import {
 } from '@nestjs/common';
 import { SessionGuard, type AuthenticatedRequest } from '../student/session.guard';
 import { GuardianConsentRequiredError, StudentNotFoundError } from '../student/student.service';
+import { ChapterNotFoundError, GradeNotSetError } from './plan.errors';
+import { StudentChaptersService, type ChaptersView } from './student-chapters.service';
 import { NotInLaunchCohortError, SchoolNotFoundError } from './school.errors';
 import { InvalidSchoolInputError } from './school-domain';
 import { StudentSchoolService, type AcademicView, type SchoolChoice, type SchoolSearchHit } from './student-school.service';
@@ -48,7 +50,10 @@ export function parseSchoolChoice(raw: unknown): SchoolChoice {
 @Controller('students/me')
 @UseGuards(SessionGuard)
 export class StudentSchoolController {
-  constructor(private readonly schools: StudentSchoolService) {}
+  constructor(
+    private readonly schools: StudentSchoolService,
+    private readonly chapters: StudentChaptersService,
+  ) {}
 
   @Get('academic')
   academic(@Req() req: AuthenticatedRequest): Promise<AcademicView> {
@@ -81,6 +86,17 @@ export class StudentSchoolController {
     return this.map(() => this.schools.leaveSchool(req.accountId as string));
   }
 
+  @Get('chapters')
+  chaptersView(@Req() req: AuthenticatedRequest): Promise<ChaptersView> {
+    return this.map(() => this.chapters.view(req.accountId as string));
+  }
+
+  @Put('chapters')
+  setChapters(@Req() req: AuthenticatedRequest, @Body() raw: unknown): Promise<ChaptersView> {
+    const b = body(raw);
+    return this.map(() => this.chapters.setSelection(req.accountId as string, b.chapters));
+  }
+
   private async map<T>(fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();
@@ -88,6 +104,8 @@ export class StudentSchoolController {
       if (e instanceof StudentNotFoundError || e instanceof SchoolNotFoundError) throw new NotFoundException(e.message);
       if (e instanceof InvalidSchoolInputError) throw new BadRequestException(e.message);
       if (e instanceof GuardianConsentRequiredError) throw new ForbiddenException(e.message);
+      if (e instanceof ChapterNotFoundError) throw new BadRequestException(e.message);
+      if (e instanceof GradeNotSetError) throw new ConflictException(e.message);
       if (e instanceof NotInLaunchCohortError) throw new UnprocessableEntityException(e.message);
       if ((e as { code?: string }).code === 'P2002') throw new ConflictException('Please try again');
       throw e;
