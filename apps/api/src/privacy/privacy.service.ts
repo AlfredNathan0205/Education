@@ -356,12 +356,12 @@ export class PrivacyService {
         return;
       }
 
-      // If the stored DOB evidence method is not accepted by the new policy,
-      // the classification is unverified — do not reclassify. The student must
-      // re-submit their DOB through the normal flow with an accepted method.
+      // If the policy has no accepted DOB evidence methods, or the stored
+      // method is not in the accepted list, do not reclassify. Fail closed:
+      // an empty list means "not yet established" and must not pass any method.
       const method = current.dob_evidence_method as string;
       if (
-        config.acceptedDobEvidenceMethods.length > 0 &&
+        config.acceptedDobEvidenceMethods.length === 0 ||
         !config.acceptedDobEvidenceMethods.includes(method)
       ) {
         return;

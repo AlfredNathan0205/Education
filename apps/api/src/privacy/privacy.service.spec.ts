@@ -607,6 +607,30 @@ describe('PrivacyService.reclassifyIfStale', () => {
     expect(client.age_classification.create).not.toHaveBeenCalled();
   });
 
+  it('fails closed when the active policy has an empty acceptedDobEvidenceMethods list', async () => {
+    const { client, service } = makeFakes();
+    client.age_classification.findFirst.mockResolvedValue({
+      id: 'ac-old',
+      basis: 'FAIL_CLOSED_NO_ACTIVE_POLICY',
+      date_of_birth: DOB,
+      dob_evidence_method: 'SELF_DECLARED',
+    });
+    // Policy with empty accepted methods (should not be activatable, but
+    // could exist from a corrupt DB state — fail closed defensively).
+    client.jurisdiction_policy.findFirst.mockResolvedValue({
+      id: 'p1',
+      config: {
+        ...completeConfig,
+        acceptedDobEvidenceMethods: [],
+      },
+    });
+
+    await service.reclassifyIfStale(STUDENT, 'AE', NOW);
+
+    expect(client.age_classification.updateMany).not.toHaveBeenCalled();
+    expect(client.age_classification.create).not.toHaveBeenCalled();
+  });
+
   it('is idempotent: a second call after reclassification is a no-op', async () => {
     const { client, outbox, service } = makeFakes();
     // First call: fail-closed row triggers reclassification
