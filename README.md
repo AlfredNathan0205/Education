@@ -64,6 +64,12 @@ docker compose cp my-questions.json api:/tmp/questions.json
 docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/question/cli/import-ai-questions.js /tmp/questions.json
 ```
 
+**Taking a test** — signed-in students with a finished profile open
+`http://localhost:3000/tests`. A subject appears once it has at least 10 approved questions
+whose curriculum is ACTIVE. For local testing, `docker-compose.yml` sets
+`EXAM_ALLOW_UNACTIVATED_CURRICULUM=true`, so approved questions from an unactivated
+curriculum also work; the API refuses to start with that switch in production.
+
 Data is stored in a Docker named volume (`pgdata`) and survives restarts.
 Run `docker compose down -v` to wipe everything and start fresh.
 

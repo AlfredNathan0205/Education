@@ -38,6 +38,8 @@ services:
       API_PORT: "3001"
       ALLOW_DEV_TEST_POLICY: "true"
       DEFAULT_JURISDICTION: "XX"
+      # Dev only: serve approved questions from a curriculum that is not ACTIVE yet. The API refuses to start with this in production.
+      EXAM_ALLOW_UNACTIVATED_CURRICULUM: "true"
     depends_on:
       postgres:
         condition: service_healthy

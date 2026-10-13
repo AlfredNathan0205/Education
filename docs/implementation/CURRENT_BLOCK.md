@@ -74,6 +74,8 @@ Done: Prisma models for 01a/01b/01c plus minimal `student` and `audit_event`; pu
 
 - **CONSTRUCTION-008 — Question bank (multiple choice).** See [`CONSTRUCTION-008_INTERPRETATION.md`](./CONSTRUCTION-008_INTERPRETATION.md) and `docs/question/QUESTION_UPLOAD_FORMAT.md`. Needs a migration, CI, and a real-database pass. Questions are stored and reviewed here; serving them to students is the exam block.
 
+- **CONSTRUCTION-009 — Exam engine (Quick 10, TEST and PRACTICE) with student web pages.** See [`CONSTRUCTION-009_INTERPRETATION.md`](./CONSTRUCTION-009_INTERPRETATION.md). Needs a migration, CI, and a real-database pass. Serves only approved questions from an ACTIVE curriculum (a dev-only switch relaxes this locally).
+
 ## Still gated, not part of this block
 
 - Activating any ICSE Grade 8 curriculum, and the AI Question Factory (step 8), remain gated on the ICSE Grade 8 syllabus source / human approver details.

@@ -78,3 +78,22 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
 .spacer { height: 12px; }
 @media (min-width: 720px) { .shell { padding-top: 56px; } }
 @media (prefers-reduced-motion: no-preference) { .btn { transition: transform .08s ease; } .btn:active { transform: scale(.98); } }
+
+/* Tests */
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.plain { list-style: none; margin: 0 0 14px; padding: 0; }
+.plain li { padding: 6px 0; }
+.plain li.right { color: var(--accent); }
+.bar { height: 6px; background: var(--border); border-radius: 3px; margin: 0 0 18px; overflow: hidden; }
+.bar span { display: block; height: 100%; background: var(--accent); }
+.choices { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
+.choices legend { padding: 0; margin-bottom: 14px; }
+.stem { font-size: 1.25rem; line-height: 1.35; margin: 0; outline: none; }
+.option {
+  display: flex; align-items: flex-start; gap: 12px; padding: 14px; margin: 0 0 10px; font-weight: 400; cursor: pointer;
+  border: 1.5px solid var(--border); border-radius: 12px; background: var(--bg); min-height: 48px;
+}
+.option input { margin-top: 3px; width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
+.option.picked { box-shadow: 0 0 0 1.5px var(--accent) inset; }
+.option.right { border-color: var(--accent); }
+h1:focus { outline: none; }

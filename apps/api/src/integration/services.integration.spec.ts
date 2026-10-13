@@ -22,6 +22,9 @@ import { ContentImportService } from '../curriculum/import/content-import.servic
 import { AuthzService, AuthzError } from '../authz/authz.service';
 import type { DatabaseService } from '../database/database.service';
 import { OutboxService } from '../outbox/outbox.service';
+import { ExamService } from '../exam/exam.service';
+import { ExamConflictError, ExamNotPermittedError } from '../exam/exam.errors';
+import { DEFAULT_JURISDICTION } from '../student/student.service';
 import type { CurriculumActor } from '../curriculum/curriculum-state';
 import type { CurriculumTree } from '../curriculum/curriculum-validation';
 
@@ -58,6 +61,18 @@ async function cleanAll() {
   capturedCodes = [];
   (sender.send as jest.Mock).mockClear();
 
+  await prisma.student_response_event.deleteMany();
+  await prisma.student_response.deleteMany();
+  await prisma.assessment_result.deleteMany();
+  await prisma.assessment_submission.deleteMany();
+  await prisma.assessment_session.deleteMany();
+  await prisma.assessment_instance_question.deleteMany();
+  await prisma.assessment_instance.deleteMany();
+  await prisma.student_question_exposure.deleteMany();
+  await prisma.question_event.deleteMany();
+  await prisma.question_option.deleteMany();
+  await prisma.question_revision.deleteMany();
+  await prisma.question.deleteMany();
   await prisma.consent_withdrawal.deleteMany();
   await prisma.consent_record.deleteMany();
   await prisma.consent_policy_version.deleteMany();
@@ -798,5 +813,234 @@ describe('Content intake end-to-end (real DB)', () => {
     // The state should now be VALIDATED or CHANGES_REQUIRED depending on findings
     const sv = await prisma.curriculum_subject_version.findUnique({ where: { id: unitId } });
     expect(['VALIDATED', 'CHANGES_REQUIRED']).toContain(sv!.state);
+  });
+});
+
+
+/* ===================================================================== */
+/*  ExamService (Block 009)                                               */
+/* ===================================================================== */
+
+describe('ExamService (real DB)', () => {
+  const exam = new ExamService(dbService, privacyService, outbox, { allowUnactivatedCurriculum: false, resumeHours: 24 });
+  const editor: CurriculumActor = { kind: 'HUMAN', accountId: '00000000-0000-4000-a000-000000000009', role: 'SUPER_ADMIN' };
+  let uniq = 0;
+
+  function tree(refId: string): CurriculumTree {
+    const base = { provenance: 'OFFICIAL_EXPLICIT' as const, evidenceReferenceId: refId, rationale: null };
+    return {
+      chapters: [{ code: 'CH01', title: 'Chapter', position: 1, ...base, topics: [{ code: 'T01', title: 'Topic', position: 1, ...base, microConcepts: [{ code: 'MC01', title: 'Concept', position: 1, ...base, learningObjectives: [{ code: 'LO01', statement: 'Student can do X', position: 1, ...base }] }] }] }],
+    };
+  }
+
+  async function activeUnit(subjectCode = 'EXAMSUBJ') {
+    const key = { curriculumCode: 'EXAMCUR', curriculumName: 'Exam Curriculum', versionLabel: '2026-27', gradeCode: 'G8', subjectCode, subjectName: 'Exam Subject' };
+    const { id } = await curriculumService.createSubjectVersion(key, editor);
+    const { referenceId } = await curriculumService.addEvidenceReference(id, { sourceTitle: 'Syllabus Doc' }, editor);
+    await curriculumService.verifyEvidencePack(id, 'Verified', editor);
+    await curriculumService.replaceContent(id, tree(referenceId), editor);
+    await curriculumService.transition(id, 'VALIDATION_PENDING', editor);
+    await curriculumService.verifyEvidencePack(id, 'Re-verified after edit', editor);
+    const { passed } = await curriculumService.runValidation(id);
+    expect(passed).toBe(true);
+    await curriculumService.transition(id, 'ADMIN_REVIEW', editor);
+    await curriculumService.approve(id, editor, 'Approved');
+    await curriculumService.activate(id, editor);
+    return id;
+  }
+
+  async function bank(unitId: string, count = 12) {
+    const sv = await prisma.curriculum_subject_version.findUniqueOrThrow({ where: { id: unitId } });
+    uniq++;
+    for (let k = 1; k <= count; k++) {
+      const q = await prisma.question.create({
+        data: { curriculum_version_id: sv.curriculum_version_id, grade_id: sv.grade_id, subject_id: sv.subject_id, code: `Q${k}`, objective_path: 'CH01/T01/MC01/LO01' },
+      });
+      await prisma.question_revision.create({
+        data: {
+          question_id: q.id,
+          revision: 1,
+          state: 'APPROVED',
+          origin: 'HUMAN',
+          stem: `Exam question ${uniq}-${k}?`,
+          stem_hash: `exam-hash-${uniq}-${k}`,
+          explanation: `Because ${k}`,
+          difficulty: (['EASY', 'MEDIUM', 'HARD'] as const)[k % 3],
+          options: { create: [1, 2, 3, 4].map((p) => ({ position: p, text: `Answer ${k}-${p}`, is_correct: p === ((k + 1) % 4) + 1 })) },
+        },
+      });
+    }
+  }
+
+  async function adult() {
+    const { id: policyId } = await privacyService.createJurisdictionPolicyDraft(
+      { jurisdictionCode: DEFAULT_JURISDICTION, config: { minorAgeThreshold: 18, guardianConsentAgeThreshold: 18, acceptedDobEvidenceMethods: ['SELF_DECLARED'], acceptedGuardianVerificationMethods: ['DOCUMENT_UPLOAD'] } },
+      null,
+    );
+    await privacyService.markPolicyCounselReviewed(policyId, 'LEGAL-OPINION-001', null);
+    await privacyService.activateJurisdictionPolicy(policyId, null);
+    const account = await prisma.account.create({ data: {} });
+    const student = await prisma.student.create({ data: {} });
+    await prisma.account_student_access.create({ data: { account_id: account.id, student_id: student.id, access_kind: 'SELF' } });
+    await privacyService.recordAgeClassification({ studentId: student.id, dateOfBirth: new Date('2001-03-01'), jurisdictionCode: DEFAULT_JURISDICTION, dobEvidenceMethod: 'SELF_DECLARED', actorAccountId: account.id });
+    return { accountId: account.id, studentId: student.id };
+  }
+
+  async function correctSlot(sessionId: string, position: number): Promise<number> {
+    const session = await prisma.assessment_session.findUniqueOrThrow({ where: { id: sessionId } });
+    const item = await prisma.assessment_instance_question.findFirstOrThrow({ where: { instance_id: session.instance_id, position } });
+    const right = await prisma.question_option.findFirstOrThrow({ where: { revision_id: item.question_revision_id, is_correct: true } });
+    return item.option_order.indexOf(right.position);
+  }
+
+  let k = 0;
+  const key = () => `integration-key-${String(++k).padStart(6, '0')}`;
+
+  it('a full TEST: assemble, answer, submit, score, review', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const { accountId, studentId } = await adult();
+
+    const units = await exam.listUnits(accountId);
+    expect(units).toHaveLength(1);
+    expect(units[0]).toMatchObject({ subjectVersionId: unitId, usableQuestions: 12, ready: true });
+
+    const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    for (let p = 1; p <= 10; p++) {
+      const v = await exam.present(accountId, assessmentId);
+      expect(v.question!.position).toBe(p);
+      expect(JSON.stringify(v)).not.toMatch(/is_correct|isCorrect|Because/);
+      // Answer the first 7 correctly and the rest wrongly.
+      const right = await correctSlot(assessmentId, p);
+      await exam.lock(accountId, assessmentId, p, { slot: p <= 7 ? right : (right + 1) % 4, activeMs: 2000, idempotencyKey: key() });
+    }
+    expect(await exam.present(accountId, assessmentId)).toMatchObject({ phase: 'SUMMARY', summary: { answered: 10, unanswered: 0 } });
+    await exam.submit(accountId, assessmentId);
+
+    const result = await exam.result(accountId, assessmentId);
+    expect(result).toMatchObject({ total: 10, correct: 7, unanswered: 0, competitiveEligible: true });
+    expect(result.items.every((i) => i.options.filter((o) => o.isCorrect).length === 1)).toBe(true);
+
+    expect(await prisma.student_response.count({ where: { session_id: assessmentId, state: 'LOCKED' } })).toBe(10);
+    expect(await prisma.student_response_event.count({ where: { session_id: assessmentId, event_type: 'LOCKED' } })).toBe(10);
+    expect(await prisma.student_question_exposure.count({ where: { student_id: studentId } })).toBe(10);
+    const session = await prisma.assessment_session.findUniqueOrThrow({ where: { id: assessmentId } });
+    expect(session).toMatchObject({ status: 'SUBMITTED' });
+    expect(session.committed_at).not.toBeNull();
+    const events = (await prisma.outbox_event.findMany({ where: { aggregate_id: assessmentId } })).map((e) => e.event_type);
+    expect(events).toEqual(expect.arrayContaining(['assessment.created.v1', 'assessment.started.v1', 'assessment.answer_locked.v1', 'assessment.submitted.v1', 'assessment.scored.v1']));
+  });
+
+  it('two simultaneous creates give one test', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId);
+    const { accountId } = await adult();
+    const [a, b] = await Promise.all([
+      exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' }),
+      exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' }),
+    ]);
+    expect(a.assessmentId).toBe(b.assessmentId);
+    expect([a.resumed, b.resumed].sort()).toEqual([false, true]);
+    expect(await prisma.assessment_session.count()).toBe(1);
+  });
+
+  it('simultaneous locks: the same request twice is one lock; two different answers, only one wins', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId);
+    const { accountId } = await adult();
+    const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    await exam.present(accountId, assessmentId);
+
+    const same = key();
+    const twice = await Promise.all([
+      exam.lock(accountId, assessmentId, 1, { slot: 1, activeMs: 1, idempotencyKey: same }),
+      exam.lock(accountId, assessmentId, 1, { slot: 1, activeMs: 1, idempotencyKey: same }),
+    ]);
+    expect(twice[0]).toEqual(twice[1]);
+    expect(await prisma.student_response_event.count({ where: { session_id: assessmentId, event_type: 'LOCKED' } })).toBe(1);
+
+    await exam.present(accountId, assessmentId);
+    const settled = await Promise.allSettled([
+      exam.lock(accountId, assessmentId, 2, { slot: 0, activeMs: 1, idempotencyKey: key() }),
+      exam.lock(accountId, assessmentId, 2, { slot: 3, activeMs: 1, idempotencyKey: key() }),
+    ]);
+    expect(settled.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const lost = settled.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(lost.reason).toBeInstanceOf(ExamConflictError);
+    expect(await prisma.student_response.count({ where: { session_id: assessmentId, state: 'LOCKED' } })).toBe(2);
+  });
+
+  it('skip, revisit once, submit anyway', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId);
+    const { accountId } = await adult();
+    const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'PRACTICE' });
+    await exam.present(accountId, assessmentId);
+    await exam.skip(accountId, assessmentId, 1, { activeMs: 1 });
+    for (let p = 2; p <= 10; p++) {
+      await exam.present(accountId, assessmentId);
+      const r = await exam.lock(accountId, assessmentId, p, { slot: await correctSlot(assessmentId, p), activeMs: 1, idempotencyKey: key() });
+      expect(r.reveal).toMatchObject({ correct: true });
+    }
+    expect(await exam.present(accountId, assessmentId)).toMatchObject({ phase: 'SUMMARY', summary: { unanswered: 1, canReviewSkipped: true } });
+    await exam.reviewSkipped(accountId, assessmentId);
+    expect((await exam.present(accountId, assessmentId)).question).toMatchObject({ position: 1, pass: 'REVISIT' });
+    await exam.skip(accountId, assessmentId, 1, { activeMs: 1 });
+    await exam.submit(accountId, assessmentId);
+    const result = await exam.result(accountId, assessmentId);
+    expect(result).toMatchObject({ correct: 9, unanswered: 1, competitiveEligible: false });
+    expect(result.items[0].outcome).toBe('UNANSWERED');
+  });
+
+  it('the resume window ends an attempt: scored if anything was locked, void if not', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId);
+    const { accountId } = await adult();
+
+    const a = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    await exam.present(accountId, a.assessmentId);
+    await exam.lock(accountId, a.assessmentId, 1, { slot: await correctSlot(a.assessmentId, 1), activeMs: 1, idempotencyKey: key() });
+    await prisma.assessment_session.update({ where: { id: a.assessmentId }, data: { expires_at: new Date(Date.now() - 1000) } });
+    expect(await exam.present(accountId, a.assessmentId)).toMatchObject({ phase: 'ENDED', status: 'SUBMITTED' });
+    expect(await exam.result(accountId, a.assessmentId)).toMatchObject({ correct: 1, unanswered: 9, competitiveEligible: true });
+    expect((await prisma.assessment_submission.findUniqueOrThrow({ where: { session_id: a.assessmentId } })).reason).toBe('EXPIRED');
+
+    const b = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    expect(b.resumed).toBe(false);
+    await prisma.assessment_session.update({ where: { id: b.assessmentId }, data: { expires_at: new Date(Date.now() - 1000) } });
+    expect(await exam.present(accountId, b.assessmentId)).toMatchObject({ phase: 'ENDED', status: 'VOID' });
+    expect(await prisma.assessment_result.count({ where: { session_id: b.assessmentId } })).toBe(0);
+  });
+
+  it('one student cannot reach another student\'s test', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId);
+    const first = await adult();
+    const { assessmentId } = await exam.create(first.accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    const account = await prisma.account.create({ data: {} });
+    const student = await prisma.student.create({ data: {} });
+    await prisma.account_student_access.create({ data: { account_id: account.id, student_id: student.id, access_kind: 'SELF' } });
+    await privacyService.recordAgeClassification({ studentId: student.id, dateOfBirth: new Date('2001-03-01'), jurisdictionCode: DEFAULT_JURISDICTION, dobEvidenceMethod: 'SELF_DECLARED', actorAccountId: account.id });
+    await expect(exam.present(account.id, assessmentId)).rejects.toThrow(/not found/i);
+  });
+
+  it('a student who is not classified, or needs guardian consent, cannot start', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId);
+    const account = await prisma.account.create({ data: {} });
+    const student = await prisma.student.create({ data: {} });
+    await prisma.account_student_access.create({ data: { account_id: account.id, student_id: student.id, access_kind: 'SELF' } });
+    await expect(exam.create(account.id, { subjectVersionId: unitId, mode: 'TEST' })).rejects.toBeInstanceOf(ExamNotPermittedError);
+  });
+
+  it('an unactivated curriculum is not served in strict mode', async () => {
+    const { id } = await curriculumService.createSubjectVersion(
+      { curriculumCode: 'EXAMCUR2', curriculumName: 'Other', versionLabel: '2026-27', gradeCode: 'G8', subjectCode: 'DRAFTSUBJ', subjectName: 'Draft Subject' },
+      editor,
+    );
+    await bank(id);
+    const { accountId } = await adult();
+    expect(await exam.listUnits(accountId)).toEqual([]);
+    await expect(exam.create(accountId, { subjectVersionId: id, mode: 'TEST' })).rejects.toThrow(/not open for tests/);
   });
 });
