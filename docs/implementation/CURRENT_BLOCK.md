@@ -91,3 +91,6 @@ CONSTRUCTION-001 — Engineering Foundation — **COMPLETED** (2026-09-13). See 
 
 ## Step 5 completion (school plan mapping, chapter selection)
 Built on the guardian/school branch. See CONSTRUCTION-005-PLAN_INTERPRETATION.md. Unit tests: 689 pass in sandbox; integration tests not run here.
+
+## Step 6 (coverage and generation demand, measurement part)
+See CONSTRUCTION-006_COVERAGE_INTERPRETATION.md. Read-only report, no schema change. Unit tests: 703 pass in sandbox.
