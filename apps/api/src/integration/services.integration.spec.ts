@@ -28,6 +28,10 @@ import { DEFAULT_JURISDICTION } from '../student/student.service';
 import { GuardianService } from '../guardian/guardian.service';
 import { DEV_DRAFT_WORDING_REFERENCE } from '../guardian/consent-texts';
 import { GuardianConflictError, GuardianNotPermittedError, GuardianUnavailableError } from '../guardian/guardian.errors';
+import { QuestionService } from '../question/question.service';
+import { AiGateway } from '../factory/ai-gateway';
+import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
+import { FactoryService } from '../factory/factory.service';
 import type { CurriculumActor } from '../curriculum/curriculum-state';
 import type { CurriculumTree } from '../curriculum/curriculum-validation';
 
@@ -64,6 +68,9 @@ async function cleanAll() {
   capturedCodes = [];
   (sender.send as jest.Mock).mockClear();
 
+  await prisma.ai_call_log.deleteMany();
+  await prisma.generation_attempt.deleteMany();
+  await prisma.generation_batch.deleteMany();
   await prisma.student_response_event.deleteMany();
   await prisma.student_response.deleteMany();
   await prisma.assessment_result.deleteMany();
@@ -1281,5 +1288,59 @@ describe('School plans and chapter selection constraints (real DB)', () => {
     const row = { student_id: st.id, subject_code: 'PHYSICS', chapter_code: 'FORCE' };
     await prisma.student_chapter_selection.create({ data: row });
     await expect(prisma.student_chapter_selection.create({ data: row })).rejects.toThrow();
+  });
+});
+
+
+describe('AI question factory with the mock provider (real DB)', () => {
+  async function unitWithObjective() {
+    const { editorId, unitId } = await makeEditorWithUnit();
+    const csv = [
+      'chapter_code,chapter_title,topic_code,topic_title,concept_code,concept_title,objective_code,objective,evidence_ref,provenance,rationale',
+      'CH01,Forces and Motion,CH01-T1,Newton Laws,CH01-T1-C1,First Law,CH01-T1-C1-O1,State Newton first law,1,OFFICIAL_EXPLICIT,From official syllabus page 1',
+    ].join('\n');
+    await contentImport.upload(editorId, unitId, 'csv', csv);
+    const sv = await prisma.curriculum_subject_version.findUnique({ where: { id: unitId }, include: { grade: true, subject: true } });
+    return { unitId, gradeCode: sv!.grade.code, subjectCode: sv!.subject.code };
+  }
+  const make = (faults?: string) => {
+    const gateway = new AiGateway(new MockAiProvider(parseMockFaults(faults)), prisma as never, { dailyTokenBudget: 10_000_000, timeoutMs: 5000 });
+    return new FactoryService(dbService, new QuestionService(dbService), gateway, { enabled: true, dailyTokenBudget: 10_000_000, solverPasses: 1, callTimeoutMs: 5000 });
+  };
+
+  it('writes AI drafts for a person, logs every call, and never approves anything', async () => {
+    const { unitId, gradeCode, subjectCode } = await unitWithObjective();
+    const summary = await make('wrong-answer=3').runBatch({
+      curriculumCode: 'TEST', gradeCode, subjectCode, objectiveCode: 'CH01-T1-C1-O1', difficulty: 'EASY', cognitive: 'C1', count: 3, operator: 'it',
+    });
+    expect(summary).toMatchObject({ attempted: 3, draftsStored: 2, rejected: 1 });
+
+    const q = await prisma.question_revision.findMany({ where: { question: { objective_path: { endsWith: 'CH01-T1-C1-O1' } } } });
+    expect(q).toHaveLength(2);
+    for (const r of q) {
+      expect(r.origin).toBe('AI_DRAFT');
+      expect(r.state).toBe('DRAFT');
+      expect(r.cognitive).toBe('C1');
+      expect(r.ai_source).toContain(`factory batch ${summary.batchId}`);
+    }
+    const attempts = await prisma.generation_attempt.findMany({ where: { batch_id: summary.batchId }, orderBy: { sequence: 'asc' } });
+    expect(attempts.map((a) => a.outcome)).toEqual(['DRAFT_STORED', 'DRAFT_STORED', 'REJECTED_QUALITY']);
+    expect(attempts[0].question_revision_id).toBeTruthy();
+    expect(attempts[2].question_revision_id).toBeNull();
+    const calls = await prisma.ai_call_log.findMany({ where: { batch_id: summary.batchId } });
+    expect(calls.length).toBeGreaterThan(20);
+    expect(calls.every((c) => c.input_hash.length === 64)).toBe(true);
+    const batch = await prisma.generation_batch.findUnique({ where: { id: summary.batchId } });
+    expect(batch).toMatchObject({ status: 'COMPLETED', drafts_stored: 2, rejected: 1 });
+    expect(unitId).toBeTruthy();
+  });
+
+  it('a second batch carries on instead of repeating the first', async () => {
+    const { gradeCode, subjectCode } = await unitWithObjective();
+    const run = () => make().runBatch({ curriculumCode: 'TEST', gradeCode, subjectCode, objectiveCode: 'CH01-T1-C1-O1', difficulty: 'EASY', cognitive: 'C1', count: 2, operator: 'it' });
+    const a = await run();
+    const b = await run();
+    expect(a.draftsStored).toBe(2);
+    expect(b).toMatchObject({ draftsStored: 2, duplicates: 0 });
   });
 });

@@ -267,6 +267,22 @@ export function QuestionBank() {
               )}
             </div>
           )}
+          {detail.generation && (
+            <div aria-label="AI factory scoring">
+              <p className="muted">
+                Factory score (advisory, from AI checkers; you decide): route {detail.generation.route ?? 'none'}
+                {detail.generation.confidence !== null ? `, confidence ${detail.generation.confidence.toFixed(3)}` : ''}, {detail.generation.repairs} repair(s).
+                {detail.generation.reason ? ` ${detail.generation.reason}` : ''}
+              </p>
+              {detail.generation.issues.length > 0 && (
+                <ul>
+                  {detail.generation.issues.map((i, n) => (
+                    <li key={n} className="muted">{i.role.toLowerCase().replace(/_/g, ' ')}: {i.message}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
           {detail.aiSource && <p className="muted">AI draft ({detail.aiSource}). Its answer key has not been checked by a person.</p>}
           {detail.reviewNote && <p className="muted">Reviewer note: {detail.reviewNote}</p>}
 
