@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { QuestionController, parseQuestionUpload } from './question.controller';
+import { QuestionController, decision, parseQuestionUpload } from './question.controller';
 import { QuestionTransitionError } from './question-domain';
 import { QuestionConflictError, QuestionForbiddenError, QuestionNotFoundError } from './question.errors';
 
@@ -17,7 +17,7 @@ describe('parseQuestionUpload', () => {
 
 describe('QuestionController', () => {
   const make = (over: Record<string, jest.Mock> = {}) => {
-    const bank = { approve: jest.fn().mockResolvedValue({ state: 'APPROVED' }), list: jest.fn().mockResolvedValue([]), retire: jest.fn(), ...over };
+    const bank: Record<string, jest.Mock> = { approve: jest.fn().mockResolvedValue({ state: "APPROVED" }), list: jest.fn().mockResolvedValue([]), retire: jest.fn(), ...over };
     return { c: new QuestionController(bank as any), bank };
   };
 
@@ -36,10 +36,29 @@ describe('QuestionController', () => {
     expect(bank.approve).toHaveBeenCalledWith('acc', UUID, { answerVerified: true, note: 'ok' });
   });
 
-  it('sending back and retiring need a note field', async () => {
-    const { c } = make();
-    await expect(c.retire(req, UUID, {})).rejects.toBeInstanceOf(BadRequestException);
-    await expect(c.requestChanges(req, UUID, { note: 7 })).rejects.toBeInstanceOf(BadRequestException);
+  it('sending back, retiring, quarantining and restoring need a listed reason code and a note', async () => {
+    const { c, bank } = make({ requestChanges: jest.fn(), quarantine: jest.fn(), restore: jest.fn() });
+    for (const bad of [{}, { note: 'Option C is also correct.' }, { reasonCode: 'MADE_UP', note: 'x' }, { reasonCode: 'OTHER' }, { reasonCode: 'OTHER', note: 7 }]) {
+      expect(() => c.retire(req, UUID, bad)).toThrow(BadRequestException);
+      expect(() => c.requestChanges(req, UUID, bad)).toThrow(BadRequestException);
+      expect(() => c.quarantine(req, UUID, bad)).toThrow(BadRequestException);
+      expect(() => c.restore(req, UUID, bad)).toThrow(BadRequestException);
+    }
+    const ok = { reasonCode: 'ANSWER_WRONG', note: 'The key is wrong.' };
+    await c.quarantine(req, UUID, ok);
+    expect(bank.quarantine).toHaveBeenCalledWith('acc', UUID, ok);
+    expect(decision(ok)).toEqual(ok);
+  });
+
+  it('batch quarantine needs a source and a decision', async () => {
+    const { c, bank } = make({ quarantineBatch: jest.fn().mockResolvedValue({ quarantined: 0, failed: [] }) });
+    const ok = { reasonCode: 'LIVE_PERFORMANCE_SIGNAL', note: 'Many students missed all of these.' };
+    expect(() => c.quarantineBatch(req, { ...ok })).toThrow(BadRequestException);
+    expect(() => c.quarantineBatch(req, { ...ok, aiSource: '' })).toThrow(BadRequestException);
+    expect(() => c.quarantineBatch(req, { ...ok, aiSource: 'x'.repeat(256) })).toThrow(BadRequestException);
+    expect(() => c.quarantineBatch(req, { aiSource: 'operator a; file sha256 b', reasonCode: 'NOPE', note: 'x' })).toThrow(BadRequestException);
+    await c.quarantineBatch(req, { ...ok, aiSource: 'operator a; file sha256 b' });
+    expect(bank.quarantineBatch).toHaveBeenCalledWith('acc', 'operator a; file sha256 b', ok);
   });
 
   it.each([

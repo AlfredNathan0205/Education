@@ -14,6 +14,7 @@ const good = (over: Partial<QuestionDraft> = {}): QuestionDraft => ({
   options: ['Volt', 'Ampere', 'Ohm', 'Watt'],
   correctIndex: 1,
   difficulty: 'EASY',
+  cognitive: 'C1',
   explanation: null,
   ...over,
 });
@@ -82,11 +83,30 @@ describe('assertQuestionTransition', () => {
     expect(() => assertQuestionTransition('IN_REVIEW', 'APPROVED', human('x', 'EDITOR'), c)).toThrow(/reviewer or approver/);
   });
 
-  it('needs a real note to send back or retire', () => {
-    expect(() => assertQuestionTransition('IN_REVIEW', 'CHANGES_REQUIRED', human('r', 'REVIEWER'), { ...ctx, note: 'no' })).toThrow(/note/);
-    expect(() => assertQuestionTransition('IN_REVIEW', 'CHANGES_REQUIRED', human('r', 'REVIEWER'), { ...ctx, note: 'Option C is also correct.' })).not.toThrow();
-    expect(() => assertQuestionTransition('APPROVED', 'RETIRED', human('r', 'REVIEWER'), { ...ctx, note: '' })).toThrow(/note/);
-    expect(() => assertQuestionTransition('APPROVED', 'RETIRED', human('r', 'REVIEWER'), { ...ctx, note: 'Syllabus changed.' })).not.toThrow();
+  it('needs a real note and a reason code to send back or retire', () => {
+    const ok = { reasonCode: 'OTHER' };
+    expect(() => assertQuestionTransition('IN_REVIEW', 'CHANGES_REQUIRED', human('r', 'REVIEWER'), { ...ctx, ...ok, note: 'no' })).toThrow(/note/);
+    expect(() => assertQuestionTransition('IN_REVIEW', 'CHANGES_REQUIRED', human('r', 'REVIEWER'), { ...ctx, ...ok, note: 'Option C is also correct.' })).not.toThrow();
+    expect(() => assertQuestionTransition('APPROVED', 'RETIRED', human('r', 'REVIEWER'), { ...ctx, ...ok, note: '' })).toThrow(/note/);
+    expect(() => assertQuestionTransition('APPROVED', 'RETIRED', human('r', 'REVIEWER'), { ...ctx, ...ok, note: 'Syllabus changed.' })).not.toThrow();
+    for (const bad of [undefined, null, '', 'MADE_UP']) {
+      expect(() => assertQuestionTransition('IN_REVIEW', 'CHANGES_REQUIRED', human('r', 'REVIEWER'), { ...ctx, reasonCode: bad as never, note: 'Option C is also correct.' })).toThrow(/reason code/);
+      expect(() => assertQuestionTransition('APPROVED', 'RETIRED', human('r', 'REVIEWER'), { ...ctx, reasonCode: bad as never, note: 'Syllabus changed.' })).toThrow(/reason code/);
+    }
+  });
+
+  it('quarantine: a reviewer may pull an approved question; only an approver may restore it', () => {
+    const q = { ...ctx, reasonCode: 'ANSWER_WRONG', note: 'The key is wrong.' };
+    expect(() => assertQuestionTransition('APPROVED', 'QUARANTINED', human('r', 'REVIEWER'), q)).not.toThrow();
+    expect(() => assertQuestionTransition('APPROVED', 'QUARANTINED', human('e', 'EDITOR'), q)).toThrow(/reviewer or approver/);
+    expect(() => assertQuestionTransition('APPROVED', 'QUARANTINED', system, q)).toThrow();
+    expect(() => assertQuestionTransition('APPROVED', 'QUARANTINED', human('r', 'REVIEWER'), { ...q, reasonCode: undefined })).toThrow(/reason code/);
+    expect(() => assertQuestionTransition('QUARANTINED', 'APPROVED', human('r', 'REVIEWER'), q)).toThrow(/approver/);
+    expect(() => assertQuestionTransition('QUARANTINED', 'APPROVED', human('a', 'APPROVER'), q)).not.toThrow();
+    expect(() => assertQuestionTransition('QUARANTINED', 'APPROVED', human('a', 'APPROVER'), { ...q, note: 'x' })).toThrow(/note/);
+    expect(() => assertQuestionTransition('QUARANTINED', 'RETIRED', human('r', 'REVIEWER'), q)).not.toThrow();
+    expect(() => assertQuestionTransition('QUARANTINED', 'IN_REVIEW', human('e', 'EDITOR'), q)).toThrow(/cannot go/);
+    expect(() => assertQuestionTransition('IN_REVIEW', 'QUARANTINED', human('r', 'REVIEWER'), q)).toThrow(/cannot go/);
   });
 
   it('only the system supersedes, and nothing leaves a final state', () => {

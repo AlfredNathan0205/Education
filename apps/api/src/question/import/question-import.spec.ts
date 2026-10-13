@@ -81,3 +81,26 @@ describe('parseQuestions', () => {
     expect(() => parseQuestions('csv', 'x'.repeat(2_000_001))).toThrow(/too large/);
   });
 });
+
+describe('cognitive level in files', () => {
+  const HEAD2 = 'question_code,objective_code,stem,option_a,option_b,option_c,option_d,correct,difficulty,cognitive,explanation';
+  const row = (c: string) => `Q1,O1,Which unit measures electric current?,Volt,Ampere,Ohm,Watt,B,EASY,${c},`;
+  it('reads C1 to C4 in either case, and a blank column as untagged', () => {
+    expect(parseQuestionsCsv([HEAD2, row('c3')].join('\n')).questions[0].draft.cognitive).toBe('C3');
+    expect(parseQuestionsCsv([HEAD2, row('')].join('\n')).questions[0].draft.cognitive).toBeNull();
+  });
+  it('an old file without the column still loads, untagged', () => {
+    const old = 'question_code,objective_code,stem,option_a,option_b,option_c,option_d,correct,difficulty\nQ1,O1,Which unit measures electric current?,Volt,Ampere,Ohm,Watt,B,EASY';
+    const r = parseQuestionsCsv(old);
+    expect(r.issues).toEqual([]);
+    expect(r.questions[0].draft.cognitive).toBeNull();
+  });
+  it('rejects an unknown level against its row', () => {
+    const r = parseQuestionsCsv([HEAD2, row('C9')].join('\n'));
+    expect(r.issues.map((i) => i.message).join(' ')).toMatch(/cognitive must be C1, C2, C3 or C4/);
+  });
+  it('reads it from JSON too', () => {
+    const j = JSON.stringify({ questions: [{ code: 'q1', objectiveCode: 'O1', stem: 'Which unit measures electric current?', options: ['Volt', 'Ampere', 'Ohm', 'Watt'], correct: 'B', difficulty: 'EASY', cognitive: 'C2' }] });
+    expect(parseQuestionsJson(j).questions[0].draft.cognitive).toBe('C2');
+  });
+});

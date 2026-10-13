@@ -109,14 +109,46 @@ export class QuestionBankService {
     return { state: await this.questions.transition(revisionId, 'APPROVED', actor, input) };
   }
 
-  async requestChanges(accountId: string, revisionId: string, note: string): Promise<{ state: QuestionState }> {
+  async requestChanges(accountId: string, revisionId: string, input: { reasonCode: string; note: string }): Promise<{ state: QuestionState }> {
     const actor = await this.actorFor(accountId, REVIEW_ROLES, 'only a reviewer or approver may send a question back');
-    return { state: await this.questions.transition(revisionId, 'CHANGES_REQUIRED', actor, { note }) };
+    return { state: await this.questions.transition(revisionId, 'CHANGES_REQUIRED', actor, input) };
   }
 
-  async retire(accountId: string, revisionId: string, note: string): Promise<{ state: QuestionState }> {
+  async retire(accountId: string, revisionId: string, input: { reasonCode: string; note: string }): Promise<{ state: QuestionState }> {
     const actor = await this.actorFor(accountId, REVIEW_ROLES, 'only a reviewer or approver may retire a question');
-    return { state: await this.questions.transition(revisionId, 'RETIRED', actor, { note }) };
+    return { state: await this.questions.transition(revisionId, 'RETIRED', actor, input) };
+  }
+
+  /** Pulls an approved question out of serving at once. Any reviewer may; bringing it back is for an approver. */
+  async quarantine(accountId: string, revisionId: string, input: { reasonCode: string; note: string }): Promise<{ state: QuestionState }> {
+    const actor = await this.actorFor(accountId, REVIEW_ROLES, 'only a reviewer or approver may quarantine a question');
+    return { state: await this.questions.transition(revisionId, 'QUARANTINED', actor, input) };
+  }
+
+  async restore(accountId: string, revisionId: string, input: { reasonCode: string; note: string }): Promise<{ state: QuestionState }> {
+    const actor = await this.actorFor(accountId, REVIEW_ROLES, 'only an approver may restore a quarantined question');
+    return { state: await this.questions.transition(revisionId, 'APPROVED', actor, input) };
+  }
+
+  /**
+   * Quarantines every approved question that came from one AI import (identified by its file hash), for a
+   * defect found in a whole batch. Each question is moved on its own, so a failure on one is reported and the
+   * rest still go. Returns what was quarantined and what was not.
+   */
+  async quarantineBatch(accountId: string, aiSource: string, input: { reasonCode: string; note: string }): Promise<{ quarantined: number; failed: Array<{ revisionId: string; message: string }> }> {
+    const actor = await this.actorFor(accountId, REVIEW_ROLES, 'only a reviewer or approver may quarantine a batch');
+    const ids = await this.questions.approvedRevisionIdsFromSource(aiSource);
+    const failed: Array<{ revisionId: string; message: string }> = [];
+    let quarantined = 0;
+    for (const id of ids) {
+      try {
+        await this.questions.transition(id, 'QUARANTINED', actor, input);
+        quarantined++;
+      } catch (e) {
+        failed.push({ revisionId: id, message: (e as Error).message });
+      }
+    }
+    return { quarantined, failed };
   }
 
   // ---------------------------------------------------------------- roles

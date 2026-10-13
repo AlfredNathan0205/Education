@@ -8,12 +8,13 @@ Nothing uploaded here is live. It is saved as a draft, then submitted, then chec
 
 Header row, in any order:
 
-`question_code, objective_code, stem, option_a, option_b, option_c, option_d, correct, difficulty, explanation`
+`question_code, objective_code, stem, option_a, option_b, option_c, option_d, correct, difficulty, cognitive, explanation`
 
 - `question_code`: your own unique code, letters/digits/dashes, e.g. `CHE8-Q001`. Re-uploading the same code updates that question.
 - `objective_code`: the code of an existing learning objective, e.g. `CHE8-C6-T2-M2-O2`.
 - `correct`: `A`, `B`, `C` or `D`.
 - `difficulty`: `EASY`, `MEDIUM` or `HARD`.
+- `cognitive`: `C1`, `C2`, `C3` or `C4`. The column may be left out or blank so older files still load, but a question without a cognitive level cannot be submitted for review. What each level means is a curriculum decision that is not written down in this repository yet; agree it before tagging real questions.
 - Quote any cell that contains a comma. In Excel use Save As, CSV (Comma delimited).
 
 Template: `/question-upload-template.csv`.
@@ -34,6 +35,7 @@ Template: `/question-upload-template.csv`.
       "options": ["Oxygen", "Carbon dioxide", "Nitrogen", "Hydrogen"],
       "correct": "B",
       "difficulty": "EASY",
+      "cognitive": "C1",
       "explanation": "Carbon dioxide reacts with calcium hydroxide to give insoluble calcium carbonate."
     }
   ]

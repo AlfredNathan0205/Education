@@ -7,13 +7,14 @@ import {
   OPTION_LABELS,
   assertQuestionTransition,
   stemHash,
-  validateQuestionDraft,
   type QuestionActor,
+  type QuestionCognitive,
   type QuestionDifficulty,
   type QuestionDraft,
   type QuestionOrigin,
   type QuestionState,
 } from './question-domain';
+import { DETERMINISTIC_VALIDATOR_VERSION, runDeterministicChecks, type Finding } from './question-governance';
 import { QuestionConflictError, QuestionNotFoundError } from './question.errors';
 import type { ParsedQuestions, QuestionIssue } from './import/question-import';
 
@@ -57,6 +58,7 @@ export interface QuestionRow {
   objectivePath: string;
   stem: string;
   difficulty: QuestionDifficulty;
+  cognitive: QuestionCognitive | null;
   state: QuestionState;
   revision: number;
   origin: QuestionOrigin;
@@ -68,18 +70,21 @@ export interface QuestionDetail extends QuestionRow {
   reviewNote: string | null;
   answerVerified: boolean;
   aiSource: string | null;
-  history: { from: string | null; to: string; actorKind: string; note: string | null; at: string }[];
+  /** The latest deterministic check on this exact revision, if one has run. */
+  validation: { validatorVersion: string; passed: boolean; findings: Finding[]; at: string } | null;
+  history: { from: string | null; to: string; actorKind: string; reasonCode: string | null; note: string | null; at: string }[];
 }
 
 const OPEN_FOR_EDIT: readonly QuestionState[] = EDITABLE_STATES;
 
 function sameContent(
   draft: QuestionDraft,
-  rev: { stem: string; difficulty: string; explanation: string | null; options: { text: string; is_correct: boolean }[] },
+  rev: { stem: string; difficulty: string; cognitive?: string | null; explanation: string | null; options: { text: string; is_correct: boolean }[] },
 ): boolean {
   return (
     rev.stem === draft.stem &&
     rev.difficulty === draft.difficulty &&
+    (rev.cognitive ?? null) === draft.cognitive &&
     (rev.explanation ?? null) === draft.explanation &&
     rev.options.length === draft.options.length &&
     rev.options.every((o, i) => o.text === draft.options[i] && o.is_correct === (i === draft.correctIndex))
@@ -257,6 +262,7 @@ export class QuestionService {
               stem: d.stem,
               explanation: d.explanation,
               difficulty: d.difficulty,
+              cognitive: d.cognitive,
               stem_hash: stemHash(d.stem),
               contributor_ids: [...contributors],
               answer_verified: false,
@@ -298,6 +304,7 @@ export class QuestionService {
         stem: d.stem,
         explanation: d.explanation,
         difficulty: d.difficulty,
+        cognitive: d.cognitive,
         stem_hash: stemHash(d.stem),
         authored_by: accountId,
         contributor_ids: accountId ? [accountId] : [],
@@ -316,6 +323,7 @@ export class QuestionService {
     to: QuestionState,
     actor: QuestionActor,
     note: string | null,
+    reasonCode: string | null = null,
   ): Promise<void> {
     await tx.question_event.create({
       data: {
@@ -325,6 +333,7 @@ export class QuestionService {
         actor_kind: actor.kind,
         actor_account_id: actor.accountId,
         note,
+        reason_code: reasonCode,
       },
     });
   }
@@ -339,7 +348,7 @@ export class QuestionService {
     revisionId: string,
     to: QuestionState,
     actor: QuestionActor,
-    input: { note?: string | null; answerVerified?: boolean },
+    input: { note?: string | null; answerVerified?: boolean; reasonCode?: string | null },
   ): Promise<QuestionState> {
     return this.db.client.$transaction(async (tx: Prisma.TransactionClient) => {
       await tx.$queryRaw`SELECT id FROM question_revision WHERE id = ${revisionId}::uuid FOR UPDATE`;
@@ -351,18 +360,28 @@ export class QuestionService {
 
       const involved = new Set<string>(rev.contributor_ids ?? []);
       if (rev.submitted_by) involved.add(rev.submitted_by);
-      assertQuestionTransition(rev.state, to, actor, { involved: [...involved], answerVerified: input.answerVerified, note: input.note });
+      assertQuestionTransition(rev.state, to, actor, { involved: [...involved], answerVerified: input.answerVerified, note: input.note, reasonCode: input.reasonCode });
 
       const accountId = actor.kind === 'HUMAN' ? actor.accountId : null;
 
       if (to === 'IN_REVIEW') {
         const draft = this.draftOf(rev);
-        const problems = validateQuestionDraft(draft);
-        if (problems.length) throw new QuestionConflictError(`the question is not ready: ${problems.join('; ')}`);
+        const check = runDeterministicChecks(draft);
+        if (!check.passed) {
+          throw new QuestionConflictError(`the question is not ready: ${check.findings.filter((f) => f.severity === 'CRITICAL').map((f) => f.message).join('; ')}`);
+        }
+        await this.recordValidation(tx, revisionId, check);
         await this.requireObjective(tx, rev.question, rev.question.objective_path);
         await tx.question_revision.update({ where: { id: revisionId }, data: { state: to, submitted_by: accountId } });
       } else if (to === 'APPROVED') {
         await this.requireObjective(tx, rev.question, rev.question.objective_path);
+        if (rev.state === 'QUARANTINED') {
+          // Only one revision of a question may be live: a newer approved one means this cannot come back.
+          const other = await tx.question_revision.count({ where: { question_id: rev.question_id, state: 'APPROVED', id: { not: revisionId } } });
+          if (other > 0) throw new QuestionConflictError('a newer version of this question is already approved, so this one cannot be restored');
+        } else {
+          await this.requireCleanDeterministicRun(tx, revisionId, rev);
+        }
         // Only one approved revision may be live. The previous one is retired by the system first.
         const previous: any[] = await tx.question_revision.findMany({
           where: { question_id: rev.question_id, state: 'APPROVED', id: { not: revisionId } },
@@ -382,9 +401,37 @@ export class QuestionService {
           data: { state: to, reviewed_by: accountId, review_note: input.note?.trim() || null },
         });
       }
-      await this.event(tx, revisionId, rev.state, to, actor, input.note?.trim() || null);
+      await this.event(tx, revisionId, rev.state, to, actor, input.note?.trim() || null, input.reasonCode ?? null);
       return to;
     });
+  }
+
+  private async recordValidation(tx: Prisma.TransactionClient, revisionId: string, r: ReturnType<typeof runDeterministicChecks>): Promise<void> {
+    await tx.question_validation_run.create({
+      data: {
+        revision_id: revisionId,
+        validator_version: r.validatorVersion,
+        passed: r.passed,
+        critical_count: r.critical,
+        major_count: r.major,
+        minor_count: r.minor,
+        findings: r.findings as unknown as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  /**
+   * Approval needs a passing deterministic run on this exact revision. A question submitted before the checks
+   * existed has none, so the checks run now (and are recorded) instead of being skipped.
+   */
+  private async requireCleanDeterministicRun(tx: Prisma.TransactionClient, revisionId: string, rev: any): Promise<void> {
+    const last: any = await tx.question_validation_run.findFirst({ where: { revision_id: revisionId }, orderBy: { created_at: 'desc' } });
+    if (last?.passed && last.validator_version === DETERMINISTIC_VALIDATOR_VERSION) return;
+    const check = runDeterministicChecks(this.draftOf(rev));
+    await this.recordValidation(tx, revisionId, check);
+    if (!check.passed) {
+      throw new QuestionConflictError(`the question does not pass the automatic checks: ${check.findings.filter((f) => f.severity === 'CRITICAL').map((f) => f.message).join('; ')}`);
+    }
   }
 
   private async requireObjective(tx: Prisma.TransactionClient, question: any, path: string): Promise<void> {
@@ -409,8 +456,19 @@ export class QuestionService {
       options: options.map((o: any) => o.text),
       correctIndex: options.findIndex((o: any) => o.is_correct),
       difficulty: rev.difficulty,
+      cognitive: rev.cognitive ?? null,
       explanation: rev.explanation ?? null,
     };
+  }
+
+  /** Approved revisions that came from one AI import file (its hash). Used to pull a bad batch. */
+  async approvedRevisionIdsFromSource(aiSource: string): Promise<string[]> {
+    const rows: any[] = await this.db.client.question_revision.findMany({
+      where: { ai_source: aiSource, state: 'APPROVED' },
+      select: { id: true },
+      take: 5000,
+    });
+    return rows.map((r) => r.id as string);
   }
 
   // ---------------------------------------------------------------- read
@@ -431,6 +489,7 @@ export class QuestionService {
         objectivePath: q.objective_path,
         stem: r.stem,
         difficulty: r.difficulty,
+        cognitive: r.cognitive ?? null,
         state: r.state,
         revision: r.revision,
         origin: r.origin,
@@ -442,7 +501,7 @@ export class QuestionService {
   async detail(revisionId: string): Promise<QuestionDetail> {
     const r: any = await this.db.client.question_revision.findUnique({
       where: { id: revisionId },
-      include: { options: { orderBy: { position: 'asc' } }, question: true, events: { orderBy: { occurred_at: 'asc' } } },
+      include: { options: { orderBy: { position: 'asc' } }, question: true, events: { orderBy: { occurred_at: 'asc' } }, validation_runs: { orderBy: { created_at: 'desc' }, take: 1 } },
     });
     if (!r) throw new QuestionNotFoundError('question');
     return {
@@ -452,6 +511,7 @@ export class QuestionService {
       objectivePath: r.question.objective_path,
       stem: r.stem,
       difficulty: r.difficulty,
+      cognitive: r.cognitive ?? null,
       state: r.state,
       revision: r.revision,
       origin: r.origin,
@@ -460,10 +520,14 @@ export class QuestionService {
       reviewNote: r.review_note ?? null,
       answerVerified: r.answer_verified,
       aiSource: r.ai_source ?? null,
+      validation: r.validation_runs[0]
+        ? { validatorVersion: r.validation_runs[0].validator_version, passed: r.validation_runs[0].passed, findings: r.validation_runs[0].findings as Finding[], at: new Date(r.validation_runs[0].created_at).toISOString() }
+        : null,
       history: r.events.map((e: any) => ({
         from: e.from_state ?? null,
         to: e.to_state,
         actorKind: e.actor_kind,
+        reasonCode: e.reason_code ?? null,
         note: e.note ?? null,
         at: new Date(e.occurred_at).toISOString(),
       })),

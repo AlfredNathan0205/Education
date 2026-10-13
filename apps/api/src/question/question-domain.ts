@@ -7,10 +7,14 @@
  */
 import { createHash } from 'node:crypto';
 import type { CurriculumRole } from '../curriculum/curriculum-state';
+import { isReasonCode } from './reason-codes';
 
-export type QuestionState = 'DRAFT' | 'IN_REVIEW' | 'CHANGES_REQUIRED' | 'APPROVED' | 'RETIRED' | 'SUPERSEDED';
+export type QuestionState = 'DRAFT' | 'IN_REVIEW' | 'CHANGES_REQUIRED' | 'APPROVED' | 'RETIRED' | 'SUPERSEDED' | 'QUARANTINED';
 export type QuestionDifficulty = 'EASY' | 'MEDIUM' | 'HARD';
 export type QuestionOrigin = 'HUMAN' | 'AI_DRAFT';
+
+export type QuestionCognitive = 'C1' | 'C2' | 'C3' | 'C4';
+export const COGNITIVE_LEVELS: readonly QuestionCognitive[] = ['C1', 'C2', 'C3', 'C4'];
 
 export const OPTION_COUNT = 4;
 export const OPTION_LABELS = ['A', 'B', 'C', 'D'] as const;
@@ -32,6 +36,8 @@ export interface QuestionDraft {
   options: string[];
   correctIndex: number;
   difficulty: QuestionDifficulty;
+  /** Optional in a file so older files still load; required before a question can be submitted for review. */
+  cognitive: QuestionCognitive | null;
   explanation: string | null;
 }
 
@@ -79,6 +85,7 @@ export function validateQuestionDraft(d: QuestionDraft): string[] {
     problems.push('the correct answer must be one of A, B, C or D');
   }
   if (!DIFFICULTIES.includes(d.difficulty)) problems.push('difficulty must be EASY, MEDIUM or HARD');
+  if (d.cognitive !== null && !COGNITIVE_LEVELS.includes(d.cognitive)) problems.push('cognitive level must be C1, C2, C3 or C4');
   if (d.explanation !== null && d.explanation.length > LIMITS.explanation) {
     problems.push(`the explanation is longer than ${LIMITS.explanation} characters`);
   }
@@ -94,13 +101,16 @@ export interface TransitionContext {
   involved: readonly string[];
   answerVerified?: boolean;
   note?: string | null;
+  /** Registry code (see question-governance.ts). Required to send back, retire, quarantine or restore. */
+  reasonCode?: string | null;
 }
 
 const ALLOWED: Record<QuestionState, readonly QuestionState[]> = {
   DRAFT: ['IN_REVIEW'],
   IN_REVIEW: ['APPROVED', 'CHANGES_REQUIRED'],
   CHANGES_REQUIRED: ['IN_REVIEW'],
-  APPROVED: ['RETIRED', 'SUPERSEDED'],
+  APPROVED: ['RETIRED', 'SUPERSEDED', 'QUARANTINED'],
+  QUARANTINED: ['APPROVED', 'RETIRED'],
   RETIRED: [],
   SUPERSEDED: [],
 };
@@ -109,6 +119,10 @@ function needNote(ctx: TransitionContext, what: string): void {
   if ((ctx.note ?? '').trim().length < MIN_NOTE) {
     throw new QuestionTransitionError(`${what} needs a note of at least ${MIN_NOTE} characters`);
   }
+}
+
+function needReason(ctx: TransitionContext, what: string): void {
+  if (!isReasonCode(ctx.reasonCode)) throw new QuestionTransitionError(`${what} needs a reason code from the list`);
 }
 
 /** Throws QuestionTransitionError unless this actor may make this change. */
@@ -132,6 +146,14 @@ export function assertQuestionTransition(
   }
   if (!REVIEW_ROLES.includes(actor.role)) throw new QuestionTransitionError('only a reviewer or approver may do this');
 
+  if (to === 'APPROVED' && from === 'QUARANTINED') {
+    // Restoring needs governed evidence: the final authority, a reason and a note.
+    if (actor.role !== 'APPROVER' && actor.role !== 'SUPER_ADMIN') {
+      throw new QuestionTransitionError('only an approver may restore a quarantined question');
+    }
+    needReason(ctx, 'restoring a question');
+    return needNote(ctx, 'restoring a question');
+  }
   if (to === 'APPROVED') {
     if (ctx.involved.includes(actor.accountId)) {
       throw new QuestionTransitionError('a question cannot be approved by anyone who wrote, edited or submitted it');
@@ -139,6 +161,16 @@ export function assertQuestionTransition(
     if (ctx.answerVerified !== true) throw new QuestionTransitionError('the reviewer must confirm they checked the answer key');
     return;
   }
-  if (to === 'CHANGES_REQUIRED') return needNote(ctx, 'sending a question back');
-  if (to === 'RETIRED') return needNote(ctx, 'retiring a question');
+  if (to === 'CHANGES_REQUIRED') {
+    needReason(ctx, 'sending a question back');
+    return needNote(ctx, 'sending a question back');
+  }
+  if (to === 'RETIRED') {
+    needReason(ctx, 'retiring a question');
+    return needNote(ctx, 'retiring a question');
+  }
+  if (to === 'QUARANTINED') {
+    needReason(ctx, 'quarantining a question');
+    return needNote(ctx, 'quarantining a question');
+  }
 }
