@@ -114,6 +114,19 @@ describe('StudentService', () => {
     await expect(service.setDisplayName('acct', n)).rejects.toThrow();
   });
 
+  it('studentIdForDataCollection fails closed while guardian consent is required', async () => {
+    const { client, service } = makeService();
+    client.account_student_access.findFirst.mockResolvedValue({ student_id: 'st1' });
+    await expect(service.studentIdForDataCollection('acct')).rejects.toBeInstanceOf(GuardianConsentRequiredError);
+  });
+
+  it('studentIdForDataCollection returns the student once consent is not required', async () => {
+    const { client, privacy, service } = makeService();
+    client.account_student_access.findFirst.mockResolvedValue({ student_id: 'st1' });
+    privacy.getClassificationSummary.mockResolvedValue({ classified: true, requiresGuardianConsent: false, basis: 'POLICY' });
+    await expect(service.studentIdForDataCollection('acct')).resolves.toBe('st1');
+  });
+
   it('calls reclassifyIfStale on every profile view', async () => {
     const { client, privacy, service } = makeService();
     client.account_student_access.findFirst.mockResolvedValue({ student_id: 'st1' });

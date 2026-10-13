@@ -10,6 +10,7 @@ import { PrivacyModule } from './privacy/privacy.module';
 import { AuthzModule } from './authz/authz.module';
 import { StudentModule } from './student/student.module';
 import { CurriculumModule } from './curriculum/curriculum.module';
+import { SchoolModule } from './school/school.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { CurriculumModule } from './curriculum/curriculum.module';
     PrivacyModule,
     CurriculumModule,
     StudentModule,
+    SchoolModule,
     AuthzModule,
   ],
   controllers: [HealthController],

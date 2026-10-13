@@ -19,6 +19,9 @@ import { CurriculumService } from '../curriculum/curriculum.service';
 import { CurriculumAdminService } from '../curriculum/curriculum-admin.service';
 import { CurriculumForbiddenError, CurriculumConflictError } from '../curriculum/curriculum.errors';
 import { AuthzService, AuthzError } from '../authz/authz.service';
+import { SchoolRegistryService } from '../school/school-registry.service';
+import { StudentSchoolService } from '../school/student-school.service';
+import { StudentService } from '../student/student.service';
 import type { DatabaseService } from '../database/database.service';
 import { OutboxService } from '../outbox/outbox.service';
 import type { CurriculumActor } from '../curriculum/curriculum-state';
@@ -39,6 +42,9 @@ const sender: OtpSender = {
 
 const identityService = new IdentityService(dbService, outbox, sender);
 const privacyService = new PrivacyService(dbService, outbox);
+const studentService = new StudentService(dbService, privacyService, outbox);
+const schoolRegistryService = new SchoolRegistryService(dbService);
+const studentSchoolService = new StudentSchoolService(dbService, studentService, outbox);
 const curriculumService = new CurriculumService(dbService, outbox);
 const authzService = new AuthzService(dbService);
 const curriculumAdmin = new CurriculumAdminService(curriculumService, authzService);
@@ -56,6 +62,12 @@ async function cleanAll() {
   capturedCodes = [];
   (sender.send as jest.Mock).mockClear();
 
+  await prisma.student_school_association.deleteMany();
+  await prisma.student_academic_context.deleteMany();
+  await prisma.school_alias.deleteMany();
+  await prisma.school_branch.deleteMany();
+  await prisma.school_candidate.deleteMany();
+  await prisma.school.deleteMany();
   await prisma.consent_withdrawal.deleteMany();
   await prisma.consent_record.deleteMany();
   await prisma.consent_policy_version.deleteMany();
@@ -638,5 +650,244 @@ describe('CurriculumAdminService (real DB)', () => {
 
     const row = await prisma.curriculum_subject_version.findUnique({ where: { id } });
     expect(row!.state).toBe('ACTIVE');
+  });
+});
+
+/* ===================================================================== */
+/*  School & Student-School (Block 005)                                   */
+/* ===================================================================== */
+
+/** Helper: create a student with an account, ready for data collection. */
+async function makeStudentForDataCollection(): Promise<{ accountId: string; studentId: string }> {
+  const otp = await identityService.requestOtp('EMAIL', `school-test-${Date.now()}@example.com`);
+  const code = capturedCodes[capturedCodes.length - 1].code;
+  const { accountId, sessionToken } = await identityService.verifyOtp(
+    'EMAIL',
+    capturedCodes[capturedCodes.length - 1].identifier,
+    code,
+  );
+
+  // Create student profile
+  const profile = await studentService.createOwnProfile(accountId);
+
+  // Activate a test policy so DOB classification works
+  const policy = await privacyService.createJurisdictionPolicyDraft(
+    {
+      jurisdictionCode: 'XX',
+      config: {
+        minorAgeThreshold: 18,
+        guardianConsentAgeThreshold: 18,
+        acceptedDobEvidenceMethods: ['SELF_DECLARED'],
+        acceptedGuardianVerificationMethods: ['SELF_DECLARED'],
+      },
+    },
+    null,
+    'test',
+  );
+  await privacyService.markPolicyCounselReviewed(policy.id, 'test-ref', null, 'test');
+  await privacyService.activateJurisdictionPolicy(policy.id, null);
+
+  // Classify as adult (18+) so data collection is allowed
+  await studentService.setDateOfBirth(accountId, new Date('2000-01-01'), 'XX');
+  await studentService.setDisplayName(accountId, 'Test Student');
+
+  return { accountId, studentId: profile.studentId };
+}
+
+describe('School registry — database constraints (real DB)', () => {
+  it('partial unique index: a second OPEN association for the same student fails', async () => {
+    const { studentId } = await makeStudentForDataCollection();
+    const { id: schoolId } = await schoolRegistryService.addSchool({
+      name: 'Index Test School', countryCode: 'XX', operator: 'test',
+    });
+
+    // First open association succeeds
+    await prisma.student_school_association.create({
+      data: { student_id: studentId, school_id: schoolId, state: 'STUDENT_SELECTED' },
+    });
+
+    // Second open association violates the partial unique index
+    await expect(
+      prisma.student_school_association.create({
+        data: { student_id: studentId, school_id: schoolId, state: 'STUDENT_SELECTED' },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('partial unique index: an ended association does not block a new open one', async () => {
+    const { studentId } = await makeStudentForDataCollection();
+    const { id: schoolId } = await schoolRegistryService.addSchool({
+      name: 'Ended Test School', countryCode: 'XX', operator: 'test',
+    });
+
+    // First association, ended
+    await prisma.student_school_association.create({
+      data: {
+        student_id: studentId,
+        school_id: schoolId,
+        state: 'STUDENT_SELECTED',
+        ended_at: new Date(),
+        end_reason: 'LEFT',
+      },
+    });
+
+    // A new open association is allowed
+    const second = await prisma.student_school_association.create({
+      data: { student_id: studentId, school_id: schoolId, state: 'STUDENT_SELECTED' },
+    });
+    expect(second.ended_at).toBeNull();
+  });
+
+  it('CHECK: neither school_id nor candidate_id is rejected', async () => {
+    const { studentId } = await makeStudentForDataCollection();
+
+    await expect(
+      prisma.student_school_association.create({
+        data: { student_id: studentId, state: 'UNVERIFIED' },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('CHECK: both school_id and candidate_id set is rejected', async () => {
+    const { studentId } = await makeStudentForDataCollection();
+    const { id: schoolId } = await schoolRegistryService.addSchool({
+      name: 'Both Test School', countryCode: 'XX', operator: 'test',
+    });
+    const candidate = await prisma.school_candidate.create({
+      data: { name_as_entered: 'Both Candidate', country_code: 'XX' },
+    });
+
+    await expect(
+      prisma.student_school_association.create({
+        data: {
+          student_id: studentId,
+          school_id: schoolId,
+          candidate_id: candidate.id,
+          state: 'UNVERIFIED',
+        },
+      }),
+    ).rejects.toThrow();
+  });
+});
+
+describe('Student school selection flow (real DB)', () => {
+  it('student picks a registry school -> STUDENT_SELECTED', async () => {
+    const { accountId } = await makeStudentForDataCollection();
+    const { id: schoolId } = await schoolRegistryService.addSchool({
+      name: 'Registry School', countryCode: 'XX', operator: 'test',
+    });
+
+    await studentSchoolService.setGrade(accountId, 'ICSE', 'GRADE_8');
+    const result = await studentSchoolService.selectSchool(accountId, { schoolId });
+
+    expect(result.school).toMatchObject({
+      state: 'STUDENT_SELECTED',
+      name: 'Registry School',
+      awaitingReview: false,
+    });
+  });
+
+  it('student types free text -> UNVERIFIED with PENDING candidate', async () => {
+    const { accountId } = await makeStudentForDataCollection();
+
+    await studentSchoolService.setGrade(accountId, 'ICSE', 'GRADE_8');
+    const result = await studentSchoolService.selectSchool(accountId, { schoolName: 'My Local School' });
+
+    expect(result.school).toMatchObject({
+      state: 'UNVERIFIED',
+      name: 'My Local School',
+      awaitingReview: true,
+    });
+
+    // Candidate is PENDING in the DB
+    const candidate = await prisma.school_candidate.findFirst({
+      where: { name_as_entered: 'My Local School' },
+    });
+    expect(candidate).not.toBeNull();
+    expect(candidate!.status).toBe('PENDING');
+  });
+
+  it('admin accept moves only OPEN associations to the registry school', async () => {
+    const { accountId, studentId } = await makeStudentForDataCollection();
+    const { id: registrySchoolId } = await schoolRegistryService.addSchool({
+      name: 'Real School Name', countryCode: 'XX', operator: 'test',
+    });
+
+    await studentSchoolService.setGrade(accountId, 'ICSE', 'GRADE_8');
+    await studentSchoolService.selectSchool(accountId, { schoolName: 'Student Typed Name' });
+
+    const candidate = await prisma.school_candidate.findFirst({
+      where: { name_as_entered: 'Student Typed Name' },
+    });
+
+    await schoolRegistryService.resolveCandidate({
+      candidateId: candidate!.id,
+      decision: { action: 'accept', schoolId: registrySchoolId },
+      operator: 'admin',
+    });
+
+    // Open association is now on the registry school, STUDENT_SELECTED
+    const open = await prisma.student_school_association.findFirst({
+      where: { student_id: studentId, ended_at: null },
+    });
+    expect(open).not.toBeNull();
+    expect(open!.school_id).toBe(registrySchoolId);
+    expect(open!.candidate_id).toBeNull();
+    expect(open!.state).toBe('STUDENT_SELECTED');
+  });
+
+  it('admin reject ends open associations so the student can choose again', async () => {
+    const { accountId, studentId } = await makeStudentForDataCollection();
+
+    await studentSchoolService.setGrade(accountId, 'ICSE', 'GRADE_8');
+    await studentSchoolService.selectSchool(accountId, { schoolName: 'Rejected School' });
+
+    const candidate = await prisma.school_candidate.findFirst({
+      where: { name_as_entered: 'Rejected School' },
+    });
+
+    await schoolRegistryService.resolveCandidate({
+      candidateId: candidate!.id,
+      decision: { action: 'reject' },
+      operator: 'admin',
+    });
+
+    // No open association — student can pick again
+    const open = await prisma.student_school_association.findFirst({
+      where: { student_id: studentId, ended_at: null },
+    });
+    expect(open).toBeNull();
+
+    // Ended with reason CANDIDATE_REJECTED
+    const ended = await prisma.student_school_association.findFirst({
+      where: { student_id: studentId, end_reason: 'CANDIDATE_REJECTED' },
+    });
+    expect(ended).not.toBeNull();
+  });
+
+  it('changing school keeps history', async () => {
+    const { accountId, studentId } = await makeStudentForDataCollection();
+    const { id: school1 } = await schoolRegistryService.addSchool({
+      name: 'First School', countryCode: 'XX', operator: 'test',
+    });
+    const { id: school2 } = await schoolRegistryService.addSchool({
+      name: 'Second School', countryCode: 'XX', operator: 'test',
+    });
+
+    await studentSchoolService.setGrade(accountId, 'ICSE', 'GRADE_8');
+    await studentSchoolService.selectSchool(accountId, { schoolId: school1 });
+    await studentSchoolService.selectSchool(accountId, { schoolId: school2 });
+
+    // History: first association ended with CHANGED
+    const all = await prisma.student_school_association.findMany({
+      where: { student_id: studentId },
+      orderBy: { started_at: 'asc' },
+    });
+    expect(all).toHaveLength(2);
+    expect(all[0].school_id).toBe(school1);
+    expect(all[0].ended_at).not.toBeNull();
+    expect(all[0].end_reason).toBe('CHANGED');
+    expect(all[1].school_id).toBe(school2);
+    expect(all[1].ended_at).toBeNull();
   });
 });
