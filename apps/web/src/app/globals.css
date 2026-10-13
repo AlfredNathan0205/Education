@@ -52,11 +52,11 @@ p { margin: 0 0 14px; }
 .chip.soon { opacity: .75; border-style: dashed; }
 label { display: block; font-weight: 600; margin-bottom: 6px; }
 .hint { color: var(--muted); font-size: .92rem; margin: 6px 0 0; }
-input[type=text], input[type=email], input[type=tel], input[type=date], input[inputmode=numeric] {
+input[type=text], input[type=email], input[type=tel], input[type=date], input[type=file], input[inputmode=numeric], select {
   width: 100%; font: inherit; color: var(--text); background: var(--bg);
   border: 1.5px solid var(--border); border-radius: 10px; padding: 12px 14px; min-height: 48px;
 }
-input:focus-visible, button:focus-visible, a:focus-visible, .seg button:focus-visible {
+input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible, .seg button:focus-visible {
   outline: 3px solid var(--accent); outline-offset: 2px;
 }
 .field { margin-bottom: 18px; }

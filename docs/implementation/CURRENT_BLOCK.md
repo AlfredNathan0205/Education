@@ -68,6 +68,8 @@ Done: Prisma models for 01a/01b/01c plus minimal `student` and `audit_event`; pu
 
 - **Authorization — role assignment resolved from the database.** AuthzService, CurriculumAdminService, roles CLI. Unit and integration tests written.
 
+- **CONSTRUCTION-006 — Curriculum content intake (teacher/admin upload + AI draft import).** See [`CONSTRUCTION-006_INTERPRETATION.md`](./CONSTRUCTION-006_INTERPRETATION.md) and `docs/curriculum/CONTENT_UPLOAD_FORMAT.md`. No migration needed. Needs CI and a real-database pass. The AI draft content itself is not yet written: it waits for the exact CISCE source pages.
+
 ## Still gated, not part of this block
 
 - Activating any ICSE Grade 8 curriculum, and the AI Question Factory (step 8), remain gated on the ICSE Grade 8 syllabus source / human approver details.

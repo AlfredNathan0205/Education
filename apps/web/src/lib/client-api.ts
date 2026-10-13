@@ -40,3 +40,23 @@ export interface StudentProfile {
   ageClassified: boolean;
   requiresGuardianConsent: boolean;
 }
+
+export interface AdminUnit {
+  id: string;
+  curriculumCode: string;
+  versionLabel: string;
+  gradeCode: string;
+  subjectCode: string;
+  subjectName: string;
+  revision: number;
+  state: string;
+}
+
+export interface UploadResult {
+  ok: boolean;
+  written: boolean;
+  counts: { chapters: number; topics: number; concepts: number; objectives: number };
+  issues: Array<{ where: string; message: string }>;
+  findings: Array<{ severity: 'ERROR' | 'WARNING'; rule: string; path: string; message: string }>;
+  state?: string;
+}

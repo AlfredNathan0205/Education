@@ -46,6 +46,15 @@ docker compose logs api | grep "DEV ONLY"
 docker compose exec api node apps/api/dist/authz/cli/roles.js <command> [args...]
 ```
 
+**Curriculum content** — teachers/admins with the editor role upload content at
+`http://localhost:3000/admin/curriculum` (format: `docs/curriculum/CONTENT_UPLOAD_FORMAT.md`).
+An AI-drafted structure is imported by an operator:
+
+```bash
+docker compose cp my-draft.json api:/tmp/draft.json
+docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/curriculum/cli/import-ai.js /tmp/draft.json
+```
+
 Data is stored in a Docker named volume (`pgdata`) and survives restarts.
 Run `docker compose down -v` to wipe everything and start fresh.
 
