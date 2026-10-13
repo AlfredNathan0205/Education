@@ -4,11 +4,18 @@ import { DatabaseService } from '../database/database.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrivacyService } from '../privacy/privacy.service';
 import { DEFAULT_JURISDICTION } from '../student/student.service';
+import { EmptyScopeError, InsufficientBankError, assemble } from '../assembly/assembly-engine';
+import { loadServablePool } from '../assembly/pool';
+import { appliesTo, designOf, resolveScope } from '../blueprint/blueprint-domain';
+import {
+  DEFAULT_BLUEPRINT_CODE,
+  blueprintByCode,
+  recordAssemblyRun,
+  servableBlueprints,
+  type ServableBlueprint,
+} from '../blueprint/blueprint-store';
 import {
   EXAM_CONFIG,
-  InsufficientBankError,
-  QUICK10,
-  assembleQuick10,
   clampActiveMs,
   newSeed,
   nextStep,
@@ -19,7 +26,7 @@ import {
   type Difficulty,
   type ExamConfig,
   type ItemProgress,
-  type PoolItem,
+  scoringPolicyFor,
 } from './exam-domain';
 import {
   ExamConflictError,
@@ -45,7 +52,10 @@ export interface ExamUnitView {
   gradeCode: string;
   subjectName: string;
   usableQuestions: number;
+  /** The default test (Quick 10) can be built now. */
   ready: boolean;
+  /** Every test a student may be given for this subject: switched on, published, and for this subject (or any). */
+  tests: Array<{ code: string; name: string; total: number; ready: boolean }>;
 }
 
 export interface QuestionView {
@@ -133,21 +143,27 @@ export class ExamService {
       orderBy: { revision: 'desc' },
       include: { curriculum_version: { include: { curriculum: true } }, grade: true, subject: true },
     });
+    const blueprints = await servableBlueprints(db);
     const seen = new Set<string>();
     const units: ExamUnitView[] = [];
     for (const r of rows) {
       const key = `${r.curriculum_version_id}|${r.grade_id}|${r.subject_id}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const pool = await this.loadPool(db, r, studentId);
+      const pool = await loadServablePool(db, r, studentId);
+      const codes = { curriculumCode: r.curriculum_version.curriculum.code, gradeCode: r.grade.code, subjectCode: r.subject.code };
+      const tests = blueprints
+        .filter((b) => appliesTo(b, codes))
+        .map((b) => ({ code: b.code, name: b.name, total: b.published!.total_questions, ready: pool.items.length >= b.published!.total_questions }));
       units.push({
         subjectVersionId: r.id,
-        curriculumCode: r.curriculum_version.curriculum.code,
+        curriculumCode: codes.curriculumCode,
         versionLabel: r.curriculum_version.label,
         gradeCode: r.grade.code,
         subjectName: r.subject.name,
         usableQuestions: pool.items.length,
-        ready: pool.items.length >= QUICK10.total,
+        ready: tests.find((t) => t.code === DEFAULT_BLUEPRINT_CODE)?.ready ?? false,
+        tests,
       });
     }
     return units.sort((a, b) => `${a.gradeCode}${a.subjectName}`.localeCompare(`${b.gradeCode}${b.subjectName}`));
@@ -185,20 +201,28 @@ export class ExamService {
 
   // ── create ───────────────────────────────────────────────────────────────
 
-  /** Builds and locks a test. If the student already has one open for this subject and mode, returns that. */
+  /**
+   * Builds and locks a test from the published version of a blueprint (Quick 10 unless another is asked for). If the
+   * student already has the same test open for this subject and mode, returns that.
+   */
   async create(
     accountId: string,
-    input: { subjectVersionId: string; mode: string },
+    input: { subjectVersionId: string; mode: string; blueprint?: string },
   ): Promise<{ assessmentId: string; resumed: boolean }> {
     if (input.mode !== 'TEST' && input.mode !== 'PRACTICE') throw new ExamInputError('mode must be TEST or PRACTICE');
     const mode = input.mode as AssessmentMode;
+    const blueprintCode = input.blueprint ?? DEFAULT_BLUEPRINT_CODE;
+    if (!/^[A-Z][A-Z0-9_]{1,31}$/.test(blueprintCode)) throw new ExamInputError('blueprint is not valid');
     const studentId = await this.gate(accountId);
 
     return this.db.client.$transaction(async (tx: Tx) => {
       await tx.$queryRaw`SELECT id FROM student WHERE id = ${studentId}::uuid FOR UPDATE`;
       const now = new Date();
 
-      const unit = await tx.curriculum_subject_version.findUnique({ where: { id: input.subjectVersionId } });
+      const unit = await tx.curriculum_subject_version.findUnique({
+        where: { id: input.subjectVersionId },
+        include: { curriculum_version: { include: { curriculum: true } }, grade: true, subject: true },
+      });
       if (!unit) throw new ExamNotFoundError('Subject not found');
       if (!this.servedStates().includes(unit.state)) throw new ExamUnavailableError('This subject is not open for tests yet');
       const newest = await tx.curriculum_subject_version.findFirst({
@@ -221,6 +245,7 @@ export class ExamService {
         if (s.expires_at <= now) await this.settleExpired(tx, s, now);
         else if (
           s.mode === mode &&
+          s.instance.blueprint_code === blueprintCode &&
           s.instance.curriculum_version_id === unit.curriculum_version_id &&
           s.instance.grade_id === unit.grade_id &&
           s.instance.subject_id === unit.subject_id
@@ -229,21 +254,26 @@ export class ExamService {
         }
       }
 
-      const pool = await this.loadPool(tx, unit, studentId);
+      const blueprint = await this.blueprintFor(tx, blueprintCode, unit);
+      const version = blueprint.published!;
+      const design = designOf(blueprint.code, version);
+      const focus = version.scope_mode === 'STUDENT_FOCUS' ? await this.focusChapters(tx, studentId, unit.subject.code) : null;
+      const pool = await loadServablePool(tx, unit, studentId);
       const seedUsed = newSeed();
       let assembled;
       try {
-        assembled = assembleQuick10(pool.items, seedUsed);
+        assembled = assemble(pool.items, design, seedUsed, resolveScope(version, focus));
       } catch (e) {
-        if (e instanceof InsufficientBankError) throw new ExamUnavailableError('There are not enough approved questions for this subject yet');
+        if (e instanceof InsufficientBankError) throw new ExamUnavailableError('There are not enough approved questions for this test yet');
+        if (e instanceof EmptyScopeError) throw new ExamUnavailableError('Choose the chapters you are studying for this subject first');
         throw e;
       }
       const instance = await tx.assessment_instance.create({
         data: {
           student_id: studentId,
           mode,
-          blueprint_code: QUICK10.code,
-          blueprint_version: QUICK10.version,
+          blueprint_code: blueprint.code,
+          blueprint_version: version.version,
           curriculum_version_id: unit.curriculum_version_id,
           grade_id: unit.grade_id,
           subject_id: unit.subject_id,
@@ -263,6 +293,7 @@ export class ExamService {
         },
         select: { id: true },
       });
+      await recordAssemblyRun(tx, { instanceId: instance.id, versionId: version.id, seed: seedUsed, mode, result: assembled });
       const expires = new Date(now.getTime() + this.config.resumeHours * 3600_000);
       const session = await tx.assessment_session.create({
         data: { instance_id: instance.id, student_id: studentId, mode, expires_at: expires },
@@ -273,7 +304,7 @@ export class ExamService {
           aggregateType: 'assessment',
           aggregateId: session.id,
           eventType,
-          payload: { assessmentId: session.id, studentId, mode, blueprint: QUICK10.code },
+          payload: { assessmentId: session.id, studentId, mode, blueprint: blueprint.code, blueprintVersion: version.version },
           idempotencyKey: `${eventType}:${session.id}`,
         });
       }
@@ -289,7 +320,7 @@ export class ExamService {
     return this.db.client.$transaction(async (tx: Tx) => {
       const { session, items } = await this.open(tx, studentId, assessmentId);
       const now = new Date();
-      if (session.status === 'IN_PROGRESS' && session.expires_at <= now) await this.settleExpired(tx, { ...session, instance: { items } }, now);
+      if (session.status === 'IN_PROGRESS' && session.expires_at <= now) await this.settleExpired(tx, { ...session, instance: { ...session.instance, items } }, now);
       const fresh = await this.reload(tx, studentId, assessmentId);
       if (fresh.session.status !== 'IN_PROGRESS') return this.baseView(fresh.session, fresh.items, 'ENDED');
 
@@ -344,7 +375,7 @@ export class ExamService {
       const { session, items } = await this.open(tx, studentId, assessmentId);
       const now = new Date();
       if (session.status === 'IN_PROGRESS' && session.expires_at <= now) {
-        await this.settleExpired(tx, { ...session, instance: { items } }, now);
+        await this.settleExpired(tx, { ...session, instance: { ...session.instance, items } }, now);
         return EXPIRED;
       }
       const item = items.find((i) => i.position === position);
@@ -410,7 +441,7 @@ export class ExamService {
       const { session, items } = await this.open(tx, studentId, assessmentId);
       const now = new Date();
       if (session.status === 'IN_PROGRESS' && session.expires_at <= now) {
-        await this.settleExpired(tx, { ...session, instance: { items } }, now);
+        await this.settleExpired(tx, { ...session, instance: { ...session.instance, items } }, now);
         return EXPIRED;
       }
       if (session.status !== 'IN_PROGRESS') throw new ExamConflictError('This assessment has ended');
@@ -460,7 +491,7 @@ export class ExamService {
       if (session.status === 'VOID') throw new ExamConflictError('This assessment expired before any answer was locked');
       const now = new Date();
       if (session.expires_at <= now) {
-        await this.settleExpired(tx, { ...session, instance: { items } }, now);
+        await this.settleExpired(tx, { ...session, instance: { ...session.instance, items } }, now);
         return EXPIRED;
       }
       const step = nextStep(this.progress(items), session.revisit_used);
@@ -541,48 +572,24 @@ export class ExamService {
   }
 
   /** Approved and published questions of the unit whose objective still exists in this curriculum revision. */
-  private async loadPool(
-    db: Tx,
-    unit: { id: string; curriculum_version_id: string; grade_id: string; subject_id: string },
-    studentId: string,
-  ): Promise<{ items: PoolItem[]; excluded: number }> {
-    const chapters = await db.chapter.findMany({
-      where: { subject_version_id: unit.id },
-      select: { code: true, topics: { select: { code: true, micro_concepts: { select: { code: true, learning_objectives: { select: { code: true } } } } } } },
-    });
-    const paths = new Set<string>();
-    for (const c of chapters) for (const t of c.topics) for (const m of t.micro_concepts) for (const o of m.learning_objectives) paths.add(`${c.code}/${t.code}/${m.code}/${o.code}`);
-
-    const revs = await db.question_revision.findMany({
-      where: {
-        state: 'APPROVED',
-        // Approved is not published: only a version a person has published is served, and not one marked DEGRADED.
-        publication: { is: { state: 'PUBLISHED' } },
-        question: {
-          curriculum_version_id: unit.curriculum_version_id, grade_id: unit.grade_id, subject_id: unit.subject_id,
-          NOT: { bank_state: { is: { health: 'DEGRADED' } } },
-        },
-      },
-      select: { id: true, difficulty: true, stem_hash: true, question: { select: { id: true, objective_path: true } } },
-    });
-    const usable = revs.filter((r) => paths.has(r.question.objective_path));
-    const exposures = await db.student_question_exposure.findMany({
-      where: { student_id: studentId, question_id: { in: usable.map((r) => r.question.id) } },
-      select: { question_id: true, last_seen_at: true },
-    });
-    const seen = new Map(exposures.map((e) => [e.question_id, e.last_seen_at]));
-    return {
-      items: usable.map((r) => ({
-        revisionId: r.id,
-        questionId: r.question.id,
-        objectivePath: r.question.objective_path,
-        difficulty: r.difficulty,
-        stemHash: r.stem_hash,
-        lastSeenAt: seen.get(r.question.id) ?? null,
-      })),
-      excluded: revs.length - usable.length,
-    };
+  /** The published, switched-on blueprint for this code, if it applies to this subject. */
+  private async blueprintFor(
+    tx: Tx,
+    code: string,
+    unit: { curriculum_version: { curriculum: { code: string } }; grade: { code: string }; subject: { code: string } },
+  ): Promise<ServableBlueprint> {
+    const b = await blueprintByCode(tx, code);
+    const codes = { curriculumCode: unit.curriculum_version.curriculum.code, gradeCode: unit.grade.code, subjectCode: unit.subject.code };
+    if (!b || !b.enabled || !b.published || !appliesTo(b, codes)) throw new ExamUnavailableError('This test is not available for this subject');
+    return b;
   }
+
+  /** The chapters the student chose for this subject (Step 5). Empty when they chose none. */
+  private async focusChapters(tx: Tx, studentId: string, subjectCode: string): Promise<string[]> {
+    const rows = await tx.student_chapter_selection.findMany({ where: { student_id: studentId, subject_code: subjectCode }, select: { chapter_code: true } });
+    return rows.map((r) => r.chapter_code);
+  }
+
 
   private async open(tx: Tx, studentId: string, assessmentId: string) {
     await tx.$queryRaw`SELECT id FROM assessment_session WHERE id = ${assessmentId}::uuid AND student_id = ${studentId}::uuid FOR UPDATE`;
@@ -603,7 +610,7 @@ export class ExamService {
     await this.db.client.$transaction(async (tx: Tx) => {
       const { session, items } = await this.open(tx, studentId, assessmentId);
       const now = new Date();
-      if (session.status === 'IN_PROGRESS' && session.expires_at <= now) await this.settleExpired(tx, { ...session, instance: { items } }, now);
+      if (session.status === 'IN_PROGRESS' && session.expires_at <= now) await this.settleExpired(tx, { ...session, instance: { ...session.instance, items } }, now);
     });
   }
 
@@ -633,7 +640,7 @@ export class ExamService {
         session_id: session.id,
         student_id: session.student_id,
         mode: session.mode,
-        scoring_policy: QUICK10.scoringPolicy,
+        scoring_policy: scoringPolicyFor(session.instance?.blueprint_code ?? DEFAULT_BLUEPRINT_CODE),
         total: score.total,
         correct: score.correct,
         unanswered: score.unanswered,

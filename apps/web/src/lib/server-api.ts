@@ -45,6 +45,13 @@ const ALLOWED_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: 'GET', pattern: new RegExp(`^admin/publication/units/${UUID}/summary$`) },
   { method: 'POST', pattern: new RegExp(`^admin/publication/units/${UUID}/publish-all$`) },
   { method: 'POST', pattern: new RegExp(`^admin/publication/revisions/${UUID}/(publish|withdraw|health)$`) },
+  // Test designs (Step 10).
+  { method: 'GET', pattern: /^admin\/blueprints$/ },
+  { method: 'POST', pattern: /^admin\/blueprints$/ },
+  { method: 'GET', pattern: new RegExp(`^admin/blueprints/${UUID}$`) },
+  { method: 'PUT', pattern: new RegExp(`^admin/blueprints/${UUID}/draft$`) },
+  { method: 'POST', pattern: new RegExp(`^admin/blueprints/${UUID}/(draft/discard|draft/publish|enabled)$`) },
+  { method: 'POST', pattern: new RegExp(`^admin/blueprints/versions/${UUID}/preview$`) },
   // Student tests. Ids are matched as UUIDs and the question position as one or two digits.
   { method: 'GET', pattern: /^exam\/units$/ },
   { method: 'GET', pattern: /^exam\/assessments$/ },
