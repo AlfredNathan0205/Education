@@ -1,0 +1,174 @@
+{
+ "curriculumCode": "ICSE",
+ "versionLabel": "2026-27",
+ "gradeCode": "GRADE_8",
+ "subjectCode": "CHEMISTRY",
+ "questions": [
+  {
+   "code": "CHE8-Q001",
+   "objectiveCode": "CHE8-C1-T2-M1-O1",
+   "stem": "According to the law of conservation of mass, in a chemical reaction the total mass of the reactants is ______ the total mass of the products.",
+   "options": [
+    "greater than",
+    "equal to",
+    "less than",
+    "unrelated to"
+   ],
+   "correct": "B",
+   "difficulty": "EASY",
+   "explanation": "Mass is neither created nor destroyed in a chemical reaction."
+  },
+  {
+   "code": "CHE8-Q002",
+   "objectiveCode": "CHE8-C4-T1-M1-O1",
+   "stem": "Which particles are found in the nucleus of an atom?",
+   "options": [
+    "Electrons and protons",
+    "Protons and neutrons",
+    "Electrons and neutrons",
+    "Only electrons"
+   ],
+   "correct": "B",
+   "difficulty": "EASY",
+   "explanation": "The nucleus holds protons and neutrons; electrons are outside it."
+  },
+  {
+   "code": "CHE8-Q003",
+   "objectiveCode": "CHE8-C4-T1-M2-O1",
+   "stem": "The atomic number of an atom is the number of",
+   "options": [
+    "neutrons in its nucleus",
+    "protons in its nucleus",
+    "protons plus neutrons",
+    "electron shells"
+   ],
+   "correct": "B",
+   "difficulty": "EASY",
+   "explanation": "Atomic number (Z) is the number of protons."
+  },
+  {
+   "code": "CHE8-Q004",
+   "objectiveCode": "CHE8-C4-T1-M2-O1",
+   "stem": "An atom has 6 protons and 6 neutrons. What is its mass number?",
+   "options": [
+    "6",
+    "12",
+    "18",
+    "0"
+   ],
+   "correct": "B",
+   "difficulty": "EASY",
+   "explanation": "Mass number is the number of protons plus neutrons: 6 + 6 = 12."
+  },
+  {
+   "code": "CHE8-Q005",
+   "objectiveCode": "CHE8-C6-T1-M1-O2",
+   "stem": "Zn + CuSO4 -> ZnSO4 + Cu is an example of which type of reaction?",
+   "options": [
+    "Combination",
+    "Decomposition",
+    "Displacement",
+    "Double displacement"
+   ],
+   "correct": "C",
+   "difficulty": "MEDIUM",
+   "explanation": "Zinc displaces copper from copper sulphate."
+  },
+  {
+   "code": "CHE8-Q006",
+   "objectiveCode": "CHE8-C6-T1-M2-O2",
+   "stem": "Which of these metals will displace copper from copper sulphate solution?",
+   "options": [
+    "Silver",
+    "Gold",
+    "Zinc",
+    "Mercury"
+   ],
+   "correct": "C",
+   "difficulty": "MEDIUM",
+   "explanation": "Zinc is more reactive than copper, so it displaces copper from its salt solution."
+  },
+  {
+   "code": "CHE8-Q007",
+   "objectiveCode": "CHE8-C6-T2-M2-O2",
+   "stem": "Which of these is a basic oxide?",
+   "options": [
+    "CO2",
+    "SO2",
+    "CaO",
+    "P2O5"
+   ],
+   "correct": "C",
+   "difficulty": "MEDIUM",
+   "explanation": "Oxides of metals are basic. CaO is a metal oxide; the others are non-metal (acidic) oxides."
+  },
+  {
+   "code": "CHE8-Q008",
+   "objectiveCode": "CHE8-C6-T2-M2-O2",
+   "stem": "Oxides such as ZnO and PbO react with both acids and bases. These oxides are called",
+   "options": [
+    "acidic oxides",
+    "basic oxides",
+    "amphoteric oxides",
+    "neutral oxides"
+   ],
+   "correct": "C",
+   "difficulty": "MEDIUM"
+  },
+  {
+   "code": "CHE8-Q009",
+   "objectiveCode": "CHE8-C7-T1-M2-O1",
+   "stem": "Which pair of substances is used to prepare hydrogen in the laboratory?",
+   "options": [
+    "Copper and dilute hydrochloric acid",
+    "Zinc and dilute hydrochloric acid",
+    "Zinc and concentrated nitric acid",
+    "Silver and dilute sulphuric acid"
+   ],
+   "correct": "B",
+   "difficulty": "MEDIUM",
+   "explanation": "Zinc reacts with a dilute acid (not nitric acid) to give hydrogen; copper and silver do not react with these dilute acids."
+  },
+  {
+   "code": "CHE8-Q010",
+   "objectiveCode": "CHE8-C8-T3-M2-O1",
+   "stem": "Which substance can be used to remove the hardness of water?",
+   "options": [
+    "Common salt",
+    "Washing soda",
+    "Sugar",
+    "Chalk"
+   ],
+   "correct": "B",
+   "difficulty": "EASY"
+  },
+  {
+   "code": "CHE8-Q011",
+   "objectiveCode": "CHE8-C9-T1-M1-O1",
+   "stem": "Diamond and graphite are different forms of which element?",
+   "options": [
+    "Silicon",
+    "Carbon",
+    "Sulphur",
+    "Phosphorus"
+   ],
+   "correct": "B",
+   "difficulty": "EASY",
+   "explanation": "Different forms of the same element are called allotropes."
+  },
+  {
+   "code": "CHE8-Q012",
+   "objectiveCode": "CHE8-C9-T2-M2-O2",
+   "stem": "When carbon dioxide is passed through lime water, the lime water",
+   "options": [
+    "turns blue",
+    "turns milky",
+    "turns green",
+    "stays unchanged"
+   ],
+   "correct": "B",
+   "difficulty": "EASY",
+   "explanation": "Carbon dioxide reacts with lime water to form calcium carbonate, which makes it milky."
+  }
+ ]
+}

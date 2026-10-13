@@ -52,6 +52,34 @@ export interface AdminUnit {
   state: string;
 }
 
+export interface QuestionRow {
+  questionId: string;
+  revisionId: string;
+  code: string;
+  objectivePath: string;
+  stem: string;
+  difficulty: 'EASY' | 'MEDIUM' | 'HARD';
+  state: 'DRAFT' | 'IN_REVIEW' | 'CHANGES_REQUIRED' | 'APPROVED' | 'RETIRED' | 'SUPERSEDED';
+  revision: number;
+  origin: 'HUMAN' | 'AI_DRAFT';
+}
+
+export interface QuestionDetail extends QuestionRow {
+  explanation: string | null;
+  options: Array<{ label: string; text: string; isCorrect: boolean }>;
+  reviewNote: string | null;
+  answerVerified: boolean;
+  aiSource: string | null;
+  history: Array<{ from: string | null; to: string; actorKind: string; note: string | null; at: string }>;
+}
+
+export interface QuestionUploadResult {
+  ok: boolean;
+  written: boolean;
+  counts: { CREATE: number; UPDATE: number; NEW_REVISION: number; UNCHANGED: number };
+  issues: Array<{ where: string; message: string }>;
+}
+
 export interface UploadResult {
   ok: boolean;
   written: boolean;

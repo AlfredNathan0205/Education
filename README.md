@@ -55,6 +55,15 @@ docker compose cp my-draft.json api:/tmp/draft.json
 docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/curriculum/cli/import-ai.js /tmp/draft.json
 ```
 
+**Question bank** — editors upload multiple-choice questions at
+`http://localhost:3000/admin/questions` (format: `docs/question/QUESTION_UPLOAD_FORMAT.md`);
+a different reviewer approves them. An AI-drafted file is imported by an operator:
+
+```bash
+docker compose cp my-questions.json api:/tmp/questions.json
+docker compose exec -e ADMIN_OPERATOR=your-name api node apps/api/dist/question/cli/import-ai-questions.js /tmp/questions.json
+```
+
 Data is stored in a Docker named volume (`pgdata`) and survives restarts.
 Run `docker compose down -v` to wipe everything and start fresh.
 

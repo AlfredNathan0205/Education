@@ -19,6 +19,12 @@ const ALLOWED_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: 'POST', pattern: new RegExp(`^admin/curriculum/units/${UUID}/content/preview$`) },
   { method: 'PUT', pattern: new RegExp(`^admin/curriculum/units/${UUID}/content$`) },
   { method: 'POST', pattern: new RegExp(`^admin/curriculum/units/${UUID}/submit$`) },
+  { method: 'GET', pattern: /^admin\/questions\/units$/ },
+  { method: 'GET', pattern: new RegExp(`^admin/questions/units/${UUID}/questions$`) },
+  { method: 'POST', pattern: new RegExp(`^admin/questions/units/${UUID}/preview$`) },
+  { method: 'PUT', pattern: new RegExp(`^admin/questions/units/${UUID}/questions$`) },
+  { method: 'GET', pattern: new RegExp(`^admin/questions/revisions/${UUID}$`) },
+  { method: 'POST', pattern: new RegExp(`^admin/questions/revisions/${UUID}/(submit|approve|request-changes|retire)$`) },
 ];
 
 export function isAllowed(method: string, path: string): boolean {

@@ -709,3 +709,110 @@ model curriculum_event_log {
 
   @@index([subject_version_id, occurred_at])
 }
+
+// ---------------------------------------------------------------------------
+// Block 008 — Question bank (multiple choice). A question belongs to a curriculum UNIT
+// (curriculum version + grade + subject), not to one revision of it, and points at a learning
+// objective by its codes ("chapter/topic/concept/objective"). A new curriculum revision is a new
+// set of rows, so a foreign key to learning_objective would break on every correction.
+// A question's wording is a REVISION; an approved revision is never edited.
+// ---------------------------------------------------------------------------
+
+enum question_state {
+  DRAFT
+  IN_REVIEW
+  CHANGES_REQUIRED
+  APPROVED
+  RETIRED
+  SUPERSEDED
+}
+
+enum question_difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum question_origin {
+  HUMAN
+  AI_DRAFT
+}
+
+model question {
+  id                    String   @id @default(uuid()) @db.Uuid
+  curriculum_version_id String   @db.Uuid
+  grade_id              String   @db.Uuid
+  subject_id            String   @db.Uuid
+  /// Unique within the unit, chosen by the author so a corrected file can update the same question.
+  code                  String   @db.VarChar(64)
+  /// "chapter_code/topic_code/concept_code/objective_code" in the unit's curriculum.
+  objective_path        String   @db.VarChar(300)
+  created_at            DateTime @default(now())
+
+  revisions question_revision[]
+
+  @@unique([curriculum_version_id, grade_id, subject_id, code])
+  @@index([curriculum_version_id, grade_id, subject_id])
+}
+
+model question_revision {
+  id            String              @id @default(uuid()) @db.Uuid
+  question_id   String              @db.Uuid
+  revision      Int
+  state         question_state      @default(DRAFT)
+  origin        question_origin
+  stem          String              @db.VarChar(2000)
+  explanation   String?             @db.VarChar(2000)
+  difficulty    question_difficulty
+  /// SHA-256 of the normalised stem, to refuse the same question twice in a unit.
+  stem_hash     String              @db.VarChar(64)
+  /// Account ids are stored without a foreign key, as in curriculum governance. Null for the AI.
+  authored_by   String?             @db.Uuid
+  /// Everyone who wrote or edited the wording. None of them, nor the submitter, may approve it.
+  contributor_ids String[]          @db.Uuid
+  submitted_by  String?             @db.Uuid
+  reviewed_by   String?             @db.Uuid
+  review_note   String?             @db.VarChar(1000)
+  /// The approver confirmed they checked the answer key themselves.
+  answer_verified Boolean           @default(false)
+  /// For AI drafts: who ran the import and the file hash.
+  ai_source     String?             @db.VarChar(255)
+  created_at    DateTime            @default(now())
+  updated_at    DateTime            @updatedAt
+
+  question question          @relation(fields: [question_id], references: [id])
+  options  question_option[]
+  events   question_event[]
+
+  @@unique([question_id, revision])
+  @@index([state])
+  @@index([stem_hash])
+}
+
+model question_option {
+  id          String  @id @default(uuid()) @db.Uuid
+  revision_id String  @db.Uuid
+  position    Int
+  text        String  @db.VarChar(500)
+  is_correct  Boolean
+
+  revision question_revision @relation(fields: [revision_id], references: [id], onDelete: Cascade)
+
+  @@unique([revision_id, position])
+}
+
+/// Append-only history of a revision's state changes.
+model question_event {
+  id          String          @id @default(uuid()) @db.Uuid
+  revision_id String          @db.Uuid
+  from_state  question_state?
+  to_state    question_state
+  actor_kind  String          @db.VarChar(16)
+  actor_account_id String?    @db.Uuid
+  note        String?         @db.VarChar(1000)
+  occurred_at DateTime        @default(now())
+
+  revision question_revision @relation(fields: [revision_id], references: [id], onDelete: Cascade)
+
+  @@index([revision_id])
+}
