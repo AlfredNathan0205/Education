@@ -52,6 +52,7 @@ function makeService() {
   const privacy = {
     recordAgeClassification: jest.fn(),
     getClassificationSummary: jest.fn().mockResolvedValue({ classified: false, requiresGuardianConsent: true, basis: null }),
+    reclassifyIfStale: jest.fn().mockResolvedValue(undefined),
   };
   const outbox = { publish: jest.fn() };
   const service = new StudentService({ client } as unknown as DatabaseService, privacy as unknown as PrivacyService, outbox as unknown as OutboxService);
@@ -111,6 +112,13 @@ describe('StudentService', () => {
     const { client, service } = makeService();
     client.account_student_access.findFirst.mockResolvedValue({ student_id: 'st1' });
     await expect(service.setDisplayName('acct', n)).rejects.toThrow();
+  });
+
+  it('calls reclassifyIfStale on every profile view', async () => {
+    const { client, privacy, service } = makeService();
+    client.account_student_access.findFirst.mockResolvedValue({ student_id: 'st1' });
+    await service.getOwnProfile('acct');
+    expect(privacy.reclassifyIfStale).toHaveBeenCalledWith('st1', expect.any(String));
   });
 });
 

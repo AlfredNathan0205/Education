@@ -297,6 +297,124 @@ export class PrivacyService {
     };
   }
 
+  /**
+   * If the student's current classification was fail-closed because no active
+   * policy existed at the time, and an active policy exists NOW, re-classify
+   * using the DOB already stored in the original classification row.
+   *
+   * Creates a new age_classification row (append-only) and supersedes the old
+   * one. The DOB stays inside this module — it is read from the DB, used for
+   * classification, and stored again, but never returned or emitted.
+   *
+   * A classification made under an active policy (basis = POLICY) is never
+   * re-evaluated: only FAIL_CLOSED_NO_ACTIVE_POLICY triggers this path.
+   */
+  async reclassifyIfStale(
+    studentId: string,
+    jurisdictionCode: string,
+    now: Date = new Date(),
+  ): Promise<void> {
+    // Quick check outside the transaction to avoid locking on every GET.
+    const peek = await this.db.client.age_classification.findFirst({
+      where: { student_id: studentId, superseded_at: null },
+      select: { basis: true },
+    });
+    if (!peek || peek.basis !== 'FAIL_CLOSED_NO_ACTIVE_POLICY') return;
+
+    // All reads and writes inside a single transaction with a row lock on the
+    // student, so two concurrent GETs cannot both create a new classification.
+    await this.db.client.$transaction(async (tx: Prisma.TransactionClient) => {
+      // Serialize: same pattern as recordAgeClassification.
+      await tx.$queryRaw`SELECT id FROM student WHERE id = ${studentId}::uuid FOR UPDATE`;
+
+      // Re-read under lock — another request may have already reclassified.
+      const current = await tx.age_classification.findFirst({
+        where: { student_id: studentId, superseded_at: null },
+        select: {
+          id: true,
+          basis: true,
+          date_of_birth: true,
+          dob_evidence_method: true,
+        },
+      });
+      if (!current || current.basis !== 'FAIL_CLOSED_NO_ACTIVE_POLICY') return;
+
+      const policyRow = await tx.jurisdiction_policy.findFirst({
+        where: {
+          jurisdiction_code: jurisdictionCode,
+          status: 'ACTIVE',
+          legal_review: 'COUNSEL_REVIEWED',
+        },
+        orderBy: { version: 'desc' },
+      });
+      if (!policyRow) return;
+
+      let config: JurisdictionPolicyConfig | null = null;
+      try {
+        config = parsePolicyConfig(policyRow.config);
+      } catch {
+        return;
+      }
+
+      // If the policy has no accepted DOB evidence methods, or the stored
+      // method is not in the accepted list, do not reclassify. Fail closed:
+      // an empty list means "not yet established" and must not pass any method.
+      const method = current.dob_evidence_method as string;
+      if (
+        config.acceptedDobEvidenceMethods.length === 0 ||
+        !config.acceptedDobEvidenceMethods.includes(method)
+      ) {
+        return;
+      }
+
+      const dateOfBirth = current.date_of_birth as Date;
+      const result = classifyAge({ dateOfBirth, asOf: now, policy: config });
+
+      await tx.age_classification.updateMany({
+        where: { student_id: studentId, superseded_at: null },
+        data: { superseded_at: now },
+      });
+      const row = await tx.age_classification.create({
+        data: {
+          student_id: studentId,
+          jurisdiction_policy_id: policyRow.id,
+          date_of_birth: dateOfBirth,
+          is_minor: result.isMinor,
+          requires_guardian_consent: result.requiresGuardianConsent,
+          basis: result.basis,
+          dob_evidence_method: method,
+        },
+      });
+
+      await this.outbox.publish(tx, {
+        aggregateType: 'student',
+        aggregateId: studentId,
+        eventType: 'privacy.age_classification.reclassified.v1',
+        payload: {
+          studentId,
+          isMinor: result.isMinor,
+          requiresGuardianConsent: result.requiresGuardianConsent,
+          basis: result.basis,
+          previousBasis: 'FAIL_CLOSED_NO_ACTIVE_POLICY',
+        },
+        idempotencyKey: `age-reclassification:${row.id}`,
+      });
+      await tx.audit_event.create({
+        data: {
+          actor_account_id: null,
+          action: 'privacy.age_classification.reclassified',
+          subject_type: 'student',
+          subject_id: studentId,
+          metadata: {
+            basis: result.basis,
+            previousBasis: 'FAIL_CLOSED_NO_ACTIVE_POLICY',
+            jurisdictionPolicyId: policyRow.id,
+          },
+        },
+      });
+    });
+  }
+
   /** Record a consent grant, by the student themselves or by a verified guardian. */
   async grantConsent(
     input: {
