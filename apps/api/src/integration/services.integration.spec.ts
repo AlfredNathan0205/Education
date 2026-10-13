@@ -149,6 +149,29 @@ describe('IdentityService (real DB)', () => {
     const auth = await identityService.authenticate(login.sessionToken);
     expect(auth).toBeNull();
   });
+
+  it('delivery failure removes the stored code and allows an immediate retry', async () => {
+    const { OtpDeliveryError } = require('../identity/otp-sender.port');
+    const failSender: OtpSender = {
+      send: jest.fn().mockRejectedValue(new OtpDeliveryError('provider down')),
+    };
+    const failService = new IdentityService(dbService, outbox, failSender);
+
+    // First attempt: send fails → OtpDeliveryError
+    await expect(
+      failService.requestOtp('EMAIL', 'failtest@example.com'),
+    ).rejects.toThrow(OtpDeliveryError);
+
+    // The otp_challenge row should have been cleaned up
+    const leftover = await prisma.otp_challenge.findFirst({
+      where: { kind: 'EMAIL', identifier_normalized: 'failtest@example.com' },
+    });
+    expect(leftover).toBeNull();
+
+    // Second attempt immediately (no cooldown): succeeds with working sender
+    await identityService.requestOtp('EMAIL', 'failtest@example.com');
+    expect(capturedCodes.some((c) => c.identifier === 'failtest@example.com')).toBe(true);
+  });
 });
 
 /* ===================================================================== */

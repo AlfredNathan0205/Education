@@ -1,6 +1,7 @@
 import type { DatabaseService } from '../database/database.service';
 import type { OutboxService } from '../outbox/outbox.service';
 import { IdentityService, InvalidOtpError } from './identity.service';
+import { OtpDeliveryError } from './otp-sender.port';
 import { OTP_RESEND_COOLDOWN_MS, hashOtpCode, hashSessionToken } from './otp';
 import type { OtpSender } from './otp-sender.port';
 
@@ -16,7 +17,7 @@ const NOW = new Date('2026-10-11T12:00:00Z');
 
 function makeFakes() {
   const client: Record<string, any> = {
-    otp_challenge: { findFirst: jest.fn(), create: jest.fn(), updateMany: jest.fn() },
+    otp_challenge: { findFirst: jest.fn(), create: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn().mockResolvedValue({ count: 1 }) },
     authentication_identity: { findUnique: jest.fn(), update: jest.fn() },
     account: { create: jest.fn() },
     auth_session: { create: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn() },
@@ -48,6 +49,39 @@ beforeEach(() => {
 });
 afterAll(() => {
   delete process.env.OTP_HMAC_SECRET;
+});
+
+describe('IdentityService.requestOtp: delivery failure', () => {
+  it('removes the stored code and reports a delivery error, so the person can retry straight away', async () => {
+    const { client, sender, service } = makeFakes();
+    client.otp_challenge.findFirst.mockResolvedValue(null);
+    client.otp_challenge.create.mockResolvedValue({ id: 'ch-9' });
+    sender.send.mockRejectedValue(new OtpDeliveryError('email provider timed out'));
+
+    await expect(service.requestOtp('EMAIL', EMAIL, NOW)).rejects.toBeInstanceOf(OtpDeliveryError);
+    expect(client.otp_challenge.deleteMany).toHaveBeenCalledWith({ where: { id: 'ch-9' } });
+  });
+
+  it('turns an unexpected sender error into a delivery error without leaking its text', async () => {
+    const { client, sender, service } = makeFakes();
+    client.otp_challenge.findFirst.mockResolvedValue(null);
+    client.otp_challenge.create.mockResolvedValue({ id: 'ch-9' });
+    sender.send.mockRejectedValue(new Error('secret provider detail'));
+
+    const err = await service.requestOtp('EMAIL', EMAIL, NOW).catch((e) => e);
+    expect(err).toBeInstanceOf(OtpDeliveryError);
+    expect(String(err.message)).not.toContain('secret');
+  });
+
+  it('still reports the delivery error if cleaning up the stored code fails', async () => {
+    const { client, sender, service } = makeFakes();
+    client.otp_challenge.findFirst.mockResolvedValue(null);
+    client.otp_challenge.create.mockResolvedValue({ id: 'ch-9' });
+    client.otp_challenge.deleteMany.mockRejectedValue(new Error('db down'));
+    sender.send.mockRejectedValue(new OtpDeliveryError());
+
+    await expect(service.requestOtp('EMAIL', EMAIL, NOW)).rejects.toBeInstanceOf(OtpDeliveryError);
+  });
 });
 
 describe('IdentityService.requestOtp', () => {

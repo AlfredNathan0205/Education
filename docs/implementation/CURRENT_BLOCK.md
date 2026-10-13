@@ -70,6 +70,8 @@ Done: Prisma models for 01a/01b/01c plus minimal `student` and `audit_event`; pu
 
 - **CONSTRUCTION-006 — Curriculum content intake (teacher/admin upload + AI draft import).** See [`CONSTRUCTION-006_INTERPRETATION.md`](./CONSTRUCTION-006_INTERPRETATION.md) and `docs/curriculum/CONTENT_UPLOAD_FORMAT.md`. No migration needed. Needs CI and a real-database pass. The AI draft content itself is not yet written: it waits for the exact CISCE source pages.
 
+- **CONSTRUCTION-007 — Email delivery of sign-in codes.** See [`CONSTRUCTION-007_INTERPRETATION.md`](./CONSTRUCTION-007_INTERPRETATION.md). No migration. Resend adapter behind the existing `OtpSender` port; unsafe configuration fails at startup; a failed send removes the stored code so the person can retry at once. Needs CI, a real-database pass, and one real send to confirm delivery. Phone (SMS) is not implemented.
+
 ## Still gated, not part of this block
 
 - Activating any ICSE Grade 8 curriculum, and the AI Question Factory (step 8), remain gated on the ICSE Grade 8 syllabus source / human approver details.

@@ -4,10 +4,12 @@ import {
   Controller,
   HttpCode,
   Post,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { InvalidIdentifierError, type IdentityKind } from './identifier';
 import { IdentityService, InvalidOtpError } from './identity.service';
+import { OtpDeliveryError } from './otp-sender.port';
 
 const KINDS: readonly IdentityKind[] = ['EMAIL', 'PHONE'];
 const CODE_PATTERN = /^\d{6}$/;
@@ -41,6 +43,13 @@ export class IdentityController {
       await this.identity.requestOtp(kind, identifier);
     } catch (error) {
       if (error instanceof InvalidIdentifierError) throw new BadRequestException(error.message);
+      if (error instanceof OtpDeliveryError) {
+        throw new ServiceUnavailableException(
+          kind === 'PHONE'
+            ? "Phone sign-in isn't available yet. Please use your email address."
+            : 'We could not send the code. Please try again in a moment.',
+        );
+      }
       throw error;
     }
     return { status: 'accepted' };

@@ -71,6 +71,18 @@ This command refuses to run when `NODE_ENV=production` or when
 automatically. The policy is clearly labelled `NOT A LEGAL VALUE` and
 audited as `DEV TEST POLICY`.
 
+## Sign-in codes by email
+
+By default (development) codes are written to the API log. To send real email, set these in `.env` and recreate the API container:
+
+```
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=<your key>
+EMAIL_FROM=Exam App <signin@your-verified-domain>
+```
+
+`EMAIL_FROM` must be on a domain verified in Resend. The API refuses to start with `EMAIL_PROVIDER=console` in production, or with `resend` and a missing key. See `docs/implementation/CONSTRUCTION-007_INTERPRETATION.md`.
+
 ## Prerequisites
 
 - Node.js >= 20
