@@ -30,6 +30,7 @@ import { DEV_DRAFT_WORDING_REFERENCE } from '../guardian/consent-texts';
 import { GuardianConflictError, GuardianNotPermittedError, GuardianUnavailableError } from '../guardian/guardian.errors';
 import { QuestionService } from '../question/question.service';
 import { PublicationService } from '../publication/publication.service';
+import { BlueprintService } from '../blueprint/blueprint.service';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
@@ -75,6 +76,11 @@ async function cleanAll() {
   await prisma.ai_call_log.deleteMany();
   await prisma.generation_attempt.deleteMany();
   await prisma.generation_batch.deleteMany();
+  await prisma.assessment_assembly_decision.deleteMany();
+  await prisma.assessment_assembly_run.deleteMany();
+  // Designs made by tests. The ones the migration seeds (QUICK10, SUBJECT20, SUBJECT25) stay.
+  await prisma.assessment_blueprint_version.deleteMany({ where: { blueprint: { code: { startsWith: 'IT_' } } } });
+  await prisma.assessment_blueprint.deleteMany({ where: { code: { startsWith: 'IT_' } } });
   await prisma.student_response_event.deleteMany();
   await prisma.student_response.deleteMany();
   await prisma.assessment_result.deleteMany();
@@ -1197,6 +1203,95 @@ describe('ExamService (real DB)', () => {
     const results = await Promise.allSettled([publicationSvc.publish(a, rev), publicationSvc.publish(b, rev)]);
     expect(results.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
     expect(await prisma.question_publication.count({ where: { revision_id: rev } })).toBe(1);
+  });
+
+  // ---- Step 10: tests are built from published blueprint versions ----
+
+  const blueprintSvc = new BlueprintService(dbService, authzService, outbox);
+
+  it('the migration seeds Quick 10 (on, published, 5/3/2), a 20-question draft (off) and a 25-question shell (off)', async () => {
+    const rows = await prisma.assessment_blueprint.findMany({
+      where: { code: { in: ['QUICK10', 'SUBJECT20', 'SUBJECT25'] } },
+      orderBy: { code: 'asc' },
+      include: { versions: { include: { difficulties: true, types: true } } },
+    });
+    expect(rows.map((b) => [b.code, b.enabled, b.versions.map((v) => `${v.version}:${v.status}`)])).toEqual([
+      ['QUICK10', true, ['1:PUBLISHED']],
+      ['SUBJECT20', false, ['1:DRAFT']],
+      ['SUBJECT25', false, []],
+    ]);
+    const q10 = rows[0].versions[0];
+    expect(q10).toMatchObject({ total_questions: 10, scope_mode: 'WHOLE_SUBJECT', prefer_unseen: true, opening_difficulty: 'EASY' });
+    expect(Object.fromEntries(q10.difficulties.map((d) => [d.difficulty, d.count]))).toEqual({ EASY: 5, MEDIUM: 3, HARD: 2 });
+    expect(q10.types.map((t) => [t.question_type, t.count])).toEqual([['MCQ', 10]]);
+    const s20 = rows[1].versions[0];
+    expect(Object.fromEntries(s20.difficulties.map((d) => [d.difficulty, d.count]))).toEqual({ EASY: 8, MEDIUM: 7, HARD: 5 });
+  });
+
+  it('a test records its assembly run: the published version, one decision per question, and what was relaxed', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12); // 4 per difficulty: Quick 10 wants 5 EASY, so one comes from MEDIUM
+    const { accountId } = await adult();
+    const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    const session = await prisma.assessment_session.findUniqueOrThrow({ where: { id: assessmentId }, include: { instance: { include: { items: true } } } });
+    const run = await prisma.assessment_assembly_run.findUniqueOrThrow({ where: { instance_id: session.instance_id }, include: { decisions: true, blueprint_version: { include: { blueprint: true } } } });
+    expect(run.blueprint_version.blueprint.code).toBe('QUICK10');
+    expect(run).toMatchObject({ engine_version: 'assembly-v1', mode: 'TEST', seed: session.instance.seed, relaxed: true, eligible_count: 12 });
+    expect(run.relaxations).toEqual([{ kind: 'DIFFICULTY_SUBSTITUTED', wanted: 'EASY', got: 'MEDIUM', count: 1 }]);
+    expect(run.decisions).toHaveLength(10);
+    const byPos = new Map(session.instance.items.map((i) => [i.position, i.question_revision_id]));
+    for (const d of run.decisions) expect(d.question_revision_id).toBe(byPos.get(d.position));
+    expect(run.decisions.filter((d) => d.requirement === 'SUBSTITUTE')).toHaveLength(1);
+  });
+
+  it('the database allows one published and one draft version per design', async () => {
+    const q10 = await prisma.assessment_blueprint.findUniqueOrThrow({ where: { code: 'QUICK10' } });
+    await expect(prisma.assessment_blueprint_version.create({ data: { blueprint_id: q10.id, version: 99, status: 'PUBLISHED', total_questions: 10 } })).rejects.toThrow();
+    const s20 = await prisma.assessment_blueprint.findUniqueOrThrow({ where: { code: 'SUBJECT20' } });
+    await expect(prisma.assessment_blueprint_version.create({ data: { blueprint_id: s20.id, version: 99, status: 'DRAFT', total_questions: 20 } })).rejects.toThrow();
+  });
+
+  it('a design is drafted, previewed, published and switched on; a new version retires the old; tests keep their version', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const editor = await roleAccount('CURRICULUM_EDITOR');
+    const approver = await roleAccount('CURRICULUM_APPROVER');
+    const { accountId } = await adult();
+
+    const made = await blueprintSvc.create(editor, { code: 'IT_TEN', name: 'Integration ten', design: { totalQuestions: 10, difficulty: { EASY: 4, MEDIUM: 4, HARD: 2 } } });
+    const v1 = made.versions[0].versionId;
+    const preview = await blueprintSvc.preview(editor, v1, unitId, 'fixed');
+    expect(preview).toMatchObject({ ok: true, blueprint: 'IT_TEN', version: 1, status: 'DRAFT' });
+    expect(await blueprintSvc.preview(editor, v1, unitId, 'fixed')).toEqual(preview);
+    expect(await prisma.assessment_assembly_run.count()).toBe(0);
+
+    await expect(exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST', blueprint: 'IT_TEN' })).rejects.toThrow(/not available/);
+    await expect(blueprintSvc.publishDraft(editor, made.id)).rejects.toThrow(/only an approver/);
+    await blueprintSvc.publishDraft(approver, made.id);
+    await blueprintSvc.setEnabled(approver, made.id, true);
+
+    const first = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST', blueprint: 'IT_TEN' });
+    const inst1 = (await prisma.assessment_session.findUniqueOrThrow({ where: { id: first.assessmentId }, include: { instance: { include: { assembly_run: true } } } })).instance;
+    expect(inst1).toMatchObject({ blueprint_code: 'IT_TEN', blueprint_version: 1 });
+    expect(inst1.assembly_run!.blueprint_version_id).toBe(v1);
+
+    await blueprintSvc.saveDraft(editor, made.id, { totalQuestions: 10, difficulty: { EASY: 3, MEDIUM: 4, HARD: 3 } });
+    const after = await blueprintSvc.publishDraft(approver, made.id);
+    expect(after.versions.map((v) => `${v.version}:${v.status}`)).toEqual(['2:PUBLISHED', '1:RETIRED']);
+    expect(after.versions[1].testsBuilt).toBe(1);
+
+    const second = await exam.create(accountId, { subjectVersionId: unitId, mode: 'PRACTICE', blueprint: 'IT_TEN' });
+    const inst2 = (await prisma.assessment_session.findUniqueOrThrow({ where: { id: second.assessmentId }, include: { instance: true } })).instance;
+    expect(inst2).toMatchObject({ blueprint_code: 'IT_TEN', blueprint_version: 2 });
+    // The first test still says which version it was built from.
+    expect((await prisma.assessment_instance.findUniqueOrThrow({ where: { id: inst1.id } })).blueprint_version).toBe(1);
+
+    const codes = async () => (await exam.listUnits(accountId))[0].tests.map((t) => t.code);
+    expect(await codes()).toEqual(['IT_TEN', 'QUICK10']);
+    await blueprintSvc.setEnabled(approver, made.id, false);
+    expect(await codes()).toEqual(['QUICK10']);
+    const events = (await prisma.outbox_event.findMany({ where: { aggregate_id: made.id } })).map((e) => e.event_type);
+    expect(events).toEqual(['blueprint.version_published.v1', 'blueprint.version_published.v1']);
   });
 });
 

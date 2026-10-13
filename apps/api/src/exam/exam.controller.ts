@@ -67,7 +67,11 @@ export class ExamController {
     const b = body(raw);
     const subjectVersionId = uuid(b.subjectVersionId, 'subjectVersionId');
     if (typeof b.mode !== 'string') throw new BadRequestException('mode must be TEST or PRACTICE');
-    return this.map(() => this.exam.create(req.accountId as string, { subjectVersionId, mode: b.mode as string }));
+    if (b.blueprint !== undefined && (typeof b.blueprint !== 'string' || !/^[A-Z][A-Z0-9_]{1,31}$/.test(b.blueprint))) {
+      throw new BadRequestException('blueprint is not valid');
+    }
+    const blueprint = b.blueprint as string | undefined;
+    return this.map(() => this.exam.create(req.accountId as string, { subjectVersionId, mode: b.mode as string, ...(blueprint ? { blueprint } : {}) }));
   }
 
   @Post('assessments/:id/present')

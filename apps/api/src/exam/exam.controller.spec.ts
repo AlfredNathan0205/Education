@@ -29,6 +29,13 @@ describe('ExamController input checks', () => {
     await controller.create(req, { subjectVersionId: ID, mode: 'PRACTICE' });
     expect(exam.create).toHaveBeenCalledWith('acct', { subjectVersionId: ID, mode: 'PRACTICE' });
   });
+  it('create passes a well-formed blueprint code and refuses a bad one', async () => {
+    const { controller, exam } = make();
+    await expect(controller.create(req, { subjectVersionId: ID, mode: 'TEST', blueprint: 'quick10' })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.create(req, { subjectVersionId: ID, mode: 'TEST', blueprint: 7 })).rejects.toBeInstanceOf(BadRequestException);
+    await controller.create(req, { subjectVersionId: ID, mode: 'TEST', blueprint: 'SUBJECT20' });
+    expect(exam.create).toHaveBeenCalledWith('acct', { subjectVersionId: ID, mode: 'TEST', blueprint: 'SUBJECT20' });
+  });
   it('rejects a malformed assessment id on every route', async () => {
     const { controller } = make();
     await expect(controller.present(req, 'nope')).rejects.toBeInstanceOf(BadRequestException);

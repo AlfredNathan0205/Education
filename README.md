@@ -136,6 +136,11 @@ To see how much of the bank is actually in the serving bank (read-only):
 docker compose exec api node apps/api/dist/publication/cli/bank.js status ICSE GRADE_8 PHYSICS
 ```
 
+**Test designs (blueprints)** — tests are built from the published version of a test design. Quick 10 (5 easy / 3 medium /
+2 hard, whole subject) is seeded on and published, so nothing changes for students. Designs are edited, previewed, published
+and switched on or off at http://localhost:3000/admin/blueprints (publishing and switching need an approver). Every test
+records how it was assembled (`assessment_assembly_run`, one `assessment_assembly_decision` per question).
+
 Data is stored in a Docker named volume (`pgdata`) and survives restarts.
 Run `docker compose down -v` to wipe everything and start fresh.
 
