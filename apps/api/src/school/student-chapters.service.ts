@@ -101,7 +101,7 @@ export class StudentChaptersService {
           if (!groups.has(key)) groups.set(key, { termLabel: e.term_label, assessmentLabel: e.assessment_label, chapters: [] });
           groups.get(key)!.chapters.push({ subjectCode: e.subject_code, chapterCode: e.chapter_code });
         }
-        schoolPlan = { schoolName: assoc.school.name, academicYear: plan.academic_year, groups: [...groups.values()] };
+        schoolPlan = { schoolName: assoc.school!.name, academicYear: plan.academic_year, groups: [...groups.values()] };
       }
     }
 
