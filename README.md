@@ -107,6 +107,13 @@ $S plan show <planId>
 $S plan publish <planId>                            # plan reopen <planId> to edit again
 ```
 
+**Coverage report** — where the question bank is thin (read-only; changes nothing).
+You choose the target number of approved questions per objective-and-difficulty cell:
+
+```bash
+docker compose exec api node apps/api/dist/bank-coverage/cli/coverage.js report ICSE GRADE_8 PHYSICS 10
+```
+
 Data is stored in a Docker named volume (`pgdata`) and survives restarts.
 Run `docker compose down -v` to wipe everything and start fresh.
 
