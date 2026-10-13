@@ -18,6 +18,9 @@ RUN pnpm install --frozen-lockfile
 # ── Build everything ─────────────────────────────────────────────────────
 FROM deps AS build
 COPY . .
+# COPY . . overwrites pnpm workspace symlinks stripped by .dockerignore.
+# Re-link, then generate the Prisma client before compiling TypeScript.
+RUN pnpm install --frozen-lockfile --offline
 RUN pnpm --filter @exam-app/database db:generate
 RUN pnpm run build
 

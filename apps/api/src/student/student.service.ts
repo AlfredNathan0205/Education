@@ -31,7 +31,7 @@ export interface StudentProfileView {
   requiresGuardianConsent: boolean;
 }
 
-export const DEFAULT_JURISDICTION = 'AE';
+export const DEFAULT_JURISDICTION = process.env.DEFAULT_JURISDICTION ?? 'AE';
 const DOB_METHOD = 'SELF_DECLARED';
 const NAME = /^[\p{L}\p{M}][\p{L}\p{M} .'-]{0,59}$/u;
 

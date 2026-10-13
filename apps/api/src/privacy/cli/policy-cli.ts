@@ -8,6 +8,10 @@
  *   3. activate <policyId>                       legal gate, then ACTIVE
  *
  * No legal value is ever defaulted here. The template ships with null thresholds.
+ *
+ * seed-dev-policy — local-development-only shortcut that creates and activates a
+ * TEST_ONLY jurisdiction policy in a single call. Refuses in production and
+ * requires ALLOW_DEV_TEST_POLICY=true.
  */
 import { readFileSync } from 'node:fs';
 import type { PrivacyService } from '../privacy.service';
@@ -23,8 +27,20 @@ export const USAGE = `Usage:
   policy draft <JURISDICTION> <config.json>
   policy review <policyId> <legalReviewReference>
   policy activate <policyId>
+  policy seed-dev-policy
 
 Set POLICY_OPERATOR to a name or email for the audit trail.`;
+
+/** The test-only policy config. Thresholds of 18 with SELF_DECLARED DOB. */
+export const DEV_TEST_POLICY_CONFIG = {
+  minorAgeThreshold: 18,
+  guardianConsentAgeThreshold: 18,
+  acceptedDobEvidenceMethods: ['SELF_DECLARED'],
+  acceptedGuardianVerificationMethods: ['SELF_DECLARED'],
+} as const;
+
+export const DEV_TEST_JURISDICTION = 'XX';
+export const DEV_TEST_REVIEW_REF = 'NOT A LEGAL VALUE - LOCAL TESTING ONLY';
 
 export interface CliDeps {
   service: Pick<
@@ -33,6 +49,8 @@ export interface CliDeps {
   >;
   readFile?: (path: string) => string;
   operator?: string;
+  /** Defaults to process.env when not injected (tests override this). */
+  env?: { NODE_ENV?: string; ALLOW_DEV_TEST_POLICY?: string };
 }
 
 export async function runPolicyCli(argv: string[], deps: CliDeps): Promise<string> {
@@ -70,7 +88,45 @@ export async function runPolicyCli(argv: string[], deps: CliDeps): Promise<strin
       await deps.service.activateJurisdictionPolicy(id, null);
       return `Activated ${id}.`;
     }
+    case 'seed-dev-policy': {
+      if (args.length !== 0) throw new CliUsageError(USAGE);
+      assertDevEnvironment(deps);
+
+      const draft = await deps.service.createJurisdictionPolicyDraft(
+        { jurisdictionCode: DEV_TEST_JURISDICTION, config: DEV_TEST_POLICY_CONFIG },
+        null,
+        operator,
+      );
+      await deps.service.markPolicyCounselReviewed(
+        draft.id,
+        DEV_TEST_REVIEW_REF,
+        null,
+        operator,
+      );
+      await deps.service.activateJurisdictionPolicy(draft.id, null);
+      return (
+        `[DEV TEST POLICY] Created and activated ${DEV_TEST_JURISDICTION} ` +
+        `v${draft.version} (id ${draft.id}). ` +
+        `NOT A LEGAL VALUE - LOCAL TESTING ONLY.`
+      );
+    }
     default:
       throw new CliUsageError(USAGE);
+  }
+}
+
+/**
+ * Guard: seed-dev-policy must never run in production, and requires an explicit
+ * opt-in flag so it cannot be triggered by accident.
+ */
+export function assertDevEnvironment(deps: CliDeps): void {
+  const env = deps.env ?? process.env;
+  if (env.NODE_ENV === 'production') {
+    throw new CliUsageError('seed-dev-policy refuses to run when NODE_ENV=production');
+  }
+  if (env.ALLOW_DEV_TEST_POLICY !== 'true') {
+    throw new CliUsageError(
+      'seed-dev-policy requires ALLOW_DEV_TEST_POLICY=true (set it in .env)',
+    );
   }
 }

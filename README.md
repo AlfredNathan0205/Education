@@ -49,6 +49,19 @@ docker compose exec api node apps/api/dist/authz/cli/roles.js <command> [args...
 Data is stored in a Docker named volume (`pgdata`) and survives restarts.
 Run `docker compose down -v` to wipe everything and start fresh.
 
+**Seed a test jurisdiction policy** — the student flow (date-of-birth →
+name) requires an active jurisdiction policy. A dev-only command creates
+one for jurisdiction `XX` with both thresholds set to 18:
+
+```bash
+docker compose exec api node apps/api/dist/privacy/cli/policy.js seed-dev-policy
+```
+
+This command refuses to run when `NODE_ENV=production` or when
+`ALLOW_DEV_TEST_POLICY` is not `true`. The docker-compose.yml sets both
+automatically. The policy is clearly labelled `NOT A LEGAL VALUE` and
+audited as `DEV TEST POLICY`.
+
 ## Prerequisites
 
 - Node.js >= 20

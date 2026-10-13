@@ -36,6 +36,8 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       API_PORT: "3001"
+      ALLOW_DEV_TEST_POLICY: "true"
+      DEFAULT_JURISDICTION: "XX"
     depends_on:
       postgres:
         condition: service_healthy
