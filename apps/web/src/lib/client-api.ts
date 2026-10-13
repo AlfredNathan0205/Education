@@ -63,9 +63,36 @@ export interface QuestionRow {
   state: 'DRAFT' | 'IN_REVIEW' | 'CHANGES_REQUIRED' | 'APPROVED' | 'RETIRED' | 'SUPERSEDED' | 'QUARANTINED';
   revision: number;
   origin: 'HUMAN' | 'AI_DRAFT';
+  bankStatus: BankStatus;
+}
+
+export type BankStatus = 'NOT_PUBLISHED' | 'WITHDRAWN' | 'NEW' | 'HEALTHY' | 'WATCH' | 'DEGRADED' | 'QUARANTINED' | 'RETIRED';
+
+export const BANK_STATUS_LABEL: Record<BankStatus, string> = {
+  NOT_PUBLISHED: 'not published',
+  WITHDRAWN: 'withdrawn',
+  NEW: 'published (new)',
+  HEALTHY: 'published (healthy)',
+  WATCH: 'published (watch)',
+  DEGRADED: 'published but held back (degraded)',
+  QUARANTINED: 'quarantined',
+  RETIRED: 'retired',
+};
+
+export interface UnitBankSummary {
+  total: number;
+  byState: Record<string, number>;
+  byStatus: Record<BankStatus, number>;
+  awaitingPublication: number;
+}
+
+export interface PublishUnitResult {
+  published: number;
+  skipped: Array<{ code: string; reasons: string[] }>;
 }
 
 export interface QuestionDetail extends QuestionRow {
+  publication: { state: 'PUBLISHED' | 'WITHDRAWN'; publishedAt: string; withdrawnReason: string | null; withdrawnNote: string | null } | null;
   explanation: string | null;
   options: Array<{ label: string; text: string; isCorrect: boolean }>;
   reviewNote: string | null;

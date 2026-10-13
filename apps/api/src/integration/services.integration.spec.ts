@@ -29,6 +29,7 @@ import { GuardianService } from '../guardian/guardian.service';
 import { DEV_DRAFT_WORDING_REFERENCE } from '../guardian/consent-texts';
 import { GuardianConflictError, GuardianNotPermittedError, GuardianUnavailableError } from '../guardian/guardian.errors';
 import { QuestionService } from '../question/question.service';
+import { PublicationService } from '../publication/publication.service';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
@@ -68,6 +69,9 @@ async function cleanAll() {
   capturedCodes = [];
   (sender.send as jest.Mock).mockClear();
 
+  await prisma.question_publication_event.deleteMany();
+  await prisma.question_publication.deleteMany();
+  await prisma.question_bank_state.deleteMany();
   await prisma.ai_call_log.deleteMany();
   await prisma.generation_attempt.deleteMany();
   await prisma.generation_batch.deleteMany();
@@ -869,14 +873,14 @@ describe('ExamService (real DB)', () => {
     return id;
   }
 
-  async function bank(unitId: string, count = 12) {
+  async function bank(unitId: string, count = 12, opts: { published?: boolean } = {}) {
     const sv = await prisma.curriculum_subject_version.findUniqueOrThrow({ where: { id: unitId } });
     uniq++;
     for (let k = 1; k <= count; k++) {
       const q = await prisma.question.create({
         data: { curriculum_version_id: sv.curriculum_version_id, grade_id: sv.grade_id, subject_id: sv.subject_id, code: `Q${k}`, objective_path: 'CH01/T01/MC01/LO01' },
       });
-      await prisma.question_revision.create({
+      const rev = await prisma.question_revision.create({
         data: {
           question_id: q.id,
           revision: 1,
@@ -889,6 +893,8 @@ describe('ExamService (real DB)', () => {
           options: { create: [1, 2, 3, 4].map((p) => ({ position: p, text: `Answer ${k}-${p}`, is_correct: p === ((k + 1) % 4) + 1 })) },
         },
       });
+      // Approved is not published: tests are built only from published questions.
+      if (opts.published !== false) await prisma.question_publication.create({ data: { revision_id: rev.id, state: 'PUBLISHED', published_by: '00000000-0000-4000-8000-000000000001' } });
     }
   }
 
@@ -1062,6 +1068,132 @@ describe('ExamService (real DB)', () => {
     const { accountId } = await adult();
     expect(await exam.listUnits(accountId)).toEqual([]);
     await expect(exam.create(accountId, { subjectVersionId: id, mode: 'TEST' })).rejects.toThrow(/not open for tests/);
+  });
+
+  // ---- Step 9: approved is not published ----
+
+  const questionsSvc = new QuestionService(dbService);
+  const publicationSvc = new PublicationService(dbService, authzService, questionsSvc, { allowUnactivatedCurriculum: false, resumeHours: 24 });
+
+  async function roleAccount(roleCode: string) {
+    const account = await prisma.account.create({ data: {} });
+    await authzService.grantRole({ targetAccountId: account.id, roleCode, actorAccountId: null, operator: 'test-setup' });
+    return account.id;
+  }
+  async function revisionIds(unitId: string): Promise<string[]> {
+    const sv = await prisma.curriculum_subject_version.findUniqueOrThrow({ where: { id: unitId } });
+    const revs = await prisma.question_revision.findMany({
+      where: { question: { curriculum_version_id: sv.curriculum_version_id, grade_id: sv.grade_id, subject_id: sv.subject_id } },
+      orderBy: { question: { code: 'asc' } },
+      select: { id: true },
+    });
+    return revs.map((r) => r.id);
+  }
+  /** Gives each approved revision what publication checks: a confirmed key and a passing automatic check. */
+  async function readyToPublish(ids: string[]) {
+    for (const id of ids) {
+      await prisma.question_revision.update({ where: { id }, data: { answer_verified: true } });
+      await prisma.question_validation_run.create({ data: { revision_id: id, validator_version: 'det-1', passed: true, critical_count: 0, major_count: 0, minor_count: 0, findings: [] } });
+    }
+  }
+
+  it('approved questions that nobody has published are not served', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12, { published: false });
+    const { accountId } = await adult();
+    await expect(exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' })).rejects.toThrow();
+    expect(await prisma.assessment_session.count()).toBe(0);
+  });
+
+  it('an approver publishes a whole unit, then tests can be built; a reviewer cannot publish', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12, { published: false });
+    await readyToPublish(await revisionIds(unitId));
+    const reviewer = await roleAccount('CURRICULUM_REVIEWER');
+    const approver = await roleAccount('CURRICULUM_APPROVER');
+    await expect(publicationSvc.publishUnit(reviewer, unitId)).rejects.toThrow(/only an approver/);
+
+    expect(await publicationSvc.publishUnit(approver, unitId)).toEqual({ published: 12, skipped: [] });
+    expect(await prisma.question_publication.count({ where: { state: 'PUBLISHED' } })).toBe(12);
+    expect(await prisma.question_publication_event.count({ where: { action: 'PUBLISH' } })).toBe(12);
+    expect((await publicationSvc.summary(approver, unitId)).awaitingPublication).toBe(0);
+
+    const { accountId } = await adult();
+    const created = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    expect(created.assessmentId).toBeTruthy();
+  });
+
+  it('a withdrawn question, and a degraded one, drop out of new tests', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const ids = await revisionIds(unitId);
+    const reviewer = await roleAccount('CURRICULUM_REVIEWER');
+    await publicationSvc.withdraw(reviewer, ids[0], { reasonCode: 'ANSWER_WRONG', note: 'The key looks wrong.' });
+    await publicationSvc.setHealth(reviewer, ids[1], { health: 'WATCH', reasonCode: 'OTHER', note: 'Watching this one.' });
+
+    const { accountId, studentId } = await adult();
+    const t = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    const session = await prisma.assessment_session.findUniqueOrThrow({ where: { id: t.assessmentId } });
+    const served = (await prisma.assessment_instance_question.findMany({ where: { instance_id: session.instance_id } })).map((i) => i.question_revision_id);
+    expect(served).toHaveLength(10);
+    expect(served).not.toContain(ids[0]);
+    expect(studentId).toBeTruthy();
+
+    // Two DEGRADED plus the withdrawn one leave only 9 servable questions, which is too few for a test.
+    await publicationSvc.setHealth(reviewer, ids[2], { health: 'DEGRADED', reasonCode: 'LIVE_PERFORMANCE_SIGNAL', note: 'Far too many miss it.' });
+    await publicationSvc.setHealth(reviewer, ids[3], { health: 'DEGRADED', reasonCode: 'LIVE_PERFORMANCE_SIGNAL', note: 'Far too many miss it.' });
+    const other = await adult();
+    await expect(exam.create(other.accountId, { subjectVersionId: unitId, mode: 'TEST' })).rejects.toThrow();
+  });
+
+  it('quarantine and retire withdraw the publication; restoring does not publish again', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const ids = await revisionIds(unitId);
+    const reviewerId = await roleAccount('CURRICULUM_REVIEWER');
+    const approverId = await roleAccount('CURRICULUM_APPROVER');
+    const reviewer = { kind: 'HUMAN' as const, accountId: reviewerId, role: 'REVIEWER' as const };
+    const approver = { kind: 'HUMAN' as const, accountId: approverId, role: 'APPROVER' as const };
+
+    await questionsSvc.transition(ids[0], 'QUARANTINED', reviewer, { reasonCode: 'ANSWER_WRONG', note: 'Reported wrong.' });
+    expect(await prisma.question_publication.findUniqueOrThrow({ where: { revision_id: ids[0] } })).toMatchObject({ state: 'WITHDRAWN', withdrawn_by: reviewerId, withdraw_reason_code: 'ANSWER_WRONG' });
+    await questionsSvc.transition(ids[1], 'RETIRED', reviewer, { reasonCode: 'OTHER', note: 'No longer needed.' });
+    expect((await prisma.question_publication.findUniqueOrThrow({ where: { revision_id: ids[1] } })).state).toBe('WITHDRAWN');
+
+    await questionsSvc.transition(ids[0], 'APPROVED', approver, { reasonCode: 'OTHER', note: 'Checked, the key is right.' });
+    expect((await prisma.question_publication.findUniqueOrThrow({ where: { revision_id: ids[0] } })).state).toBe('WITHDRAWN');
+    await readyToPublish([ids[0]]);
+    await publicationSvc.publish(approverId, ids[0]);
+    expect((await prisma.question_publication.findUniqueOrThrow({ where: { revision_id: ids[0] } })).state).toBe('PUBLISHED');
+    expect(await prisma.question_publication_event.count({ where: { revision_id: ids[0] } })).toBe(3);
+  });
+
+  it('refuses to publish in a curriculum that is not active, and reports it in publish-all', async () => {
+    const { id } = await curriculumService.createSubjectVersion(
+      { curriculumCode: 'EXAMCUR3', curriculumName: 'Third', versionLabel: '2026-27', gradeCode: 'G8', subjectCode: 'DRAFTPUB', subjectName: 'Draft Pub' },
+      editor,
+    );
+    await bank(id, 3, { published: false });
+    const approver = await roleAccount('CURRICULUM_APPROVER');
+    const ids = await revisionIds(id);
+    await readyToPublish(ids);
+    await expect(publicationSvc.publish(approver, ids[0])).rejects.toThrow(/not active|no longer exists/);
+    const r = await publicationSvc.publishUnit(approver, id);
+    expect(r.published).toBe(0);
+    expect(r.skipped).toHaveLength(3);
+    expect(await prisma.question_publication.count()).toBe(0);
+  });
+
+  it('one publication row per version, even when two approvers click at once', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 1, { published: false });
+    const [rev] = await revisionIds(unitId);
+    await readyToPublish([rev]);
+    const a = await roleAccount('CURRICULUM_APPROVER');
+    const b = await roleAccount('CURRICULUM_APPROVER');
+    const results = await Promise.allSettled([publicationSvc.publish(a, rev), publicationSvc.publish(b, rev)]);
+    expect(results.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+    expect(await prisma.question_publication.count({ where: { revision_id: rev } })).toBe(1);
   });
 });
 
