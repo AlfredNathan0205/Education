@@ -72,6 +72,8 @@ Done: Prisma models for 01a/01b/01c plus minimal `student` and `audit_event`; pu
 
 - **CONSTRUCTION-007 — Email delivery of sign-in codes.** See [`CONSTRUCTION-007_INTERPRETATION.md`](./CONSTRUCTION-007_INTERPRETATION.md). No migration. Resend adapter behind the existing `OtpSender` port; unsafe configuration fails at startup; a failed send removes the stored code so the person can retry at once. Needs CI, a real-database pass, and one real send to confirm delivery. Phone (SMS) is not implemented.
 
+- **CONSTRUCTION-008 — Question bank (multiple choice).** See [`CONSTRUCTION-008_INTERPRETATION.md`](./CONSTRUCTION-008_INTERPRETATION.md) and `docs/question/QUESTION_UPLOAD_FORMAT.md`. Needs a migration, CI, and a real-database pass. Questions are stored and reviewed here; serving them to students is the exam block.
+
 ## Still gated, not part of this block
 
 - Activating any ICSE Grade 8 curriculum, and the AI Question Factory (step 8), remain gated on the ICSE Grade 8 syllabus source / human approver details.

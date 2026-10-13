@@ -10,6 +10,7 @@ import { PrivacyModule } from './privacy/privacy.module';
 import { AuthzModule } from './authz/authz.module';
 import { StudentModule } from './student/student.module';
 import { CurriculumModule } from './curriculum/curriculum.module';
+import { QuestionModule } from './question/question.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { CurriculumModule } from './curriculum/curriculum.module';
     IdentityModule,
     PrivacyModule,
     CurriculumModule,
+    QuestionModule,
     StudentModule,
     AuthzModule,
   ],

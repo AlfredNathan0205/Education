@@ -1,0 +1,3 @@
+question_code,objective_code,stem,option_a,option_b,option_c,option_d,correct,difficulty,explanation
+Q-001,Replace with a learning objective code from the subject,Replace with the question text (at least 10 characters),Replace with option A,Replace with option B,Replace with option C,Replace with option D,B,EASY,Optional: why the correct answer is correct
+Q-002,Replace with a learning objective code from the subject,Replace with another question,Replace with option A,Replace with option B,Replace with option C,Replace with option D,A,MEDIUM,
