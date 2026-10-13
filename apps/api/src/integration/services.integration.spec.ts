@@ -18,6 +18,7 @@ import { PolicyActivationError } from '../privacy/jurisdiction-policy';
 import { CurriculumService } from '../curriculum/curriculum.service';
 import { CurriculumAdminService } from '../curriculum/curriculum-admin.service';
 import { CurriculumForbiddenError, CurriculumConflictError } from '../curriculum/curriculum.errors';
+import { ContentImportService } from '../curriculum/import/content-import.service';
 import { AuthzService, AuthzError } from '../authz/authz.service';
 import type { DatabaseService } from '../database/database.service';
 import { OutboxService } from '../outbox/outbox.service';
@@ -42,6 +43,7 @@ const privacyService = new PrivacyService(dbService, outbox);
 const curriculumService = new CurriculumService(dbService, outbox);
 const authzService = new AuthzService(dbService);
 const curriculumAdmin = new CurriculumAdminService(curriculumService, authzService);
+const contentImport = new ContentImportService(curriculumService, curriculumAdmin, authzService);
 
 beforeAll(async () => {
   process.env.OTP_HMAC_SECRET = process.env.OTP_HMAC_SECRET || 'a'.repeat(64);
@@ -638,5 +640,140 @@ describe('CurriculumAdminService (real DB)', () => {
 
     const row = await prisma.curriculum_subject_version.findUnique({ where: { id } });
     expect(row!.state).toBe('ACTIVE');
+  });
+});
+
+/* ===================================================================== */
+/*  CurriculumService read methods & content intake (Block 006)           */
+/* ===================================================================== */
+
+/** Helper: create an EDITOR account, a subject version with evidence, return ids. */
+async function makeEditorWithUnit(): Promise<{ editorId: string; unitId: string }> {
+  // Create an account by signing in
+  await identityService.requestOtp('EMAIL', `editor-${Date.now()}@example.com`);
+  const code = capturedCodes[capturedCodes.length - 1].code;
+  const { accountId: editorId } = await identityService.verifyOtp(
+    'EMAIL',
+    capturedCodes[capturedCodes.length - 1].identifier,
+    code,
+  );
+
+  // Bootstrap as SUPER_ADMIN so we can create + manage
+  await authzService.grantRole({ targetAccountId: editorId, roleCode: 'SUPER_ADMIN', actorAccountId: null, operator: 'test-bootstrap' });
+
+  // Create a subject version
+  const { id: unitId } = await curriculumAdmin.createSubjectVersion(editorId, {
+    curriculumCode: 'TEST',
+    curriculumName: 'Test Curriculum',
+    versionLabel: '2026',
+    gradeCode: 'G8',
+    subjectCode: `SUBJ_${Date.now()}`,
+    subjectName: 'Test Subject',
+  });
+
+  // Add evidence references
+  await curriculumAdmin.addEvidenceReference(editorId, unitId, {
+    sourceTitle: 'Test Source',
+    sourceUrl: 'https://example.com/source',
+    locator: 'p.1',
+    retrievedAt: new Date(),
+  });
+
+  return { editorId, unitId };
+}
+
+describe('CurriculumService read methods (real DB)', () => {
+  it('listSubjectVersions returns created units', async () => {
+    const { unitId } = await makeEditorWithUnit();
+    const list = await curriculumService.listSubjectVersions();
+    expect(list.some((u) => u.id === unitId)).toBe(true);
+    const match = list.find((u) => u.id === unitId)!;
+    expect(match.state).toBe('DRAFT');
+    expect(match.curriculumCode).toBe('TEST');
+  });
+
+  it('evidenceReferenceIds returns reference ids in creation order', async () => {
+    const { editorId, unitId } = await makeEditorWithUnit();
+    // Add a second reference
+    await curriculumAdmin.addEvidenceReference(editorId, unitId, {
+      sourceTitle: 'Second Source',
+      sourceUrl: 'https://example.com/source2',
+      locator: 'p.5',
+      retrievedAt: new Date(),
+    });
+    const ids = await curriculumService.evidenceReferenceIds(unitId);
+    expect(ids).toHaveLength(2);
+    // First added comes first
+    expect(typeof ids[0]).toBe('string');
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
+  it('findSubjectVersion finds latest revision by natural key', async () => {
+    const { unitId } = await makeEditorWithUnit();
+    const sv = await prisma.curriculum_subject_version.findUnique({
+      where: { id: unitId },
+      include: { curriculum_version: { include: { curriculum: true } }, grade: true, subject: true },
+    });
+    const found = await curriculumService.findSubjectVersion({
+      curriculumCode: sv!.curriculum_version.curriculum.code,
+      versionLabel: sv!.curriculum_version.label,
+      gradeCode: sv!.grade.code,
+      subjectCode: sv!.subject.code,
+    });
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(unitId);
+    expect(found!.state).toBe('DRAFT');
+  });
+
+  it('findSubjectVersion returns null for nonexistent key', async () => {
+    const found = await curriculumService.findSubjectVersion({
+      curriculumCode: 'NOPE',
+      versionLabel: '9999',
+      gradeCode: 'XX',
+      subjectCode: 'XX',
+    });
+    expect(found).toBeNull();
+  });
+});
+
+describe('Content intake end-to-end (real DB)', () => {
+  it('CSV upload → preview → save → submit → automated validation', async () => {
+    const { editorId, unitId } = await makeEditorWithUnit();
+
+    const csv = [
+      'chapter_code,chapter_title,topic_code,topic_title,concept_code,concept_title,objective_code,objective,evidence_ref,provenance,rationale',
+      'CH01,Forces and Motion,CH01-T1,Newton Laws,CH01-T1-C1,First Law,CH01-T1-C1-O1,State Newton first law,1,OFFICIAL_EXPLICIT,From official syllabus page 1',
+      'CH01,Forces and Motion,CH01-T1,Newton Laws,CH01-T1-C1,First Law,CH01-T1-C1-O2,Give examples of inertia,1,ADMIN_ADDED,Common teaching practice',
+    ].join('\n');
+
+    // 1. Preview — nothing is written
+    const preview = await contentImport.preview(editorId, unitId, 'csv', csv);
+    expect(preview.ok).toBe(true);
+    expect(preview.written).toBe(false);
+    expect(preview.counts.chapters).toBe(1);
+    expect(preview.counts.objectives).toBe(2);
+
+    // 2. Save as draft — content is written
+    const saved = await contentImport.upload(editorId, unitId, 'csv', csv);
+    expect(saved.ok).toBe(true);
+    expect(saved.written).toBe(true);
+    expect(saved.state).toBe('DRAFT');
+
+    // Verify content is in the DB
+    const chapters = await prisma.chapter.findMany({ where: { subject_version_id: unitId } });
+    expect(chapters).toHaveLength(1);
+    expect(chapters[0].title).toBe('Forces and Motion');
+    const objectives = await prisma.learning_objective.findMany({
+      where: { micro_concept: { topic: { chapter: { subject_version_id: unitId } } } },
+    });
+    expect(objectives).toHaveLength(2);
+
+    // 3. Submit for automated validation
+    const validation = await contentImport.submit(editorId, unitId);
+    expect(validation).toMatchObject({ passed: expect.any(Boolean) });
+
+    // The state should now be VALIDATED or CHANGES_REQUIRED depending on findings
+    const sv = await prisma.curriculum_subject_version.findUnique({ where: { id: unitId } });
+    expect(['VALIDATED', 'CHANGES_REQUIRED']).toContain(sv!.state);
   });
 });
