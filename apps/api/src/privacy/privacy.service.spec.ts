@@ -453,6 +453,136 @@ describe('PrivacyService.evaluateProcessingForStudent', () => {
   });
 });
 
+describe('PrivacyService.reclassifyIfStale', () => {
+  const DOB = new Date('2008-10-11T00:00:00Z'); // 18 on 2026-10-11
+
+  it('re-classifies a FAIL_CLOSED_NO_ACTIVE_POLICY student once a policy is active', async () => {
+    const { client, outbox, service } = makeFakes();
+    // Current classification: fail-closed
+    client.age_classification.findFirst.mockResolvedValue({
+      id: 'ac-old',
+      basis: 'FAIL_CLOSED_NO_ACTIVE_POLICY',
+      date_of_birth: DOB,
+      dob_evidence_method: 'SELF_DECLARED',
+    });
+    // Now an active policy exists
+    client.jurisdiction_policy.findFirst.mockResolvedValue({
+      id: 'p1',
+      config: completeConfig,
+    });
+    client.age_classification.create.mockResolvedValue({ id: 'ac-new' });
+
+    await service.reclassifyIfStale(STUDENT, 'AE', NOW);
+
+    // Old row superseded
+    expect(client.age_classification.updateMany).toHaveBeenCalledWith({
+      where: { student_id: STUDENT, superseded_at: null },
+      data: { superseded_at: NOW },
+    });
+    // New row created with POLICY basis
+    const created = client.age_classification.create.mock.calls[0][0].data;
+    expect(created).toMatchObject({
+      student_id: STUDENT,
+      jurisdiction_policy_id: 'p1',
+      date_of_birth: DOB,
+      basis: 'POLICY',
+      dob_evidence_method: 'SELF_DECLARED',
+    });
+    // Event and audit emitted
+    expect(outbox.publish).toHaveBeenCalledTimes(1);
+    const payload = outbox.publish.mock.calls[0][1].payload;
+    expect(payload).toMatchObject({
+      previousBasis: 'FAIL_CLOSED_NO_ACTIVE_POLICY',
+      basis: 'POLICY',
+    });
+    expect(client.audit_event.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT re-evaluate a classification made under an active policy', async () => {
+    const { client, outbox, service } = makeFakes();
+    client.age_classification.findFirst.mockResolvedValue({
+      id: 'ac-1',
+      basis: 'POLICY',
+      date_of_birth: DOB,
+      dob_evidence_method: 'SELF_DECLARED',
+    });
+
+    await service.reclassifyIfStale(STUDENT, 'AE', NOW);
+
+    // Nothing happens — no policy lookup, no writes
+    expect(client.jurisdiction_policy.findFirst).not.toHaveBeenCalled();
+    expect(client.age_classification.updateMany).not.toHaveBeenCalled();
+    expect(client.age_classification.create).not.toHaveBeenCalled();
+    expect(outbox.publish).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when still no active policy exists', async () => {
+    const { client, service } = makeFakes();
+    client.age_classification.findFirst.mockResolvedValue({
+      id: 'ac-old',
+      basis: 'FAIL_CLOSED_NO_ACTIVE_POLICY',
+      date_of_birth: DOB,
+      dob_evidence_method: 'SELF_DECLARED',
+    });
+    client.jurisdiction_policy.findFirst.mockResolvedValue(null);
+
+    await service.reclassifyIfStale(STUDENT, 'AE', NOW);
+
+    expect(client.age_classification.updateMany).not.toHaveBeenCalled();
+    expect(client.age_classification.create).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when no classification exists at all', async () => {
+    const { client, service } = makeFakes();
+    client.age_classification.findFirst.mockResolvedValue(null);
+
+    await service.reclassifyIfStale(STUDENT, 'AE', NOW);
+
+    expect(client.jurisdiction_policy.findFirst).not.toHaveBeenCalled();
+    expect(client.age_classification.create).not.toHaveBeenCalled();
+  });
+
+  it('never puts the date of birth in the outbox event or the audit row', async () => {
+    const { client, outbox, service } = makeFakes();
+    client.age_classification.findFirst.mockResolvedValue({
+      id: 'ac-old',
+      basis: 'FAIL_CLOSED_NO_ACTIVE_POLICY',
+      date_of_birth: DOB,
+      dob_evidence_method: 'SELF_DECLARED',
+    });
+    client.jurisdiction_policy.findFirst.mockResolvedValue({
+      id: 'p1',
+      config: completeConfig,
+    });
+    client.age_classification.create.mockResolvedValue({ id: 'ac-new' });
+
+    await service.reclassifyIfStale(STUDENT, 'AE', NOW);
+
+    const emitted = JSON.stringify([
+      outbox.publish.mock.calls,
+      client.audit_event.create.mock.calls,
+    ]);
+    expect(emitted).not.toContain('2008');
+    expect(emitted).not.toContain('date_of_birth');
+    expect(emitted).not.toContain('dateOfBirth');
+  });
+
+  it('does NOT re-evaluate FAIL_CLOSED_INCOMPLETE_POLICY', async () => {
+    const { client, service } = makeFakes();
+    client.age_classification.findFirst.mockResolvedValue({
+      id: 'ac-1',
+      basis: 'FAIL_CLOSED_INCOMPLETE_POLICY',
+      date_of_birth: DOB,
+      dob_evidence_method: 'SELF_DECLARED',
+    });
+
+    await service.reclassifyIfStale(STUDENT, 'AE', NOW);
+
+    expect(client.jurisdiction_policy.findFirst).not.toHaveBeenCalled();
+    expect(client.age_classification.create).not.toHaveBeenCalled();
+  });
+});
+
 describe('PrivacyService.createJurisdictionPolicyDraft', () => {
   it('creates version 1 as an UNREVIEWED DRAFT when none exists', async () => {
     const { client, service } = makeFakes();

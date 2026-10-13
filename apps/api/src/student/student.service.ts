@@ -111,6 +111,11 @@ export class StudentService {
   }
 
   private async view(studentId: string): Promise<StudentProfileView> {
+    // If the student was classified when no policy existed, and a policy is
+    // now active, re-classify automatically so the user is not stuck on the
+    // guardian-needed screen. The DOB stays inside PrivacyService.
+    await this.privacy.reclassifyIfStale(studentId, DEFAULT_JURISDICTION);
+
     const student = await this.db.client.student.findUnique({
       where: { id: studentId },
       select: { display_name: true },
