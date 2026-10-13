@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useState, type FormEvent } from 'react';
 import { ApiError, bff, type StudentProfile } from '@/lib/client-api';
 import { profileStep, type ProfileStep } from '@/lib/profile-step';
@@ -96,9 +97,10 @@ export function ProfileFlow() {
       {step === 'READY' && (
         <section className="card" aria-labelledby="r">
           <h1 id="r">Welcome, {profile.displayName}.</h1>
-          <p className="muted" style={{ marginBottom: 0 }}>
+          <p className="muted">
             Your profile is set. Choosing your grade and school comes next and is not built yet.
           </p>
+          <Link className="btn" href="/tests">Go to tests</Link>
         </section>
       )}
 

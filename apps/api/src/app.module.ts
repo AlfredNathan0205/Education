@@ -11,6 +11,7 @@ import { AuthzModule } from './authz/authz.module';
 import { StudentModule } from './student/student.module';
 import { CurriculumModule } from './curriculum/curriculum.module';
 import { QuestionModule } from './question/question.module';
+import { ExamModule } from './exam/exam.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { QuestionModule } from './question/question.module';
     PrivacyModule,
     CurriculumModule,
     QuestionModule,
+    ExamModule,
     StudentModule,
     AuthzModule,
   ],

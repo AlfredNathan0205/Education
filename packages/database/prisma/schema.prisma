@@ -166,6 +166,8 @@ model student {
   guardian_relationships guardian_relationship[]
   age_classifications    age_classification[]
   consent_records        consent_record[]
+  assessment_instances   assessment_instance[]
+  question_exposures     student_question_exposure[]
 }
 
 /// Which login account may act for which student, and in what capacity.
@@ -783,6 +785,7 @@ model question_revision {
   question question          @relation(fields: [question_id], references: [id])
   options  question_option[]
   events   question_event[]
+  instance_items assessment_instance_question[]
 
   @@unique([question_id, revision])
   @@index([state])
@@ -815,4 +818,184 @@ model question_event {
   revision question_revision @relation(fields: [revision_id], references: [id], onDelete: Cascade)
 
   @@index([revision_id])
+}
+
+// ---------------------------------------------------------------------------
+// Block 009 — Assessment assembly and execution (Quick 10; TEST and PRACTICE).
+// An INSTANCE is the exact, locked set of question revisions a student is given (never edited).
+// A SESSION is the student's run through it. Responses are written once; their history is append-only.
+// Every item references an exact question_revision (a "question version"), never a bare question.
+// ---------------------------------------------------------------------------
+
+enum assessment_mode {
+  TEST
+  PRACTICE
+}
+
+enum assessment_session_status {
+  IN_PROGRESS
+  SUBMITTED
+  /// The resume window passed with no answer locked. There is no result.
+  VOID
+}
+
+enum student_response_state {
+  SKIPPED
+  LOCKED
+}
+
+model assessment_instance {
+  id                 String          @id @default(uuid()) @db.Uuid
+  student_id         String          @db.Uuid
+  mode               assessment_mode
+  /// e.g. "QUICK10" and its version; the blueprint lives in code and is recorded here for audit.
+  blueprint_code     String          @db.VarChar(32)
+  blueprint_version  Int
+  curriculum_version_id String       @db.Uuid
+  grade_id           String          @db.Uuid
+  subject_id         String          @db.Uuid
+  /// The exact curriculum_subject_version revision the questions were checked against.
+  subject_version_id String          @db.Uuid
+  /// Seed for the final tie-break and option order, so an assembly can be reproduced.
+  seed               String          @db.VarChar(64)
+  /// What assembly decided: counts per band, shortfalls filled, unseen count.
+  assembly_report    Json
+  assembled_at       DateTime        @default(now())
+
+  student student                    @relation(fields: [student_id], references: [id])
+  items   assessment_instance_question[]
+  session assessment_session?
+
+  @@index([student_id, assembled_at])
+}
+
+model assessment_instance_question {
+  id                   String              @id @default(uuid()) @db.Uuid
+  instance_id          String              @db.Uuid
+  /// 1-based order shown to the student.
+  position             Int
+  question_revision_id String              @db.Uuid
+  question_id          String              @db.Uuid
+  objective_path       String              @db.VarChar(300)
+  difficulty           question_difficulty
+  /// Permutation of the stored option positions (1..4): displayed slot i shows option_order[i].
+  option_order         Int[]
+
+  instance assessment_instance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+  revision question_revision   @relation(fields: [question_revision_id], references: [id])
+  response student_response?
+
+  @@unique([instance_id, position])
+  @@unique([instance_id, question_revision_id])
+  @@index([question_revision_id])
+}
+
+model assessment_session {
+  id               String                    @id @default(uuid()) @db.Uuid
+  instance_id      String                    @unique @db.Uuid
+  student_id       String                    @db.Uuid
+  mode             assessment_mode
+  status           assessment_session_status @default(IN_PROGRESS)
+  started_at       DateTime                  @default(now())
+  /// Resume window (about 24 hours at first).
+  expires_at       DateTime
+  last_activity_at DateTime                  @default(now())
+  /// True once the student has used the one revisit of skipped questions.
+  revisit_used     Boolean                   @default(false)
+  /// First locked answer in a TEST commits the competitive attempt.
+  committed_at     DateTime?
+  submitted_at     DateTime?
+
+  instance    assessment_instance     @relation(fields: [instance_id], references: [id])
+  responses   student_response[]
+  events      student_response_event[]
+  submission  assessment_submission?
+  result      assessment_result?
+
+  @@index([student_id, status])
+}
+
+model student_response {
+  id                  String                 @id @default(uuid()) @db.Uuid
+  session_id          String                 @db.Uuid
+  instance_question_id String                @unique @db.Uuid
+  /// Null while presented and not yet decided.
+  state               student_response_state?
+  /// How many times this question was skipped (1 = first pass; 2 = skipped again on the revisit).
+  skip_count          Int                    @default(0)
+  /// Displayed slot chosen (0..3) and the stored option position it maps to (1..4).
+  selected_slot       Int?
+  selected_position   Int?
+  is_correct          Boolean?
+  presented_at        DateTime?
+  locked_at           DateTime?
+  /// Client-reported active time, clamped on the server. The server also keeps its own elapsed time.
+  active_ms           Int?
+  server_elapsed_ms   Int?
+  idempotency_key     String?                @db.VarChar(64)
+
+  session  assessment_session          @relation(fields: [session_id], references: [id], onDelete: Cascade)
+  question assessment_instance_question @relation(fields: [instance_question_id], references: [id], onDelete: Cascade)
+
+  @@unique([session_id, idempotency_key])
+}
+
+/// Append-only: every present, skip and lock.
+model student_response_event {
+  id                   String   @id @default(uuid()) @db.Uuid
+  session_id           String   @db.Uuid
+  instance_question_id String   @db.Uuid
+  event_type           String   @db.VarChar(24)
+  active_ms            Int?
+  occurred_at          DateTime @default(now())
+
+  session assessment_session @relation(fields: [session_id], references: [id], onDelete: Cascade)
+
+  @@index([session_id, occurred_at])
+}
+
+model assessment_submission {
+  id               String   @id @default(uuid()) @db.Uuid
+  session_id       String   @unique @db.Uuid
+  /// STUDENT, or EXPIRED when the resume window ended with at least one answer locked.
+  reason           String   @db.VarChar(16)
+  answered_count   Int
+  unanswered_count Int
+  submitted_at     DateTime @default(now())
+
+  session assessment_session @relation(fields: [session_id], references: [id])
+}
+
+model assessment_result {
+  id                   String   @id @default(uuid()) @db.Uuid
+  session_id           String   @unique @db.Uuid
+  student_id           String   @db.Uuid
+  mode                 assessment_mode
+  /// Scoring rule used, so a later rule never silently rescores this one.
+  scoring_policy       String   @db.VarChar(32)
+  total                Int
+  correct              Int
+  unanswered           Int
+  by_difficulty        Json
+  /// A TEST whose first answer was locked. Competitive points are a later block.
+  competitive_eligible Boolean
+  scored_at            DateTime @default(now())
+
+  session assessment_session @relation(fields: [session_id], references: [id])
+
+  @@index([student_id, scored_at])
+}
+
+/// Which questions a student has been shown, so assembly prefers ones they have not seen.
+model student_question_exposure {
+  id               String   @id @default(uuid()) @db.Uuid
+  student_id       String   @db.Uuid
+  question_id      String   @db.Uuid
+  first_seen_at    DateTime @default(now())
+  last_seen_at     DateTime @default(now())
+  times_seen       Int      @default(1)
+
+  student student @relation(fields: [student_id], references: [id])
+
+  @@unique([student_id, question_id])
 }

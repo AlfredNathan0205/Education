@@ -88,3 +88,60 @@ export interface UploadResult {
   findings: Array<{ severity: 'ERROR' | 'WARNING'; rule: string; path: string; message: string }>;
   state?: string;
 }
+
+export interface ExamUnit {
+  subjectVersionId: string;
+  curriculumCode: string;
+  versionLabel: string;
+  gradeCode: string;
+  subjectName: string;
+  usableQuestions: number;
+  ready: boolean;
+}
+
+export interface MyAssessment {
+  assessmentId: string;
+  mode: 'TEST' | 'PRACTICE';
+  status: 'IN_PROGRESS' | 'SUBMITTED' | 'VOID';
+  subjectName: string;
+  gradeCode: string;
+  startedAt: string;
+  expiresAt: string;
+  correct: number | null;
+  total: number | null;
+}
+
+export interface ExamView {
+  assessmentId: string;
+  mode: 'TEST' | 'PRACTICE';
+  status: 'IN_PROGRESS' | 'SUBMITTED' | 'VOID';
+  expiresAt: string;
+  total: number;
+  answered: number;
+  phase: 'QUESTION' | 'SUMMARY' | 'ENDED';
+  question?: { position: number; total: number; pass: 'MAIN' | 'REVISIT'; stem: string; options: Array<{ slot: number; text: string }> };
+  summary?: { answered: number; unanswered: number; canReviewSkipped: boolean };
+}
+
+export interface ExamLockResult {
+  locked: true;
+  reveal?: { correct: boolean; correctSlot: number; explanation: string | null };
+}
+
+export interface ExamResult {
+  assessmentId: string;
+  mode: 'TEST' | 'PRACTICE';
+  total: number;
+  correct: number;
+  unanswered: number;
+  byDifficulty: Record<'EASY' | 'MEDIUM' | 'HARD', { total: number; correct: number }>;
+  competitiveEligible: boolean;
+  items: Array<{
+    position: number;
+    difficulty: 'EASY' | 'MEDIUM' | 'HARD';
+    stem: string;
+    outcome: 'CORRECT' | 'INCORRECT' | 'UNANSWERED';
+    explanation: string | null;
+    options: Array<{ slot: number; text: string; isCorrect: boolean; chosen: boolean }>;
+  }>;
+}
