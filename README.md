@@ -15,6 +15,40 @@ packages/
 
 This is a **modular monolith** — a single deployable API with domain boundaries enforced at the module level, not at the network level. The 21 domains defined in the architecture spec map to NestJS modules within `apps/api`.
 
+## Run locally (Docker)
+
+The fastest way to run everything — no local PostgreSQL or Redis install needed.
+
+```bash
+# 1. Create a .env with an OTP signing key (the .env.example shows all variables)
+cp .env.example .env
+#    Generate a secret and paste it into OTP_HMAC_SECRET:
+openssl rand -hex 32
+
+# 2. Start all services
+docker compose up --build
+
+# 3. Open the app
+#    Web:  http://localhost:3000
+#    API:  http://localhost:3001/health
+```
+
+**Sign-in codes** — the API uses a console OTP sender in development. After
+requesting a code on the sign-in page, read it from the API container logs:
+
+```bash
+docker compose logs api | grep "DEV ONLY"
+```
+
+**Roles CLI** — to run the roles command inside the running API container:
+
+```bash
+docker compose exec api node apps/api/dist/authz/cli/roles.js <command> [args...]
+```
+
+Data is stored in a Docker named volume (`pgdata`) and survives restarts.
+Run `docker compose down -v` to wipe everything and start fresh.
+
 ## Prerequisites
 
 - Node.js >= 20
