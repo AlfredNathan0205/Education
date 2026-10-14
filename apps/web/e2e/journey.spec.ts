@@ -50,14 +50,36 @@ test('a returning student lands Home, takes a first test, sees the result and th
   await expect(page.getByText('3/10')).toBeVisible();
 });
 
-test('Progress shows results, never a mastery percentage; Compete is Coming soon', async ({ page }) => {
+test('Progress shows gated labels by chapter and objective, never a percentage; Compete is Coming soon', async ({ page }) => {
   await signIn(page, 'student@example.com');
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Progress' }).click();
-  await expect(page.getByRole('heading', { name: 'Building your mastery profile' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Progress' })).toBeVisible();
+  const chem = page.getByRole('region', { name: 'Chemistry' });
+  await expect(chem).toContainText('0 of 4 objectives with enough evidence');
+  await chem.getByText('Chemistry chapter 1').click();
+  await expect(chem.getByText('Objective 1.1')).toBeVisible();
+  await expect(chem.getByText('Not started').first()).toBeVisible();
   await expect(page.locator('main')).not.toContainText('%');
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Compete' }).click();
   await expect(page.getByRole('heading', { name: 'Coming soon' })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Compete' })).toHaveAttribute('aria-current', 'page');
+});
+
+test('after a test, its chapter shows Building evidence, not a low label', async ({ page }) => {
+  await signIn(page, 'student@example.com');
+  await page.getByRole('button', { name: 'Start Quick 10' }).click();
+  for (let q = 1; q <= 10; q++) {
+    await expect(page.getByText(`Question ${q} of 10`)).toBeVisible();
+    await page.getByRole('radio').nth(1).check();
+    await page.getByRole('button', { name: 'Lock answer' }).click();
+  }
+  await page.getByRole('button', { name: 'Submit' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: /of 10/ })).toBeVisible();
+  await page.goto('/progress');
+  const chem = page.getByRole('region', { name: 'Chemistry' });
+  await expect(chem.getByText('Building evidence').first()).toBeVisible();
+  await expect(chem).not.toContainText('Needs attention');
+  await expect(chem.getByRole('link', { name: /of 10 · test/ })).toBeVisible();
 });
 
 test('a student who chose chapters is offered Focus 10 first', async ({ page }) => {

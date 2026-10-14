@@ -29,6 +29,8 @@ const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
   { method: 'PUT', path: 'students/me/chapters' },
   // Home (Step 12).
   { method: 'GET', path: 'home' },
+  // Mastery (Step 13): the student's own, labels only.
+  { method: 'GET', path: 'mastery' },
 ];
 
 /** Admin curriculum routes carry a unit id, so they are matched by an exact pattern, never a prefix. */
