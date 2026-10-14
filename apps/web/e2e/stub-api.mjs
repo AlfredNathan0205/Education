@@ -156,6 +156,29 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { cohortOptions: options, grade, school: null });
   }
   if (key === 'GET home') return json(res, 200, home(p));
+  if (key === 'GET mastery') {
+    const finished = mine(p.email).filter((a) => a.status === 'SUBMITTED');
+    return json(res, 200, {
+      policy: 'MASTERY_V1',
+      pending: 0,
+      subjects: unitsFor(p).map((u) => {
+        const tested = finished.some((a) => a.subject.subjectCode === u.subjectCode);
+        const chapters = [1, 2].map((c) => {
+          const label = tested && c === 1 ? 'BUILDING_EVIDENCE' : 'NOT_STARTED';
+          return {
+            code: `CH0${c}`,
+            title: `${u.subjectName} chapter ${c}`,
+            label,
+            objectives: 2,
+            started: label === 'NOT_STARTED' ? 0 : 2,
+            reportable: 0,
+            items: [1, 2].map((o) => ({ path: `CH0${c}/T01/MC01/LO0${o}`, code: `LO0${o}`, statement: `Objective ${c}.${o}`, label, answers: label === 'NOT_STARTED' ? 0 : 3 })),
+          };
+        });
+        return { subjectVersionId: u.subjectVersionId, subjectCode: u.subjectCode, subjectName: u.subjectName, objectives: 4, started: tested ? 2 : 0, reportable: 0, chapters };
+      }),
+    });
+  }
   if (key === 'GET exam/units') return json(res, 200, unitsFor(p));
   if (key === 'GET exam/assessments') return json(res, 200, mine(p.email).map(row));
   if (key === 'POST exam/assessments') {

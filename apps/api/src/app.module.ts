@@ -15,6 +15,7 @@ import { PublicationModule } from './publication/publication.module';
 import { BlueprintModule } from './blueprint/blueprint.module';
 import { ExamModule } from './exam/exam.module';
 import { HomeModule } from './home/home.module';
+import { MasteryModule } from './mastery/mastery.module';
 import { GuardianModule } from './guardian/guardian.module';
 import { SchoolModule } from './school/school.module';
 
@@ -38,6 +39,7 @@ import { SchoolModule } from './school/school.module';
     BlueprintModule,
     ExamModule,
     HomeModule,
+    MasteryModule,
     GuardianModule,
     StudentModule,
     SchoolModule,

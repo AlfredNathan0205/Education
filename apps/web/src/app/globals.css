@@ -129,3 +129,15 @@ a.btn { color: var(--accent-ink); }
 a.btn.secondary { color: var(--text); }
 .appnav a { color: var(--muted); }
 .appnav a[aria-current=page] { color: var(--text); }
+
+/* Mastery labels (Step 13). Text always carries the meaning; colour only supports it. */
+.badge { display: inline-block; font-size: .8rem; font-weight: 700; border-radius: 999px; padding: 2px 10px; border: 1.5px solid var(--border); color: var(--muted); white-space: nowrap; }
+.badge-strong, .badge-secure { border-color: var(--accent); color: var(--text); }
+.badge-developing { border-color: #c9a227; color: var(--text); }
+.badge-needs-attention { border-color: var(--danger); color: var(--text); }
+.badge-building-evidence, .badge-not-started { border-style: dashed; }
+.chapters > li { border-top: 1px solid var(--border); padding: 10px 0; }
+.chapters summary { cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 44px; }
+.chapter-title { font-weight: 600; }
+.objectives { margin: 8px 0 0 4px; }
+.objectives li { padding: 6px 0; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }

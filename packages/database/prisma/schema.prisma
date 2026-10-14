@@ -1658,3 +1658,164 @@ model assessment_result_correction {
 
   @@index([session_id, created_at])
 }
+
+// ---------------------------------------------------------------------------
+// Step 13 — Mastery & diagnostics. Primary unit = learning objective. Score != mastery; mastery != confidence;
+// unknown != zero. Evidence is immutable and weighted; state is recomputed from all valid evidence under a versioned
+// policy. AI never writes any of this.
+// ---------------------------------------------------------------------------
+
+/// The rules and numbers mastery is computed with. Exactly one ACTIVE (partial unique index in the migration).
+model mastery_policy_version {
+  id         String   @id @default(uuid()) @db.Uuid
+  code       String   @unique @db.VarChar(32)
+  /// ACTIVE or RETIRED.
+  status     String   @db.VarChar(16)
+  /// Weights, prior, confidence formula parameters, gates and bands. See mastery-domain.ts for the shape.
+  params     Json
+  notes      String?  @db.VarChar(1000)
+  created_at DateTime @default(now())
+
+  evidence mastery_evidence_event[]
+  runs     mastery_update_run[]
+}
+
+/// One piece of evidence: a locked answer to one question version, attributed to one learning objective. Never edited;
+/// an invalidated item sets invalidated_at and the state is recomputed without it.
+model mastery_evidence_event {
+  id                    String   @id @default(uuid()) @db.Uuid
+  student_id            String   @db.Uuid
+  /// Stable objective key within the curriculum version, grade and subject: "chapter/topic/concept/objective".
+  curriculum_version_id String   @db.Uuid
+  grade_id              String   @db.Uuid
+  subject_id            String   @db.Uuid
+  objective_path        String   @db.VarChar(300)
+  /// The learning_objective row of the exact curriculum revision the test was built against (traceability only).
+  learning_objective_id String?  @db.Uuid
+  subject_version_id    String   @db.Uuid
+  session_id            String   @db.Uuid
+  instance_question_id  String   @db.Uuid
+  question_id           String   @db.Uuid
+  question_revision_id  String   @db.Uuid
+  mode                  assessment_mode
+  blueprint_code        String   @db.VarChar(32)
+  /// 1 correct, 0 incorrect.
+  score                 Float
+  difficulty            question_difficulty
+  cognitive             question_cognitive?
+  /// The factors and their product (capped). Kept so any state can be explained.
+  w_independence        Float
+  w_context             Float
+  w_quality             Float
+  weight                Float
+  policy_version_id     String   @db.Uuid
+  answered_at           DateTime
+  created_at            DateTime @default(now())
+  invalidated_at        DateTime?
+  invalidation_reason   String?  @db.VarChar(32)
+
+  policy mastery_policy_version @relation(fields: [policy_version_id], references: [id])
+
+  @@unique([session_id, instance_question_id])
+  @@index([student_id, curriculum_version_id, grade_id, subject_id, objective_path])
+  @@index([student_id, question_id])
+}
+
+/// The current state of one learning objective for one student, recomputed from all valid evidence.
+model student_mastery_state {
+  id                    String   @id @default(uuid()) @db.Uuid
+  student_id            String   @db.Uuid
+  curriculum_version_id String   @db.Uuid
+  grade_id              String   @db.Uuid
+  subject_id            String   @db.Uuid
+  objective_path        String   @db.VarChar(300)
+  policy_version_id     String   @db.Uuid
+  alpha                 Float
+  beta                  Float
+  /// alpha / (alpha + beta), 0..1.
+  mastery               Float
+  /// 0..100.
+  confidence            Float
+  effective_evidence    Float
+  evidence_count        Int
+  families              Int
+  sessions              Int
+  controlled_evidence   Int
+  /// NOT_STARTED, BUILDING_EVIDENCE, NEEDS_ATTENTION, DEVELOPING, SECURE, STRONG.
+  label                 String   @db.VarChar(24)
+  reportable            Boolean
+  last_evidence_at      DateTime?
+  updated_at            DateTime @updatedAt
+
+  @@unique([student_id, curriculum_version_id, grade_id, subject_id, objective_path])
+  @@index([student_id, subject_id])
+}
+
+/// One processing of one finished (or rescored, or invalidated) test. Unique per result revision, so a retry or a
+/// second worker never adds evidence twice.
+model mastery_update_run {
+  id                String   @id @default(uuid()) @db.Uuid
+  session_id        String   @db.Uuid
+  /// assessment_result.correction_count at processing time; -1 when the session was INVALIDATED.
+  result_revision   Int
+  student_id        String   @db.Uuid
+  policy_version_id String   @db.Uuid
+  evidence_added    Int
+  evidence_invalidated Int
+  objectives_changed Int
+  created_at        DateTime @default(now())
+
+  policy  mastery_policy_version @relation(fields: [policy_version_id], references: [id])
+  changes mastery_state_change[]
+
+  @@unique([session_id, result_revision])
+  @@index([student_id, created_at])
+}
+
+/// Before and after for every objective a run changed: the trajectory, and the audit of what moved and why.
+model mastery_state_change {
+  id             String   @id @default(uuid()) @db.Uuid
+  run_id         String   @db.Uuid
+  student_id     String   @db.Uuid
+  objective_path String   @db.VarChar(300)
+  subject_id     String   @db.Uuid
+  before_label   String?  @db.VarChar(24)
+  after_label    String   @db.VarChar(24)
+  before_mastery Float?
+  after_mastery  Float
+  before_confidence Float?
+  after_confidence Float
+  created_at     DateTime @default(now())
+
+  run mastery_update_run @relation(fields: [run_id], references: [id], onDelete: Cascade)
+
+  @@index([student_id, objective_path, created_at])
+}
+
+/// Per student, subject and difficulty: how they do on easy / medium / hard questions (same accumulator, same weights).
+model student_difficulty_state {
+  id                 String              @id @default(uuid()) @db.Uuid
+  student_id         String              @db.Uuid
+  subject_id         String              @db.Uuid
+  difficulty         question_difficulty
+  mastery            Float
+  effective_evidence Float
+  evidence_count     Int
+  updated_at         DateTime            @updatedAt
+
+  @@unique([student_id, subject_id, difficulty])
+}
+
+/// Per student, subject and cognitive level (C1-C4; untagged questions are left out).
+model student_cognitive_state {
+  id                 String             @id @default(uuid()) @db.Uuid
+  student_id         String             @db.Uuid
+  subject_id         String             @db.Uuid
+  cognitive          question_cognitive
+  mastery            Float
+  effective_evidence Float
+  evidence_count     Int
+  updated_at         DateTime           @updatedAt
+
+  @@unique([student_id, subject_id, cognitive])
+}
