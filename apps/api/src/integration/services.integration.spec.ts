@@ -31,6 +31,7 @@ import { GuardianConflictError, GuardianNotPermittedError, GuardianUnavailableEr
 import { QuestionService } from '../question/question.service';
 import { PublicationService } from '../publication/publication.service';
 import { BlueprintService } from '../blueprint/blueprint.service';
+import { ItemInvalidationService } from '../exam/item-invalidation.service';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
@@ -83,11 +84,13 @@ async function cleanAll() {
   await prisma.assessment_blueprint.deleteMany({ where: { code: { startsWith: 'IT_' } } });
   await prisma.student_response_event.deleteMany();
   await prisma.student_response.deleteMany();
+  await prisma.assessment_result_correction.deleteMany();
   await prisma.assessment_result.deleteMany();
   await prisma.assessment_submission.deleteMany();
   await prisma.assessment_session.deleteMany();
   await prisma.assessment_instance_question.deleteMany();
   await prisma.assessment_instance.deleteMany();
+  await prisma.assessment_item_invalidation.deleteMany();
   await prisma.student_question_exposure.deleteMany();
   await prisma.question_event.deleteMany();
   await prisma.question_option.deleteMany();
@@ -1292,6 +1295,118 @@ describe('ExamService (real DB)', () => {
     expect(await codes()).toEqual(['QUICK10']);
     const events = (await prisma.outbox_event.findMany({ where: { aggregate_id: made.id } })).map((e) => e.event_type);
     expect(events).toEqual(['blueprint.version_published.v1', 'blueprint.version_published.v1']);
+  });
+
+  // ---- Step 11: execution hardening ----
+
+  const invalidations = new ItemInvalidationService(dbService, authzService, outbox);
+
+  /** A second student on the jurisdiction policy adult() already activated. */
+  async function anotherStudent() {
+    const account = await prisma.account.create({ data: {} });
+    const student = await prisma.student.create({ data: {} });
+    await prisma.account_student_access.create({ data: { account_id: account.id, student_id: student.id, access_kind: 'SELF' } });
+    await privacyService.recordAgeClassification({ studentId: student.id, dateOfBirth: new Date('2001-03-01'), jurisdictionCode: DEFAULT_JURISDICTION, dobEvidenceMethod: 'SELF_DECLARED', actorAccountId: account.id });
+    return { accountId: account.id, studentId: student.id };
+  }
+  async function itemsOf(assessmentId: string) {
+    const s = await prisma.assessment_session.findUniqueOrThrow({ where: { id: assessmentId }, include: { instance: { include: { items: { orderBy: { position: 'asc' } } } } } });
+    return s.instance.items;
+  }
+  /** Answers whatever is current until the summary, every answer correct. Returns the positions shown. */
+  async function answerAll(accountId: string, assessmentId: string): Promise<number[]> {
+    const shown: number[] = [];
+    for (;;) {
+      const v = await exam.present(accountId, assessmentId);
+      if (v.phase !== 'QUESTION') return shown;
+      shown.push(v.question!.position);
+      await exam.lock(accountId, assessmentId, v.question!.position, { slot: await correctSlot(assessmentId, v.question!.position), activeMs: 1000, idempotencyKey: key() });
+    }
+  }
+
+  it('InvalidateAssessmentItem: a finished result is rescored with a record; a running test skips the item; repeating changes nothing', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const approver = await roleAccount('CURRICULUM_APPROVER');
+    const s1 = await adult();
+    const s2 = await anotherStudent();
+
+    const t1 = await exam.create(s1.accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    expect(await answerAll(s1.accountId, t1.assessmentId)).toHaveLength(10);
+    await exam.submit(s1.accountId, t1.assessmentId);
+    const t2 = await exam.create(s2.accountId, { subjectVersionId: unitId, mode: 'TEST' });
+
+    // A version both tests used (10 + 10 from 12 questions, so there is at least one).
+    const used2 = new Set((await itemsOf(t2.assessmentId)).map((i) => i.question_revision_id));
+    const target = (await itemsOf(t1.assessmentId)).find((i) => used2.has(i.question_revision_id))!.question_revision_id;
+
+    const note = 'The marked answer is wrong; C is correct.';
+    await expect(invalidations.invalidate(approver, target, { reasonCode: 'ANSWER_WRONG', note })).rejects.toThrow(/out of serving/);
+    await prisma.question_revision.update({ where: { id: target }, data: { state: 'QUARANTINED' } });
+    expect(await invalidations.impact(approver, target)).toMatchObject({ items: 2, submitted: 1, inProgress: 1, blockers: [] });
+
+    const out = await invalidations.invalidate(approver, target, { reasonCode: 'ANSWER_WRONG', note });
+    expect(out).toMatchObject({ itemsAffected: 2, resultsRescored: 1, sessionsInvalidated: 0, repeated: false });
+
+    const r1 = await exam.result(s1.accountId, t1.assessmentId);
+    expect(r1).toMatchObject({ total: 9, correct: 9, removed: 1, corrected: true, competitiveEligible: true });
+    const corr = await prisma.assessment_result_correction.findMany({ where: { session_id: t1.assessmentId } });
+    expect(corr).toHaveLength(1);
+    expect(corr[0]).toMatchObject({ reason: 'INVALIDATION', invalidation_id: out.invalidationId });
+    expect(corr[0].before).toMatchObject({ total: 10, correct: 10 });
+    expect(corr[0].after).toMatchObject({ total: 9, correct: 9 });
+    expect((await prisma.outbox_event.findMany({ where: { aggregate_id: t1.assessmentId, event_type: 'assessment.rescored.v1' } }))).toHaveLength(1);
+
+    const shown = await answerAll(s2.accountId, t2.assessmentId);
+    expect(shown).toHaveLength(9);
+    await exam.submit(s2.accountId, t2.assessmentId);
+    expect(await exam.result(s2.accountId, t2.assessmentId)).toMatchObject({ total: 9, correct: 9, removed: 1, corrected: false });
+
+    expect(await invalidations.invalidate(approver, target, { reasonCode: 'ANSWER_AMBIGUOUS', note: 'A different reason this time.' })).toMatchObject({ invalidationId: out.invalidationId, repeated: true });
+    expect(await prisma.assessment_result_correction.count()).toBe(1);
+  });
+
+  it('a question that cannot be shown is a technical failure: skipped, and not counted', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const { accountId } = await adult();
+    const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    const first = (await itemsOf(assessmentId))[0];
+    await prisma.question_option.deleteMany({ where: { revision_id: first.question_revision_id, position: 4 } });
+    const v = await exam.present(accountId, assessmentId);
+    expect(v).toMatchObject({ phase: 'QUESTION', removed: 1 });
+    expect(v.question!.position).toBe(2);
+    expect((await itemsOf(assessmentId))[0].excluded).toBe('TECHNICAL_FAILURE');
+  });
+
+  it('a retried skip with the same request key is accepted once', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const { accountId } = await adult();
+    const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    await exam.present(accountId, assessmentId);
+    const k = key();
+    const both = await Promise.allSettled([
+      exam.skip(accountId, assessmentId, 1, { activeMs: 1, idempotencyKey: k }),
+      exam.skip(accountId, assessmentId, 1, { activeMs: 1, idempotencyKey: k }),
+    ]);
+    expect(both.every((r) => r.status === 'fulfilled')).toBe(true);
+    expect(await prisma.student_response.findFirstOrThrow({ where: { session_id: assessmentId, state: 'SKIPPED' } })).toMatchObject({ skip_count: 1 });
+    expect(await prisma.student_response_event.count({ where: { session_id: assessmentId, event_type: 'SKIPPED' } })).toBe(1);
+  });
+
+  it('the sweeper settles expired tests without the student coming back', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const { accountId } = await adult();
+    const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    await exam.present(accountId, assessmentId);
+    await exam.lock(accountId, assessmentId, 1, { slot: await correctSlot(assessmentId, 1), activeMs: 1, idempotencyKey: key() });
+    await prisma.assessment_session.update({ where: { id: assessmentId }, data: { expires_at: new Date(Date.now() - 60_000) } });
+    expect(await exam.sweepExpired()).toBe(1);
+    expect(await prisma.assessment_session.findUniqueOrThrow({ where: { id: assessmentId } })).toMatchObject({ status: 'SUBMITTED' });
+    expect(await prisma.assessment_result.findUniqueOrThrow({ where: { session_id: assessmentId } })).toMatchObject({ total: 10, correct: 1, unanswered: 9 });
+    expect(await exam.sweepExpired()).toBe(0);
   });
 });
 

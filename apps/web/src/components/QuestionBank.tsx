@@ -12,6 +12,8 @@ import {
   type PublishUnitResult,
   type QuestionUploadResult,
   type UnitBankSummary,
+  type InvalidationImpact,
+  type InvalidationSummary,
 } from '@/lib/client-api';
 
 const MAX_BYTES = 2_000_000;
@@ -422,6 +424,10 @@ export function QuestionBank() {
             </>
           )}
 
+          {(detail.state === 'QUARANTINED' || detail.state === 'RETIRED' || detail.state === 'SUPERSEDED') && (
+            <InvalidateInTests key={detail.revisionId} revisionId={detail.revisionId} />
+          )}
+
           <h3>History</h3>
           <ul>
             {detail.history.map((h, n) => (
@@ -435,5 +441,96 @@ export function QuestionBank() {
 
       {message && <p role="status">{message}</p>}
     </div>
+  );
+}
+
+/**
+ * InvalidateAssessmentItem: when this version turns out to be wrong after students were tested on it, an approver takes
+ * it out of every test that used it. Finished results are rescored and keep a record of the change; running tests skip it.
+ */
+function InvalidateInTests({ revisionId }: { revisionId: string }) {
+  const [impact, setImpact] = useState<InvalidationImpact | null>(null);
+  const [reason, setReason] = useState('');
+  const [note, setNote] = useState('');
+  const [done, setDone] = useState<InvalidationSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function run(fn: () => Promise<void>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Something went wrong.');
+    } finally {
+      setBusy(false);
+    }
+  }
+  const check = () => run(async () => setImpact(await bff<InvalidationImpact>('GET', `admin/assessment-items/revisions/${revisionId}/impact`)));
+  const invalidate = () =>
+    run(async () => {
+      setDone(await bff<InvalidationSummary>('POST', `admin/assessment-items/revisions/${revisionId}/invalidate`, { reasonCode: reason, note }));
+      setImpact(await bff<InvalidationImpact>('GET', `admin/assessment-items/revisions/${revisionId}/impact`));
+    });
+
+  return (
+    <section aria-label="Remove from tests already taken">
+      <h3>Tests already taken</h3>
+      <p className="muted">
+        If this version was wrong, remove it from every test that used it (approvers only). It stops counting: finished results
+        are rescored, with the change recorded; tests in progress skip it; a test left with no questions is cancelled. Locked
+        answers are never edited. This cannot be undone.
+      </p>
+      {!impact && <button className="btn secondary" disabled={busy} onClick={check}>Check which tests used it</button>}
+      {impact && (
+        <>
+          {impact.already ? (
+            <p className="muted">
+              Already removed from tests on {new Date(impact.already.at).toLocaleString()} ({REASON_CODE_LABELS[impact.already.reasonCode] ?? impact.already.reasonCode}): {impact.already.note}
+            </p>
+          ) : impact.items === 0 ? (
+            <p className="muted">No test has used this version, so there is nothing to remove.</p>
+          ) : (
+            <>
+              <p>
+                Used in <strong>{impact.items}</strong> test{impact.items === 1 ? '' : 's'}: {impact.submitted} finished (will be rescored),{' '}
+                {impact.inProgress} in progress, {impact.other} expired or cancelled.
+              </p>
+              {impact.blockers.length > 0 ? (
+                <p className="error">{impact.blockers.join('; ')}</p>
+              ) : (
+                <>
+                  <div className="field">
+                    <label htmlFor="inv-reason">Reason</label>
+                    <select id="inv-reason" value={reason} onChange={(e) => setReason(e.target.value)}>
+                      <option value="">Choose a reason</option>
+                      {Object.entries(REASON_CODE_LABELS).map(([k, v]) => (
+                        <option key={k} value={k}>{v}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label htmlFor="inv-note">What is wrong (at least 10 characters)</label>
+                    <input id="inv-note" value={note} maxLength={1000} onChange={(e) => setNote(e.target.value)} />
+                  </div>
+                  <button className="btn" disabled={busy || !reason || note.trim().length < 10} onClick={invalidate}>
+                    {busy ? 'Working…' : `Remove from ${impact.items} test${impact.items === 1 ? '' : 's'} (approvers only)`}
+                  </button>
+                </>
+              )}
+            </>
+          )}
+        </>
+      )}
+      {done && (
+        <p role="status">
+          {done.repeated
+            ? 'This version had already been removed; nothing changed.'
+            : `Removed from ${done.itemsAffected} test${done.itemsAffected === 1 ? '' : 's'}: ${done.resultsRescored} result${done.resultsRescored === 1 ? '' : 's'} rescored, ${done.sessionsInvalidated} cancelled.`}
+        </p>
+      )}
+      <div role="alert" aria-live="polite">{error && <p className="error">{error}</p>}</div>
+    </section>
   );
 }

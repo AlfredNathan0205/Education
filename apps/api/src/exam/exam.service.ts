@@ -16,6 +16,8 @@ import {
 } from '../blueprint/blueprint-store';
 import {
   EXAM_CONFIG,
+  OPTION_COUNT,
+  allExcluded,
   clampActiveMs,
   newSeed,
   nextStep,
@@ -43,6 +45,21 @@ const EXPIRED = Symbol('expired');
 const expiredError = () => new ExamConflictError('This assessment has expired');
 
 const SERVED_STATES = ['ACTIVE'] as const;
+
+export type SessionStatus = 'IN_PROGRESS' | 'SUBMITTED' | 'VOID' | 'INVALIDATED';
+/** Returned from inside a transaction so a technical-failure exclusion is saved before the caller is told. */
+const TECH_FAILED = Symbol('technical-failure');
+const REMOVED = 'This question was removed from your test and does not count. Carry on with the next one.';
+const TECHNICAL = 'This question had a technical problem and was removed from your test. It does not count against you.';
+const CANCELLED = 'This assessment was cancelled because its questions were removed. It does not count.';
+
+/** A question can be shown only if it has its wording and exactly the options the instance expects. */
+export function presentable(rev: { stem: string; options: Array<{ position: number }> } | null, optionOrder: number[]): boolean {
+  if (!rev || !rev.stem || rev.stem.trim() === '') return false;
+  if (rev.options.length !== OPTION_COUNT) return false;
+  const have = new Set(rev.options.map((o) => o.position));
+  return optionOrder.length === OPTION_COUNT && optionOrder.every((p) => have.has(p));
+}
 const DEV_STATES = ['DRAFT', 'AI_STRUCTURED', 'VALIDATION_PENDING', 'VALIDATED', 'ADMIN_REVIEW', 'CHANGES_REQUIRED', 'APPROVED', 'ACTIVE', 'ACTIVE_WITH_REVIEW'] as const;
 
 export interface ExamUnitView {
@@ -69,10 +86,12 @@ export interface QuestionView {
 export interface AssessmentView {
   assessmentId: string;
   mode: AssessmentMode;
-  status: 'IN_PROGRESS' | 'SUBMITTED' | 'VOID';
+  status: SessionStatus;
   expiresAt: string;
   total: number;
   answered: number;
+  /** Questions taken out of this test (technical failure or invalidation). They do not count. */
+  removed: number;
   phase: 'QUESTION' | 'SUMMARY' | 'ENDED';
   question?: QuestionView;
   summary?: { answered: number; unanswered: number; canReviewSkipped: boolean };
@@ -90,13 +109,18 @@ export interface ResultView {
   total: number;
   correct: number;
   unanswered: number;
+  /** Questions that do not count (technical failure or invalidation). `total` already leaves them out. */
+  removed: number;
+  /** The result was changed after scoring because a question was invalidated. */
+  corrected: boolean;
   byDifficulty: Record<Difficulty, { total: number; correct: number }>;
   competitiveEligible: boolean;
   items: Array<{
     position: number;
     difficulty: Difficulty;
     stem: string;
-    outcome: 'CORRECT' | 'INCORRECT' | 'UNANSWERED';
+    outcome: 'CORRECT' | 'INCORRECT' | 'UNANSWERED' | 'EXCLUDED';
+    excludedReason: 'TECHNICAL_FAILURE' | 'INVALIDATED' | null;
     explanation: string | null;
     options: Array<{ slot: number; text: string; isCorrect: boolean; chosen: boolean }>;
   }>;
@@ -105,7 +129,7 @@ export interface ResultView {
 export interface AssessmentSummaryRow {
   assessmentId: string;
   mode: AssessmentMode;
-  status: 'IN_PROGRESS' | 'SUBMITTED' | 'VOID';
+  status: SessionStatus;
   subjectName: string;
   gradeCode: string;
   startedAt: string;
@@ -314,53 +338,64 @@ export class ExamService {
 
   // ── take the test ─────────────────────────────────────────────────────────
 
-  /** Shows the current question (or the summary). Safe to call again after a refresh. */
+  /**
+   * Shows the current question (or the summary). Safe to call again after a refresh. A question that cannot be shown
+   * properly is excluded as a technical failure (it never counts against the student) and the next one is shown.
+   */
   async present(accountId: string, assessmentId: string): Promise<AssessmentView> {
     const studentId = await this.gate(accountId);
     return this.db.client.$transaction(async (tx: Tx) => {
       const { session, items } = await this.open(tx, studentId, assessmentId);
       const now = new Date();
       if (session.status === 'IN_PROGRESS' && session.expires_at <= now) await this.settleExpired(tx, { ...session, instance: { ...session.instance, items } }, now);
-      const fresh = await this.reload(tx, studentId, assessmentId);
-      if (fresh.session.status !== 'IN_PROGRESS') return this.baseView(fresh.session, fresh.items, 'ENDED');
 
-      const step = nextStep(this.progress(fresh.items), fresh.session.revisit_used);
-      if (step.kind === 'SUMMARY') {
-        return { ...this.baseView(fresh.session, fresh.items, 'SUMMARY'), summary: { answered: step.answered, unanswered: step.unanswered, canReviewSkipped: step.canReviewSkipped } };
-      }
-      const item = fresh.items.find((i) => i.position === step.position)!;
-      const first = !item.response;
-      if (first) {
-        await tx.student_response.create({ data: { session_id: session.id, instance_question_id: item.id, presented_at: now } });
-        await tx.student_question_exposure.upsert({
-          where: { student_id_question_id: { student_id: studentId, question_id: item.question_id } },
-          create: { student_id: studentId, question_id: item.question_id },
-          update: { last_seen_at: now, times_seen: { increment: 1 } },
+      // Bounded: each pass either returns or excludes one more item.
+      for (let guard = 0; guard <= items.length; guard++) {
+        const fresh = await this.reload(tx, studentId, assessmentId);
+        if (fresh.session.status !== 'IN_PROGRESS') return this.baseView(fresh.session, fresh.items, 'ENDED');
+
+        const step = nextStep(this.progress(fresh.items), fresh.session.revisit_used);
+        if (step.kind === 'SUMMARY') {
+          return { ...this.baseView(fresh.session, fresh.items, 'SUMMARY'), summary: { answered: step.answered, unanswered: step.unanswered, canReviewSkipped: step.canReviewSkipped } };
+        }
+        const item = fresh.items.find((i) => i.position === step.position)!;
+        // Deliberately selects no is_correct and no explanation.
+        const rev = await tx.question_revision.findUnique({
+          where: { id: item.question_revision_id },
+          select: { stem: true, options: { select: { position: true, text: true } } },
         });
-        await this.event(tx, session.id, item.id, 'PRESENTED', null, now);
-      } else if (item.response!.state === 'SKIPPED') {
-        await tx.student_response.update({ where: { id: item.response!.id }, data: { presented_at: now } });
-        await this.event(tx, session.id, item.id, 'PRESENTED', null, now);
-      } else if (!item.response!.presented_at) {
-        await tx.student_response.update({ where: { id: item.response!.id }, data: { presented_at: now } });
+        if (!presentable(rev, item.option_order)) {
+          await this.exclude(tx, fresh.session, fresh.items, item, 'TECHNICAL_FAILURE', now);
+          continue;
+        }
+
+        if (!item.response) {
+          await tx.student_response.create({ data: { session_id: session.id, instance_question_id: item.id, presented_at: now } });
+          await tx.student_question_exposure.upsert({
+            where: { student_id_question_id: { student_id: studentId, question_id: item.question_id } },
+            create: { student_id: studentId, question_id: item.question_id },
+            update: { last_seen_at: now, times_seen: { increment: 1 } },
+          });
+          await this.event(tx, session.id, item.id, 'PRESENTED', null, now);
+        } else if (item.response.state === 'SKIPPED') {
+          await tx.student_response.update({ where: { id: item.response.id }, data: { presented_at: now } });
+          await this.event(tx, session.id, item.id, 'PRESENTED', null, now);
+        } else if (!item.response.presented_at) {
+          await tx.student_response.update({ where: { id: item.response.id }, data: { presented_at: now } });
+        }
+        const byPosition = new Map(rev!.options.map((o: { position: number; text: string }) => [o.position, o.text]));
+        return {
+          ...this.baseView(fresh.session, fresh.items, 'QUESTION'),
+          question: {
+            position: item.position,
+            total: fresh.items.length,
+            pass: step.pass,
+            stem: rev!.stem,
+            options: (item.option_order as number[]).map((pos, slot) => ({ slot, text: byPosition.get(pos) ?? '' })),
+          },
+        };
       }
-      // Deliberately selects no is_correct and no explanation.
-      const rev = await tx.question_revision.findUnique({
-        where: { id: item.question_revision_id },
-        select: { stem: true, options: { select: { position: true, text: true } } },
-      });
-      if (!rev) throw new ExamNotFoundError('Question missing');
-      const byPosition = new Map(rev.options.map((o) => [o.position, o.text]));
-      return {
-        ...this.baseView(fresh.session, fresh.items, 'QUESTION'),
-        question: {
-          position: item.position,
-          total: fresh.items.length,
-          pass: step.pass,
-          stem: rev.stem,
-          options: item.option_order.map((pos, slot) => ({ slot, text: byPosition.get(pos) ?? '' })),
-        },
-      };
+      throw new Error('present: no progress');
     });
   }
 
@@ -380,6 +415,7 @@ export class ExamService {
       }
       const item = items.find((i) => i.position === position);
       if (!item) throw new ExamNotFoundError('No such question');
+      if (item.excluded) throw new ExamConflictError(REMOVED);
       const existing = item.response;
 
       // Replay of the same request: same answer back, nothing changes.
@@ -399,6 +435,11 @@ export class ExamService {
       const chosen = slotToPosition(item.option_order, input.slot);
       if (chosen === null) throw new ExamInputError('Choose one of the four options');
       const options = await tx.question_option.findMany({ where: { revision_id: item.question_revision_id }, select: { position: true, is_correct: true } });
+      // Cannot be scored safely (wrong number of options, or not exactly one correct): a technical failure, not the student's error.
+      if (options.length !== OPTION_COUNT || options.filter((o) => o.is_correct).length !== 1 || !options.some((o) => o.position === chosen)) {
+        await this.exclude(tx, session, items, item, 'TECHNICAL_FAILURE', now);
+        return TECH_FAILED;
+      }
       const isCorrect = options.find((o) => o.position === chosen)?.is_correct === true;
 
       const activeMs = clampActiveMs(input.activeMs);
@@ -432,10 +473,12 @@ export class ExamService {
       return this.lockResult(tx, session.mode, item, chosen);
     });
     if (out === EXPIRED) throw expiredError();
+    if (out === TECH_FAILED) throw new ExamConflictError(TECHNICAL);
     return out;
   }
 
-  async skip(accountId: string, assessmentId: string, position: number, input: { activeMs: unknown }): Promise<{ skipped: true }> {
+  /** With a request key, a retried skip returns the same answer instead of a conflict. */
+  async skip(accountId: string, assessmentId: string, position: number, input: { activeMs: unknown; idempotencyKey?: string }): Promise<{ skipped: true }> {
     const studentId = await this.gate(accountId);
     const out = await this.db.client.$transaction(async (tx: Tx) => {
       const { session, items } = await this.open(tx, studentId, assessmentId);
@@ -444,15 +487,20 @@ export class ExamService {
         await this.settleExpired(tx, { ...session, instance: { ...session.instance, items } }, now);
         return EXPIRED;
       }
-      if (session.status !== 'IN_PROGRESS') throw new ExamConflictError('This assessment has ended');
       const item = items.find((i) => i.position === position);
       if (!item) throw new ExamNotFoundError('No such question');
+      // Replay of the same skip: same answer back, nothing changes.
+      if (input.idempotencyKey && item.response?.state === 'SKIPPED' && item.response.skip_idempotency_key === input.idempotencyKey) {
+        return { skipped: true as const };
+      }
+      if (session.status !== 'IN_PROGRESS') throw new ExamConflictError('This assessment has ended');
+      if (item.excluded) throw new ExamConflictError(REMOVED);
       const step = nextStep(this.progress(items), session.revisit_used);
       if (step.kind !== 'ITEM' || step.position !== position) throw new ExamConflictError('That is not the current question');
 
       const activeMs = clampActiveMs(input.activeMs);
       const skipCount = (item.response?.skip_count ?? 0) + 1;
-      const data = { state: 'SKIPPED' as const, skip_count: skipCount, active_ms: activeMs };
+      const data = { state: 'SKIPPED' as const, skip_count: skipCount, active_ms: activeMs, skip_idempotency_key: input.idempotencyKey ?? null };
       if (item.response) await tx.student_response.update({ where: { id: item.response.id }, data });
       else await tx.student_response.create({ data: { session_id: session.id, instance_question_id: item.id, ...data } });
       await tx.assessment_session.update({ where: { id: session.id }, data: { last_activity_at: now } });
@@ -489,6 +537,7 @@ export class ExamService {
       const { session, items } = await this.open(tx, studentId, assessmentId);
       if (session.status === 'SUBMITTED') return { submitted: true as const };
       if (session.status === 'VOID') throw new ExamConflictError('This assessment expired before any answer was locked');
+      if (session.status === 'INVALIDATED') throw new ExamConflictError(CANCELLED);
       const now = new Date();
       if (session.expires_at <= now) {
         await this.settleExpired(tx, { ...session, instance: { ...session.instance, items } }, now);
@@ -515,6 +564,7 @@ export class ExamService {
     });
     if (!session) throw new ExamNotFoundError('Assessment not found');
     if (session.status === 'VOID') throw new ExamConflictError('This assessment expired before any answer was locked');
+    if (session.status === 'INVALIDATED') throw new ExamConflictError(CANCELLED);
     if (session.status !== 'SUBMITTED' || !session.result) throw new ExamConflictError('The result is available after you submit');
 
     const revisions = await db.question_revision.findMany({
@@ -527,22 +577,26 @@ export class ExamService {
       total: session.result.total,
       correct: session.result.correct,
       unanswered: session.result.unanswered,
+      removed: session.instance.items.filter((i) => i.excluded).length,
+      corrected: session.result.corrected_at !== null && session.result.corrected_at !== undefined,
       byDifficulty: session.result.by_difficulty as ResultView['byDifficulty'],
       competitiveEligible: session.result.competitive_eligible,
       items: session.instance.items.map((i) => {
-        const rev = revisions.find((r) => r.id === i.question_revision_id)!;
+        const rev = revisions.find((r) => r.id === i.question_revision_id) ?? { stem: '', explanation: null, options: [] };
         const byPos = new Map<number, { text: string; is_correct: boolean }>(rev.options.map((o: { position: number; text: string; is_correct: boolean }) => [o.position, o]));
         const locked = i.response?.state === 'LOCKED';
         return {
           position: i.position,
           difficulty: i.difficulty,
           stem: rev.stem,
-          outcome: !locked ? 'UNANSWERED' : i.response?.is_correct ? 'CORRECT' : 'INCORRECT',
-          explanation: rev.explanation,
+          outcome: i.excluded ? 'EXCLUDED' : !locked ? 'UNANSWERED' : i.response?.is_correct ? 'CORRECT' : 'INCORRECT',
+          excludedReason: i.excluded ?? null,
+          // A removed question's key may be the very thing that was wrong: show no answer and no explanation for it.
+          explanation: i.excluded ? null : rev.explanation,
           options: i.option_order.map((pos, slot) => ({
             slot,
             text: byPos.get(pos)?.text ?? '',
-            isCorrect: byPos.get(pos)?.is_correct === true,
+            isCorrect: !i.excluded && byPos.get(pos)?.is_correct === true,
             chosen: locked && i.response?.selected_slot === slot,
           })),
         };
@@ -624,12 +678,23 @@ export class ExamService {
       await this.finalize(tx, session, items, 'EXPIRED', now);
     } else {
       await tx.assessment_session.update({ where: { id: session.id }, data: { status: 'VOID' } });
+      await this.outbox.publish(tx, {
+        aggregateType: 'assessment',
+        aggregateId: session.id,
+        eventType: 'assessment.expired_incomplete.v1',
+        payload: { assessmentId: session.id, studentId: session.student_id, mode: session.mode },
+        idempotencyKey: `assessment.expired_incomplete.v1:${session.id}`,
+      });
     }
   }
 
   private async finalize(tx: Tx, session: any, items: any[], reason: 'STUDENT' | 'EXPIRED', now: Date): Promise<void> {
+    if (allExcluded(items.map((i) => ({ excluded: !!i.excluded })))) {
+      await this.markInvalidated(tx, session, now);
+      return;
+    }
     const score = scoreAssessment(
-      items.map((i) => ({ difficulty: i.difficulty, locked: i.response?.state === 'LOCKED', isCorrect: i.response?.is_correct ?? null })),
+      items.map((i) => ({ difficulty: i.difficulty, locked: i.response?.state === 'LOCKED', isCorrect: i.response?.is_correct ?? null, excluded: !!i.excluded })),
     );
     await tx.assessment_submission.create({
       data: { session_id: session.id, reason, answered_count: score.total - score.unanswered, unanswered_count: score.unanswered, submitted_at: now },
@@ -661,8 +726,59 @@ export class ExamService {
     }
   }
 
+  /**
+   * Settles tests whose resume window has passed, oldest first, so results and events do not wait for the student to
+   * come back. Each one is settled in its own transaction under the session row lock, so a concurrent request or a
+   * second API instance cannot settle it twice. Returns how many it settled.
+   */
+  async sweepExpired(limit = 100, now = new Date()): Promise<number> {
+    const due = await this.db.client.assessment_session.findMany({
+      where: { status: 'IN_PROGRESS', expires_at: { lte: now } },
+      orderBy: { expires_at: 'asc' },
+      take: limit,
+      select: { id: true, student_id: true },
+    });
+    let settled = 0;
+    for (const d of due) {
+      await this.db.client.$transaction(async (tx: Tx) => {
+        const { session, items } = await this.open(tx, d.student_id, d.id);
+        if (session.status === 'IN_PROGRESS' && session.expires_at <= new Date()) {
+          await this.settleExpired(tx, { ...session, instance: { ...session.instance, items } }, new Date());
+          settled++;
+        }
+      });
+    }
+    return settled;
+  }
+
+  /** Takes one item out of a test that is still running. The caller holds the session row lock. */
+  private async exclude(tx: Tx, session: any, items: any[], item: any, kind: 'TECHNICAL_FAILURE', now: Date): Promise<void> {
+    await tx.assessment_instance_question.update({ where: { id: item.id }, data: { excluded: kind, excluded_at: now } });
+    item.excluded = kind;
+    await this.event(tx, session.id, item.id, kind, null, now);
+    await this.outbox.publish(tx, {
+      aggregateType: 'assessment',
+      aggregateId: session.id,
+      eventType: 'assessment.item_excluded.v1',
+      payload: { assessmentId: session.id, position: item.position, questionRevisionId: item.question_revision_id, reason: kind },
+      idempotencyKey: `assessment.item_excluded.v1:${session.id}:${item.id}`,
+    });
+    if (allExcluded(items.map((i) => ({ excluded: !!i.excluded })))) await this.markInvalidated(tx, session, now);
+  }
+
+  private async markInvalidated(tx: Tx, session: any, now: Date): Promise<void> {
+    await tx.assessment_session.update({ where: { id: session.id }, data: { status: 'INVALIDATED', last_activity_at: now } });
+    await this.outbox.publish(tx, {
+      aggregateType: 'assessment',
+      aggregateId: session.id,
+      eventType: 'assessment.invalidated.v1',
+      payload: { assessmentId: session.id, studentId: session.student_id, mode: session.mode, reason: 'ALL_ITEMS_EXCLUDED' },
+      idempotencyKey: `assessment.invalidated.v1:${session.id}`,
+    });
+  }
+
   private progress(items: any[]): ItemProgress[] {
-    return items.map((i) => ({ position: i.position, state: i.response?.state ?? null, skipCount: i.response?.skip_count ?? 0 }));
+    return items.map((i) => ({ position: i.position, state: i.response?.state ?? null, skipCount: i.response?.skip_count ?? 0, excluded: !!i.excluded }));
   }
 
   private baseView(session: any, items: any[], phase: AssessmentView['phase']): AssessmentView {
@@ -672,7 +788,8 @@ export class ExamService {
       status: session.status,
       expiresAt: session.expires_at.toISOString(),
       total: items.length,
-      answered: items.filter((i) => i.response?.state === 'LOCKED').length,
+      answered: items.filter((i) => !i.excluded && i.response?.state === 'LOCKED').length,
+      removed: items.filter((i) => i.excluded).length,
       phase,
     };
   }

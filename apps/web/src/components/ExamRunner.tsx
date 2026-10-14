@@ -26,6 +26,7 @@ export function ExamRunner({ assessmentId }: { assessmentId: string }) {
   // Active time: counts only while the tab is visible. Reported to the server as a hint, never trusted.
   const timer = useRef<{ since: number | null; total: number }>({ since: null, total: 0 });
   const lockKey = useRef<string | null>(null);
+  const skipKey = useRef<string | null>(null);
   const resetTimer = () => {
     timer.current = { since: document.visibilityState === 'visible' ? Date.now() : null, total: 0 };
   };
@@ -53,6 +54,7 @@ export function ExamRunner({ assessmentId }: { assessmentId: string }) {
       setSelected(null);
       setReveal(null);
       lockKey.current = null;
+      skipKey.current = null;
       resetTimer();
       if (v.phase === 'ENDED' && v.status === 'SUBMITTED') await fetchResult();
     } catch (e) {
@@ -101,7 +103,9 @@ export function ExamRunner({ assessmentId }: { assessmentId: string }) {
   const skip = () =>
     act(async () => {
       if (!view?.question) return;
-      await bff('POST', `exam/assessments/${assessmentId}/questions/${view.question.position}/skip`, { activeMs: readActive() });
+      // The same key on a retry, so a skip that reached the server but whose reply was lost is not refused.
+      skipKey.current ??= newKey();
+      await bff('POST', `exam/assessments/${assessmentId}/questions/${view.question.position}/skip`, { activeMs: readActive(), idempotencyKey: skipKey.current });
       await load();
     });
 
@@ -137,6 +141,18 @@ export function ExamRunner({ assessmentId }: { assessmentId: string }) {
         </section>
       );
     }
+    if (view.status === 'INVALIDATED') {
+      return (
+        <section className="card">
+          <h1 ref={headingRef} tabIndex={-1}>This test was cancelled</h1>
+          <p className="muted">
+            The questions in it had a problem and were removed, so it does not count. This is not because of anything you
+            did. You can start a new one.
+          </p>
+          <Link className="btn" href="/tests">Back to tests</Link>
+        </section>
+      );
+    }
     if (!result) return <p className="muted" role="status">Loading your result…</p>;
     return <ResultView result={result} headingRef={headingRef} />;
   }
@@ -147,10 +163,15 @@ export function ExamRunner({ assessmentId }: { assessmentId: string }) {
       <section className="card" aria-labelledby="sum">
         <h1 id="sum" ref={headingRef} tabIndex={-1}>You have reached the end</h1>
         <p>
-          You answered <strong>{s.answered}</strong> of {view.total} questions.
+          You answered <strong>{s.answered}</strong> of {view.total - view.removed} questions.
           {s.unanswered > 0 && <> <strong>{s.unanswered}</strong> {s.unanswered === 1 ? 'is' : 'are'} unanswered and will score zero.</>}
         </p>
         <div role="alert" aria-live="polite">{error && <p className="error">{error}</p>}</div>
+        {view.removed > 0 && (
+          <p className="muted">
+            {view.removed} question{view.removed === 1 ? ' was' : 's were'} removed because of a problem with {view.removed === 1 ? 'it' : 'them'}. {view.removed === 1 ? 'It does' : 'They do'} not count.
+          </p>
+        )}
         {s.canReviewSkipped && (
           <>
             <button className="btn" disabled={busy} onClick={reviewSkipped}>Review skipped questions</button>
@@ -229,7 +250,11 @@ function ResultView({ result, headingRef }: { result: ExamResult; headingRef: Re
         <p className="muted">
           {result.mode === 'TEST' ? 'Test' : 'Practice'} result.
           {result.unanswered > 0 && ` ${result.unanswered} unanswered.`}
+          {result.removed > 0 && ` ${result.removed} question${result.removed === 1 ? ' was' : 's were'} removed and ${result.removed === 1 ? 'does' : 'do'} not count.`}
         </p>
+        {result.corrected && (
+          <p className="muted">This result was updated after a question in it was found to be wrong and removed.</p>
+        )}
         <ul className="plain">
           {(Object.keys(label) as Array<keyof typeof label>).map((d) =>
             result.byDifficulty[d].total > 0 ? (
@@ -247,8 +272,17 @@ function ResultView({ result, headingRef }: { result: ExamResult; headingRef: Re
         <section key={i.position} className="card" aria-label={`Question ${i.position}`}>
           <p className="muted" style={{ marginBottom: 6 }}>
             Question {i.position} · {label[i.difficulty]} ·{' '}
-            <strong>{i.outcome === 'CORRECT' ? 'Correct' : i.outcome === 'INCORRECT' ? 'Incorrect' : 'Not answered'}</strong>
+            <strong>
+              {i.outcome === 'CORRECT' ? 'Correct' : i.outcome === 'INCORRECT' ? 'Incorrect' : i.outcome === 'EXCLUDED' ? 'Removed: does not count' : 'Not answered'}
+            </strong>
           </p>
+          {i.outcome === 'EXCLUDED' && (
+            <p className="muted">
+              {i.excludedReason === 'INVALIDATED'
+                ? 'This question was found to be wrong after the test, so it was taken out of your score.'
+                : 'This question could not be shown properly, so it was taken out of your score.'}
+            </p>
+          )}
           <p><strong>{i.stem}</strong></p>
           <ul className="plain">
             {i.options.map((o) => (

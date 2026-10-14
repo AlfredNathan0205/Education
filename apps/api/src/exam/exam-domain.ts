@@ -65,6 +65,8 @@ export interface ItemProgress {
   position: number;
   state: 'SKIPPED' | 'LOCKED' | null;
   skipCount: number;
+  /** Excluded items (technical failure or invalidation) are never presented again and do not count. */
+  excluded?: boolean;
 }
 
 export type NextStep =
@@ -76,7 +78,7 @@ export type NextStep =
  * back to a locked answer. Derived entirely from what was stored, so a resumed session lands correctly.
  */
 export function nextStep(items: ItemProgress[], revisitUsed: boolean): NextStep {
-  const sorted = [...items].sort((a, b) => a.position - b.position);
+  const sorted = [...items].filter((i) => !i.excluded).sort((a, b) => a.position - b.position);
   if (!revisitUsed) {
     const fresh = sorted.find((i) => i.state === null);
     if (fresh) return { kind: 'ITEM', position: fresh.position, pass: 'MAIN' };
@@ -100,16 +102,28 @@ export interface ScoredItem {
   difficulty: Difficulty;
   locked: boolean;
   isCorrect: boolean | null;
+  /** Technical failure or invalidation: left out of the score entirely, never counted as the learner's error. */
+  excluded?: boolean;
 }
 
 export interface ScoreSummary {
+  /** Items that count (excluded items are not in it). */
   total: number;
   correct: number;
   unanswered: number;
+  excluded: number;
   byDifficulty: Record<Difficulty, { total: number; correct: number }>;
 }
 
-/** Deterministic: one mark per correct locked answer; skipped and unanswered score zero. No LLM involved. */
+/** Every item excluded: the attempt cannot be scored and is invalidated rather than given 0/0. */
+export function allExcluded(items: Array<{ excluded?: boolean }>): boolean {
+  return items.length > 0 && items.every((i) => i.excluded === true);
+}
+
+/**
+ * Deterministic: one mark per correct locked answer; skipped and unanswered score zero; excluded items are left out
+ * (invariant 12: a technical or item failure never counts as learner error). No LLM involved.
+ */
 export function scoreAssessment(items: ScoredItem[]): ScoreSummary {
   const byDifficulty = {
     EASY: { total: 0, correct: 0 },
@@ -118,7 +132,12 @@ export function scoreAssessment(items: ScoredItem[]): ScoreSummary {
   } as ScoreSummary['byDifficulty'];
   let correct = 0;
   let unanswered = 0;
+  let excluded = 0;
   for (const i of items) {
+    if (i.excluded) {
+      excluded++;
+      continue;
+    }
     byDifficulty[i.difficulty].total++;
     if (!i.locked) unanswered++;
     else if (i.isCorrect === true) {
@@ -126,7 +145,7 @@ export function scoreAssessment(items: ScoredItem[]): ScoreSummary {
       byDifficulty[i.difficulty].correct++;
     }
   }
-  return { total: items.length, correct, unanswered, byDifficulty };
+  return { total: items.length - excluded, correct, unanswered, excluded, byDifficulty };
 }
 
 /** Map a displayed slot (0..3) to the stored option position (1..4) for this item. */
