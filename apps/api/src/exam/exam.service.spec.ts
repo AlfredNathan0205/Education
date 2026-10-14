@@ -18,6 +18,8 @@ interface Opts {
   /** Blueprints in the database. Defaults to QUICK10 v1 published and switched on, as the migration seeds it. */
   blueprints?: any[];
   focus?: string[];
+  /** The student's own curriculum and grade. Defaults to the unit's cohort; null = not chosen yet. */
+  cohort?: { curriculum_code: string; grade_code: string } | null;
   unitState?: string;
   classified?: boolean;
   consent?: boolean;
@@ -109,7 +111,13 @@ function build(opts: Opts = {}, config: Partial<ExamConfig> = {}) {
       ),
     },
     chapter: { findMany: jest.fn(async ({ where }: any) => chapters.filter((c) => c.subject_version_id === where.subject_version_id)) },
-    subject: { findMany: jest.fn(async () => [{ id: SUBJECT, name: 'Chemistry' }]) },
+    subject: { findMany: jest.fn(async () => [{ id: SUBJECT, code: 'CHEM', name: 'Chemistry' }]) },
+    student_academic_context: {
+      findUnique: jest.fn(async ({ where }: any) => {
+        const c = opts.cohort === undefined ? { curriculum_code: 'ICSE', grade_code: 'GRADE_8' } : opts.cohort;
+        return where.student_id === STUDENT && c ? { student_id: STUDENT, ...c } : null;
+      }),
+    },
     grade: { findMany: jest.fn(async () => [{ id: GRADE, code: 'GRADE_8' }]) },
     question_revision: {
       findMany: jest.fn(async ({ where }: any) => {
@@ -147,7 +155,9 @@ function build(opts: Opts = {}, config: Partial<ExamConfig> = {}) {
     },
     student_chapter_selection: {
       findMany: jest.fn(async ({ where }: any) =>
-        where.student_id === STUDENT && where.subject_code === 'CHEM' ? (opts.focus ?? []).map((c) => ({ chapter_code: c })) : [],
+        where.student_id === STUDENT && (where.subject_code === undefined || where.subject_code === 'CHEM')
+          ? (opts.focus ?? []).map((c) => ({ chapter_code: c, subject_code: 'CHEM' }))
+          : [],
       ),
     },
     assessment_instance: {
@@ -913,5 +923,35 @@ describe('ExamService: execution hardening (Step 11)', () => {
     await start(h);
     expect(await h.service.sweepExpired()).toBe(0);
     expect(h.store.sessions[0].status).toBe('IN_PROGRESS');
+  });
+});
+
+describe('ExamService: only the student\'s own curriculum and grade (Step 12)', () => {
+  it('lists nothing before the student has chosen a grade, and refuses to start a test', async () => {
+    const h = build({ cohort: null });
+    expect(await h.service.listUnits(ACCOUNT)).toEqual([]);
+    await expect(start(h)).rejects.toThrow(/Choose your curriculum and grade/);
+  });
+
+  it('hides another cohort\'s subjects and refuses them by id: never silently substituted', async () => {
+    const h = build({ cohort: { curriculum_code: 'ICSE', grade_code: 'GRADE_9' } });
+    expect(await h.service.listUnits(ACCOUNT)).toEqual([]);
+    await expect(start(h)).rejects.toThrow(/not part of your curriculum and grade/);
+    expect(h.store.instances).toHaveLength(0);
+  });
+
+  it('shows the subject code and how many chapters the student chose', async () => {
+    const [u] = await build({ focus: ['C1', 'C2'] }).service.listUnits(ACCOUNT);
+    expect(u).toMatchObject({ subjectCode: 'CHEM', chosenChapters: 2 });
+  });
+
+  it('history rows carry the subject code, the test design and when it was submitted', async () => {
+    const h = build();
+    const { assessmentId } = await start(h);
+    await answerAll(h, assessmentId);
+    await h.service.submit(ACCOUNT, assessmentId);
+    const [row] = await h.service.listMine(ACCOUNT);
+    expect(row).toMatchObject({ subjectCode: 'CHEM', blueprint: 'QUICK10', status: 'SUBMITTED' });
+    expect(row.submittedAt).not.toBeNull();
   });
 });

@@ -32,6 +32,7 @@ import { QuestionService } from '../question/question.service';
 import { PublicationService } from '../publication/publication.service';
 import { BlueprintService } from '../blueprint/blueprint.service';
 import { ItemInvalidationService } from '../exam/item-invalidation.service';
+import { HomeService } from '../home/home.service';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
@@ -921,6 +922,8 @@ describe('ExamService (real DB)', () => {
     const student = await prisma.student.create({ data: {} });
     await prisma.account_student_access.create({ data: { account_id: account.id, student_id: student.id, access_kind: 'SELF' } });
     await privacyService.recordAgeClassification({ studentId: student.id, dateOfBirth: new Date('2001-03-01'), jurisdictionCode: DEFAULT_JURISDICTION, dobEvidenceMethod: 'SELF_DECLARED', actorAccountId: account.id });
+    // Step 12: tests are offered only in the student's own curriculum and grade.
+    await prisma.student_academic_context.create({ data: { student_id: student.id, curriculum_code: 'EXAMCUR', grade_code: 'G8' } });
     return { accountId: account.id, studentId: student.id };
   }
 
@@ -1290,9 +1293,10 @@ describe('ExamService (real DB)', () => {
     expect((await prisma.assessment_instance.findUniqueOrThrow({ where: { id: inst1.id } })).blueprint_version).toBe(1);
 
     const codes = async () => (await exam.listUnits(accountId))[0].tests.map((t) => t.code);
-    expect(await codes()).toEqual(['IT_TEN', 'QUICK10']);
+    // FOCUS10 is seeded on by the Step 12 migration.
+    expect(await codes()).toEqual(['FOCUS10', 'IT_TEN', 'QUICK10']);
     await blueprintSvc.setEnabled(approver, made.id, false);
-    expect(await codes()).toEqual(['QUICK10']);
+    expect(await codes()).toEqual(['FOCUS10', 'QUICK10']);
     const events = (await prisma.outbox_event.findMany({ where: { aggregate_id: made.id } })).map((e) => e.event_type);
     expect(events).toEqual(['blueprint.version_published.v1', 'blueprint.version_published.v1']);
   });
@@ -1307,6 +1311,7 @@ describe('ExamService (real DB)', () => {
     const student = await prisma.student.create({ data: {} });
     await prisma.account_student_access.create({ data: { account_id: account.id, student_id: student.id, access_kind: 'SELF' } });
     await privacyService.recordAgeClassification({ studentId: student.id, dateOfBirth: new Date('2001-03-01'), jurisdictionCode: DEFAULT_JURISDICTION, dobEvidenceMethod: 'SELF_DECLARED', actorAccountId: account.id });
+    await prisma.student_academic_context.create({ data: { student_id: student.id, curriculum_code: 'EXAMCUR', grade_code: 'G8' } });
     return { accountId: account.id, studentId: student.id };
   }
   async function itemsOf(assessmentId: string) {
@@ -1407,6 +1412,49 @@ describe('ExamService (real DB)', () => {
     expect(await prisma.assessment_session.findUniqueOrThrow({ where: { id: assessmentId } })).toMatchObject({ status: 'SUBMITTED' });
     expect(await prisma.assessment_result.findUniqueOrThrow({ where: { session_id: assessmentId } })).toMatchObject({ total: 10, correct: 1, unanswered: 9 });
     expect(await exam.sweepExpired()).toBe(0);
+  });
+
+  // ---- Step 12: student web journey ----
+
+  const homes = new HomeService(dbService, exam);
+
+  it('a student is offered only their own curriculum and grade; another cohort is Coming soon, never substituted', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const { accountId, studentId } = await adult();
+    expect((await exam.listUnits(accountId)).map((u) => u.subjectVersionId)).toEqual([unitId]);
+
+    await prisma.student_academic_context.update({ where: { student_id: studentId }, data: { grade_code: 'G9' } });
+    expect(await exam.listUnits(accountId)).toEqual([]);
+    await expect(exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' })).rejects.toThrow(/not part of your curriculum and grade/);
+    expect(await homes.home(accountId)).toMatchObject({ supported: false, nextAction: { kind: 'COMING_SOON' } });
+
+    await prisma.student_academic_context.delete({ where: { student_id: studentId } });
+    expect(await homes.home(accountId)).toMatchObject({ cohort: null, nextAction: { kind: 'FINISH_PROFILE' } });
+  });
+
+  it('Home: first test builds the mastery profile (Focus 10 on chosen chapters), then resume, then the next subject', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const { accountId, studentId } = await adult();
+
+    expect((await homes.home(accountId)).nextAction).toMatchObject({ kind: 'FIRST_TEST', blueprint: 'QUICK10', reason: 'Building your mastery profile' });
+    await prisma.student_chapter_selection.create({ data: { student_id: studentId, subject_code: 'EXAMSUBJ', chapter_code: 'CH01' } });
+    const first = await homes.home(accountId);
+    expect(first).toMatchObject({ firstExperience: true, nextAction: { kind: 'FIRST_TEST', subjectVersionId: unitId, blueprint: 'FOCUS10', mode: 'TEST' } });
+    expect(first.subjects[0]).toMatchObject({ chosenChapters: 1, completed: 0, lastResult: null });
+
+    const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST', blueprint: 'FOCUS10' });
+    const inst = (await prisma.assessment_session.findUniqueOrThrow({ where: { id: assessmentId }, include: { instance: true } })).instance;
+    expect(inst.blueprint_code).toBe('FOCUS10');
+    expect(inst.assembly_report).toMatchObject({ scope: { mode: 'STUDENT_FOCUS', strict: false, chapters: ['CH01'] } });
+    expect((await homes.home(accountId)).nextAction).toMatchObject({ kind: 'RESUME', assessmentId });
+
+    expect(await answerAll(accountId, assessmentId)).toHaveLength(10);
+    await exam.submit(accountId, assessmentId);
+    const after = await homes.home(accountId);
+    expect(after).toMatchObject({ firstExperience: false, nextAction: { kind: 'TAKE_TEST', subjectVersionId: unitId } });
+    expect(after.subjects[0]).toMatchObject({ completed: 1, lastResult: { assessmentId, correct: 10, total: 10, mode: 'TEST' } });
   });
 });
 

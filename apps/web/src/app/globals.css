@@ -97,3 +97,35 @@ input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible
 .option.picked { box-shadow: 0 0 0 1.5px var(--accent) inset; }
 .option.right { border-color: var(--accent); }
 h1:focus { outline: none; }
+
+/* Student navigation (Step 12): a bottom bar on phones, a row under the brand on wider screens. */
+.appnav ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+.appnav a {
+  display: flex; align-items: center; justify-content: center; min-height: 48px; border-radius: 10px;
+  color: var(--muted); text-decoration: none; font-weight: 600; font-size: .92rem;
+}
+.appnav a[aria-current=page] { color: var(--text); background: var(--surface-2); box-shadow: 0 0 0 1.5px var(--accent) inset; }
+@media (max-width: 719px) {
+  .appnav {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--surface);
+    border-top: 1px solid var(--border); padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  }
+  .has-nav { padding-bottom: 88px; }
+}
+@media (min-width: 720px) { .appnav { margin: -12px 0 20px; } }
+
+/* Home */
+.nba { border-color: var(--accent); }
+.nba .eyebrow { text-transform: uppercase; letter-spacing: .08em; font-size: .78rem; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
+.subjects { display: grid; gap: 12px; grid-template-columns: 1fr; margin: 0; padding: 0; list-style: none; }
+@media (min-width: 520px) { .subjects { grid-template-columns: 1fr 1fr; } }
+.subject { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+.subject h3 { margin: 0 0 4px; font-size: 1.02rem; }
+.score { font-size: 1.4rem; font-weight: 800; letter-spacing: -.01em; }
+
+/* Links use the accent colour (they were browser-default blue). */
+a { color: var(--accent); }
+a.btn { color: var(--accent-ink); }
+a.btn.secondary { color: var(--text); }
+.appnav a { color: var(--muted); }
+.appnav a[aria-current=page] { color: var(--text); }

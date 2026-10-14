@@ -1,6 +1,14 @@
+import { cookies } from 'next/headers';
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { SESSION_COOKIE } from '@/lib/server-api';
 
-export default function Welcome() {
+export const dynamic = 'force-dynamic';
+
+export default async function Welcome() {
+  // A signed-in student goes straight Home.
+  const jar = await cookies();
+  if (jar.get(SESSION_COOKIE)) redirect('/home');
   return (
     <>
       <h1>Know exactly where you stand.</h1>
