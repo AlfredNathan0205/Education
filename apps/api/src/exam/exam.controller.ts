@@ -113,7 +113,11 @@ export class ExamController {
     const assessmentId = uuid(id, 'assessment id');
     const p = position(pos);
     const b = body(raw);
-    return this.map(() => this.exam.skip(req.accountId as string, assessmentId, p, { activeMs: b.activeMs }));
+    if (b.idempotencyKey !== undefined && (typeof b.idempotencyKey !== 'string' || !KEY.test(b.idempotencyKey))) {
+      throw new BadRequestException('idempotencyKey must be 8 to 64 letters, digits, _ or -');
+    }
+    const key = b.idempotencyKey as string | undefined;
+    return this.map(() => this.exam.skip(req.accountId as string, assessmentId, p, { activeMs: b.activeMs, ...(key ? { idempotencyKey: key } : {}) }));
   }
 
   @Post('assessments/:id/review-skipped')
