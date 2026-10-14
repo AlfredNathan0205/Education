@@ -16,6 +16,7 @@ import { BlueprintModule } from './blueprint/blueprint.module';
 import { ExamModule } from './exam/exam.module';
 import { HomeModule } from './home/home.module';
 import { MasteryModule } from './mastery/mastery.module';
+import { RecommendationModule } from './recommendation/recommendation.module';
 import { GuardianModule } from './guardian/guardian.module';
 import { SchoolModule } from './school/school.module';
 
@@ -40,6 +41,7 @@ import { SchoolModule } from './school/school.module';
     ExamModule,
     HomeModule,
     MasteryModule,
+    RecommendationModule,
     GuardianModule,
     StudentModule,
     SchoolModule,

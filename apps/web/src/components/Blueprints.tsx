@@ -20,6 +20,7 @@ const SCOPE_LABEL: Record<BlueprintScopeMode, string> = {
   WHOLE_SUBJECT: 'Whole subject',
   CHAPTERS: 'Listed chapters',
   STUDENT_FOCUS: "The student's chosen chapters",
+  OBJECTIVES: 'Objectives from a recommendation (practice, retest)',
 };
 const STATUS_LABEL = { DRAFT: 'Draft', PUBLISHED: 'Published', RETIRED: 'Retired' } as const;
 const REASON_LABEL: Record<string, string> = {

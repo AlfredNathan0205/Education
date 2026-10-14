@@ -25,6 +25,7 @@ const TESTS = [
 
 const sessions = new Map(); // token -> email
 const assessments = new Map(); // id -> assessment
+const recs = new Map(); // id -> recommendation (Step 14)
 const difficulty = (i) => (i < 5 ? 'EASY' : i < 8 ? 'MEDIUM' : 'HARD');
 
 function person(req) {
@@ -65,8 +66,48 @@ function row(a) {
   };
 }
 
+/** Step 14: the student's open and started recommendations, in the API's shape. */
+function focusFor(p) {
+  return [...recs.values()]
+    .filter((r) => r.email === p.email && (r.status === 'OPEN' || r.status === 'STARTED'))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .map((r) => {
+      const open = [...assessments.values()].find((a) => a.recommendationId === r.id && a.status === 'IN_PROGRESS');
+      return {
+        id: r.id,
+        kind: r.kind,
+        status: r.status,
+        source: r.source,
+        subjectVersionId: r.subject.subjectVersionId,
+        subjectCode: r.subject.subjectCode,
+        subjectName: r.subject.subjectName,
+        objectives: r.objectives.map((o) => ({ path: o, statement: `Objective ${o.slice(-1)} of ${r.subject.subjectName}`, chapterTitle: `${r.subject.subjectName} chapter 1` })),
+        reasons: r.objectives.map((o) => ({ path: o, code: r.kind === 'RETEST' ? 'PRACTISED' : 'MISSED_IN_TEST' })),
+        inProgressAssessmentId: open ? open.id : null,
+        createdAt: r.createdAt,
+      };
+    });
+}
+
+function newAssessment(p, subject, mode, blueprint, recommendationId = null) {
+  const id = randomUUID();
+  const items = Array.from({ length: 10 }, (_, i) => ({
+    position: i + 1,
+    difficulty: difficulty(i),
+    stem: `${subject.subjectName} ${mode === 'PRACTICE' ? 'practice' : 'question'} ${i + 1}?`,
+    options: ['Option A', 'Option B', 'Option C', 'Option D'],
+    correctSlot: i % 4,
+    state: null,
+    skips: 0,
+    slot: null,
+  }));
+  assessments.set(id, { id, email: p.email, subject, mode, blueprint, recommendationId, status: 'IN_PROGRESS', revisitUsed: false, items, startedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400_000).toISOString(), submittedAt: null, result: null });
+  return id;
+}
+
 function home(p) {
   const units = unitsFor(p);
+  const focus = focusFor(p);
   const rows = mine(p.email).map(row);
   const finished = rows.filter((r) => r.status === 'SUBMITTED');
   const open = rows.filter((r) => r.status === 'IN_PROGRESS');
@@ -78,6 +119,12 @@ function home(p) {
   else if (!finished.length) {
     const u = [...units].sort((a, b) => Number(b.chosenChapters > 0) - Number(a.chosenChapters > 0) || a.subjectName.localeCompare(b.subjectName))[0];
     nextAction = { kind: 'FIRST_TEST', subjectVersionId: u.subjectVersionId, subjectName: u.subjectName, blueprint: testFor(u), mode: 'TEST', reason: 'Building your mastery profile' };
+  } else if (focus.some((r) => r.kind === 'RETEST')) {
+    const r = focus.find((x) => x.kind === 'RETEST');
+    nextAction = { kind: 'RETEST', recommendationId: r.id, subjectName: r.subjectName, objectives: r.objectives.length, reason: `You practised ${r.objectives.length} objectives in ${r.subjectName}. A short retest shows what has stuck.` };
+  } else if (focus.length) {
+    const r = focus[0];
+    nextAction = { kind: 'PRACTICE', recommendationId: r.id, subjectName: r.subjectName, objectives: r.objectives.length, reason: `Practise ${r.objectives.length} objectives in ${r.subjectName}, chosen from your recent answers.` };
   } else {
     const u = units.find((x) => !finished.some((f) => f.subjectCode === x.subjectCode && f.mode === 'TEST')) ?? units[0];
     nextAction = { kind: 'TAKE_TEST', subjectVersionId: u.subjectVersionId, subjectName: u.subjectName, blueprint: testFor(u), mode: 'TEST', reason: `You have not taken a ${u.subjectName} test yet.` };
@@ -95,6 +142,7 @@ function home(p) {
       return { ...u, completed: done.length, lastResult: last ? { assessmentId: last.assessmentId, correct: last.correct, total: last.total, mode: last.mode, at: last.submittedAt } : null };
     }),
     inProgress: open,
+    focus,
   };
 }
 
@@ -136,6 +184,7 @@ const server = createServer(async (req, res) => {
   // Test-only: forget every test taken, so each browser test starts from a clean slate. Not reachable through the web proxy.
   if (key === 'POST __reset') {
     assessments.clear();
+    recs.clear();
     return json(res, 200, { reset: true });
   }
   if (key === 'POST identity/otp/request') return json(res, 202, { sent: true });
@@ -187,19 +236,43 @@ const server = createServer(async (req, res) => {
     const blueprint = body.blueprint ?? 'QUICK10';
     const open = mine(p.email).find((a) => a.status === 'IN_PROGRESS' && a.mode === body.mode && a.blueprint === blueprint && a.subject.subjectCode === subject.subjectCode);
     if (open) return json(res, 200, { assessmentId: open.id, resumed: true });
-    const id = randomUUID();
-    const items = Array.from({ length: 10 }, (_, i) => ({
-      position: i + 1,
-      difficulty: difficulty(i),
-      stem: `${subject.subjectName} question ${i + 1}?`,
-      options: ['Option A', 'Option B', 'Option C', 'Option D'],
-      correctSlot: i % 4,
-      state: null,
-      skips: 0,
-      slot: null,
-    }));
-    assessments.set(id, { id, email: p.email, subject, mode: body.mode, blueprint, status: 'IN_PROGRESS', revisitUsed: false, items, startedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400_000).toISOString(), submittedAt: null, result: null });
-    return json(res, 200, { assessmentId: id, resumed: false });
+    return json(res, 200, { assessmentId: newAssessment(p, subject, body.mode, blueprint), resumed: false });
+  }
+
+  // Step 14. The real API refreshes recommendations about a minute after mastery; the stub does it at once.
+  if (key === 'GET recommendations') return json(res, 200, focusFor(p));
+  const fr = path.match(/^recommendations\/from-result\/([0-9a-f-]{36})$/);
+  if (req.method === 'POST' && fr) {
+    const t = assessments.get(fr[1]);
+    if (!t || t.email !== p.email) return json(res, 404, { message: 'Assessment not found' });
+    if (t.status !== 'SUBMITTED' || t.mode !== 'TEST') return json(res, 409, { message: 'Finish the test first' });
+    const same = [...recs.values()].find((r) => r.sourceAssessmentId === t.id && (r.status === 'OPEN' || r.status === 'STARTED'));
+    if (same) {
+      const open = [...assessments.values()].find((a) => a.recommendationId === same.id && a.status === 'IN_PROGRESS');
+      if (open) return json(res, 200, { assessmentId: open.id, resumed: true, recommendationId: same.id });
+    }
+    const missedPositions = t.items.filter((i) => i.state !== 'LOCKED' || i.slot !== i.correctSlot).map((i) => i.position);
+    if (!missedPositions.length) return json(res, 409, { message: 'You got every question in this test right: there is nothing to practise from it' });
+    for (const r of recs.values()) if (r.email === p.email && r.subject.subjectCode === t.subject.subjectCode && r.status === 'OPEN') r.status = 'SUPERSEDED';
+    const rec = { id: randomUUID(), email: p.email, kind: 'PRACTICE', status: 'STARTED', source: 'RESULT', subject: t.subject, objectives: ['CH01/T01/MC01/LO01', 'CH01/T01/MC01/LO02'].slice(0, Math.min(2, missedPositions.length)), sourceAssessmentId: t.id, createdAt: new Date().toISOString() };
+    recs.set(rec.id, rec);
+    return json(res, 200, { assessmentId: newAssessment(p, t.subject, 'PRACTICE', 'PRACTICE10', rec.id), resumed: false, recommendationId: rec.id });
+  }
+  const ra = path.match(/^recommendations\/([0-9a-f-]{36})\/(start|dismiss)$/);
+  if (req.method === 'POST' && ra) {
+    const rec = recs.get(ra[1]);
+    if (!rec || rec.email !== p.email) return json(res, 404, { message: 'Recommendation not found' });
+    if (rec.status !== 'OPEN' && rec.status !== 'STARTED') return json(res, 409, { message: 'This recommendation is no longer open' });
+    const open = [...assessments.values()].find((a) => a.recommendationId === rec.id && a.status === 'IN_PROGRESS');
+    if (ra[2] === 'dismiss') {
+      if (open) return json(res, 409, { message: 'Finish or leave the practice you started first' });
+      rec.status = 'DISMISSED';
+      return json(res, 200, { dismissed: true });
+    }
+    if (open) return json(res, 200, { assessmentId: open.id, resumed: true });
+    rec.status = 'STARTED';
+    const mode = rec.kind === 'PRACTICE' ? 'PRACTICE' : 'TEST';
+    return json(res, 200, { assessmentId: newAssessment(p, rec.subject, mode, rec.kind === 'PRACTICE' ? 'PRACTICE10' : 'RETEST10', rec.id), resumed: false });
   }
 
   const m = path.match(/^exam\/assessments\/([0-9a-f-]{36})(?:\/(present|review-skipped|submit|result|questions\/(\d{1,2})\/(lock|skip)))?$/);
@@ -233,6 +306,16 @@ const server = createServer(async (req, res) => {
     a.status = 'SUBMITTED';
     a.submittedAt = new Date().toISOString();
     a.result = { correct, total: a.items.length, unanswered };
+    // Stand-in for the recommendation refresh: a finished practice (5+ answers) becomes a retest; a finished retest is done.
+    const rec = a.recommendationId ? recs.get(a.recommendationId) : null;
+    if (rec && rec.status === 'STARTED') {
+      if (rec.kind === 'RETEST') rec.status = 'COMPLETED';
+      else if (a.items.filter((i) => i.state === 'LOCKED').length >= 5) {
+        rec.status = 'COMPLETED';
+        const retest = { ...rec, id: randomUUID(), kind: 'RETEST', status: 'OPEN', source: 'PRACTICE_DONE', sourceAssessmentId: null, createdAt: new Date().toISOString() };
+        recs.set(retest.id, retest);
+      } else rec.status = 'OPEN';
+    }
     return json(res, 200, { submitted: true });
   }
   if (req.method === 'GET' && action === 'result') {

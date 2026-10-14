@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { ExamService } from '../exam/exam.service';
+import { RecommendationService, type RecommendationView } from '../recommendation/recommendation.service';
 import { FIRST_TEST_MESSAGE, nextBestAction, summarise, type HomeAttempt, type NextAction, type SubjectSummary } from './home-domain';
 
 export interface HomeView {
@@ -14,6 +15,8 @@ export interface HomeView {
   firstExperienceMessage: string;
   subjects: SubjectSummary[];
   inProgress: HomeAttempt[];
+  /** Step 14: open practice and retest recommendations ("Focus next"), oldest first. */
+  focus: RecommendationView[];
 }
 
 /**
@@ -25,6 +28,7 @@ export class HomeService {
   constructor(
     private readonly db: DatabaseService,
     private readonly exam: ExamService,
+    private readonly recs: RecommendationService,
   ) {}
 
   async home(accountId: string): Promise<HomeView> {
@@ -36,15 +40,17 @@ export class HomeService {
     ]);
     const units = await this.exam.listUnits(accountId);
     const attempts = (await this.exam.listMine(accountId)) as HomeAttempt[];
+    const focus = await this.recs.forStudent(studentId, units);
     return {
       displayName: student?.display_name ?? null,
       cohort: ctx ? { curriculumCode: ctx.curriculum_code, gradeCode: ctx.grade_code } : null,
       supported: units.length > 0,
-      nextAction: nextBestAction({ hasCohort: !!ctx, units, attempts }),
+      nextAction: nextBestAction({ hasCohort: !!ctx, units, attempts, recommendations: focus }),
       firstExperience: !attempts.some((a) => a.status === 'SUBMITTED'),
       firstExperienceMessage: FIRST_TEST_MESSAGE,
       subjects: summarise(units, attempts),
       inProgress: attempts.filter((a) => a.status === 'IN_PROGRESS'),
+      focus,
     };
   }
 }

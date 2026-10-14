@@ -1,7 +1,7 @@
 /**
  * The student's Home (spec STUDENT_WEB: Home priority is the Next Best Action, then progress and subjects).
- * Pure: the next best action is chosen by a fixed, explainable order from facts the server already has. Step 14
- * (recommendations) replaces the TAKE_TEST rule with evidence from mastery; the other rules stay.
+ * Pure: the next best action is chosen by a fixed, explainable order from facts the server already has. Step 14 puts
+ * the loop's retest and practice recommendations (chosen from mastery evidence) ahead of the "take a test" rules.
  */
 
 export const FIRST_TEST_MESSAGE = 'Building your mastery profile';
@@ -36,7 +36,20 @@ export type NextAction =
   | { kind: 'COMING_SOON'; reason: string }
   | { kind: 'NOT_READY'; reason: string }
   | { kind: 'FIRST_TEST'; subjectVersionId: string; subjectName: string; blueprint: string; mode: 'TEST'; reason: string }
-  | { kind: 'TAKE_TEST'; subjectVersionId: string; subjectName: string; blueprint: string; mode: 'TEST'; reason: string };
+  | { kind: 'TAKE_TEST'; subjectVersionId: string; subjectName: string; blueprint: string; mode: 'TEST'; reason: string }
+  | { kind: 'RETEST'; recommendationId: string; subjectName: string; objectives: number; reason: string }
+  | { kind: 'PRACTICE'; recommendationId: string; subjectName: string; objectives: number; reason: string };
+
+/** An open or started recommendation, as Home needs it (Step 14). */
+export interface HomeRecommendation {
+  id: string;
+  kind: 'PRACTICE' | 'RETEST';
+  subjectName: string;
+  objectives: Array<unknown>;
+  createdAt: string;
+}
+
+const objectivesText = (n: number) => (n === 1 ? 'one objective' : `${n} objectives`);
 
 export interface SubjectSummary extends HomeUnit {
   /** The most recent finished result in this subject (TEST or PRACTICE), if any. */
@@ -66,7 +79,11 @@ export function summarise(units: HomeUnit[], attempts: HomeAttempt[]): SubjectSu
   });
 }
 
-export function nextBestAction(input: { hasCohort: boolean; units: HomeUnit[]; attempts: HomeAttempt[] }): NextAction {
+/**
+ * Order: resume what is open; finish the profile; coming soon; not ready; the first test; then a retest after practice;
+ * then practice; then a subject never tested; then the subject tested longest ago.
+ */
+export function nextBestAction(input: { hasCohort: boolean; units: HomeUnit[]; attempts: HomeAttempt[]; recommendations?: HomeRecommendation[] }): NextAction {
   const open = input.attempts
     .filter((a) => a.status === 'IN_PROGRESS')
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
@@ -81,6 +98,19 @@ export function nextBestAction(input: { hasCohort: boolean; units: HomeUnit[]; a
   if (finished.length === 0) {
     const pick = [...ready].sort((a, b) => Number(b.chosenChapters > 0) - Number(a.chosenChapters > 0) || a.subjectName.localeCompare(b.subjectName))[0];
     return { kind: 'FIRST_TEST', subjectVersionId: pick.subjectVersionId, subjectName: pick.subjectName, blueprint: testFor(pick)!, mode: 'TEST', reason: FIRST_TEST_MESSAGE };
+  }
+
+  const oldest = (kind: HomeRecommendation['kind']) =>
+    (input.recommendations ?? []).filter((r) => r.kind === kind).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))[0];
+  const retest = oldest('RETEST');
+  if (retest) {
+    const n = retest.objectives.length;
+    return { kind: 'RETEST', recommendationId: retest.id, subjectName: retest.subjectName, objectives: n, reason: `You practised ${objectivesText(n)} in ${retest.subjectName}. A short retest shows what has stuck.` };
+  }
+  const practice = oldest('PRACTICE');
+  if (practice) {
+    const n = practice.objectives.length;
+    return { kind: 'PRACTICE', recommendationId: practice.id, subjectName: practice.subjectName, objectives: n, reason: `Practise ${objectivesText(n)} in ${practice.subjectName}, chosen from your recent answers.` };
   }
 
   const lastTested = (u: HomeUnit) =>

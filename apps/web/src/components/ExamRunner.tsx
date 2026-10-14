@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, bff, type ExamLockResult, type ExamResult, type ExamView } from '@/lib/client-api';
+import { practiseMissed } from '@/lib/start-test';
 
 function newKey(): string {
   return crypto.randomUUID().replace(/-/g, '');
@@ -241,6 +242,20 @@ export function ExamRunner({ assessmentId }: { assessmentId: string }) {
 
 function ResultView({ result, headingRef }: { result: ExamResult; headingRef: React.RefObject<HTMLHeadingElement | null> }) {
   const label = { EASY: 'Easy', MEDIUM: 'Medium', HARD: 'Hard' } as const;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Step 14: after a test, practise what was missed (wrong or unanswered; removed questions never count).
+  const missed = result.items.filter((i) => i.outcome === 'INCORRECT' || i.outcome === 'UNANSWERED').length;
+  async function practise() {
+    setBusy(true);
+    setError(null);
+    try {
+      await practiseMissed(result.assessmentId);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Something went wrong. Please try again.');
+      setBusy(false);
+    }
+  }
   return (
     <>
       <section className="card" aria-labelledby="res">
@@ -264,7 +279,23 @@ function ResultView({ result, headingRef }: { result: ExamResult; headingRef: Re
             ) : null,
           )}
         </ul>
-        <Link className="btn" href="/home">Back to Home</Link>
+        {result.mode === 'TEST' && missed > 0 && (
+          <p className="muted" style={{ marginBottom: 10 }}>
+            Practise what you missed: 10 questions on the same topics, with the answer shown after each one.
+          </p>
+        )}
+        {result.mode === 'PRACTICE' && (
+          <p className="muted" style={{ marginBottom: 10 }}>Once this practice is counted, Home will offer a short retest on the same topics.</p>
+        )}
+        <div className="actions">
+          {result.mode === 'TEST' && missed > 0 && (
+            <button className="btn" disabled={busy} onClick={practise}>
+              {busy ? 'Preparing…' : 'Practise what you missed'}
+            </button>
+          )}
+          <Link className={result.mode === 'TEST' && missed > 0 ? 'btn secondary' : 'btn'} href="/home">Back to Home</Link>
+        </div>
+        <div role="alert" aria-live="polite">{error && <p className="error">{error}</p>}</div>
       </section>
 
       <h2>Review</h2>

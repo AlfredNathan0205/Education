@@ -6,7 +6,7 @@ import { PrivacyService } from '../privacy/privacy.service';
 import { DEFAULT_JURISDICTION } from '../student/student.service';
 import { EmptyScopeError, InsufficientBankError, assemble } from '../assembly/assembly-engine';
 import { loadServablePool } from '../assembly/pool';
-import { appliesTo, designOf, resolveScope } from '../blueprint/blueprint-domain';
+import { appliesTo, designOf, isTargeted, resolveScope } from '../blueprint/blueprint-domain';
 import {
   DEFAULT_BLUEPRINT_CODE,
   blueprintByCode,
@@ -196,7 +196,8 @@ export class ExamService {
       const pool = await loadServablePool(db, r, studentId);
       const codes = { curriculumCode: r.curriculum_version.curriculum.code, gradeCode: r.grade.code, subjectCode: r.subject.code };
       const tests = blueprints
-        .filter((b) => appliesTo(b, codes))
+        // Practice and retest designs (objective scope) are started from a recommendation, never chosen directly.
+        .filter((b) => appliesTo(b, codes) && !isTargeted(b.published!.scope_mode))
         .map((b) => ({ code: b.code, name: b.name, total: b.published!.total_questions, ready: pool.items.length >= b.published!.total_questions }));
       units.push({
         subjectVersionId: r.id,
@@ -262,8 +263,23 @@ export class ExamService {
     const blueprintCode = input.blueprint ?? DEFAULT_BLUEPRINT_CODE;
     if (!/^[A-Z][A-Z0-9_]{1,31}$/.test(blueprintCode)) throw new ExamInputError('blueprint is not valid');
     const studentId = await this.gate(accountId);
+    return this.db.client.$transaction((tx: Tx) => this.createIn(tx, studentId, { subjectVersionId: input.subjectVersionId, mode, blueprint: blueprintCode }));
+  }
 
-    return this.db.client.$transaction(async (tx: Tx) => {
+  /**
+   * The body of create, inside the caller's transaction, for a student who has already passed the gate. Step 14
+   * recommendations call it with a `target`: the objectives of a practice or retest set and the recommendation it is for.
+   * A targeted (objective-scope) blueprint needs a target, and only a targeted blueprint takes one.
+   */
+  async createIn(
+    tx: Tx,
+    studentId: string,
+    input: { subjectVersionId: string; mode: AssessmentMode; blueprint: string; target?: { objectives: string[]; recommendationId: string } },
+  ): Promise<{ assessmentId: string; resumed: boolean }> {
+    const mode = input.mode;
+    const blueprintCode = input.blueprint;
+    const target = input.target ?? null;
+    {
       await tx.$queryRaw`SELECT id FROM student WHERE id = ${studentId}::uuid FOR UPDATE`;
       const now = new Date();
 
@@ -301,7 +317,8 @@ export class ExamService {
           s.instance.blueprint_code === blueprintCode &&
           s.instance.curriculum_version_id === unit.curriculum_version_id &&
           s.instance.grade_id === unit.grade_id &&
-          s.instance.subject_id === unit.subject_id
+          s.instance.subject_id === unit.subject_id &&
+          (s.instance.recommendation_id ?? null) === (target?.recommendationId ?? null)
         ) {
           return { assessmentId: s.id, resumed: true };
         }
@@ -309,16 +326,20 @@ export class ExamService {
 
       const blueprint = await this.blueprintFor(tx, blueprintCode, unit);
       const version = blueprint.published!;
+      if (isTargeted(version.scope_mode) && !target) throw new ExamUnavailableError('This practice set is started from a recommendation');
+      if (!isTargeted(version.scope_mode) && target) throw new ExamInputError('Only a practice or retest design takes target objectives');
       const design = designOf(blueprint.code, version);
       const focus = version.scope_mode === 'STUDENT_FOCUS' ? await this.focusChapters(tx, studentId, unit.subject.code) : null;
       const pool = await loadServablePool(tx, unit, studentId);
       const seedUsed = newSeed();
       let assembled;
       try {
-        assembled = assemble(pool.items, design, seedUsed, resolveScope(version, focus));
+        assembled = assemble(pool.items, design, seedUsed, resolveScope(version, focus, target?.objectives ?? null));
       } catch (e) {
         if (e instanceof InsufficientBankError) throw new ExamUnavailableError('There are not enough approved questions for this test yet');
-        if (e instanceof EmptyScopeError) throw new ExamUnavailableError('Choose the chapters you are studying for this subject first');
+        if (e instanceof EmptyScopeError) {
+          throw new ExamUnavailableError(target ? 'There is nothing to practise here yet' : 'Choose the chapters you are studying for this subject first');
+        }
         throw e;
       }
       const instance = await tx.assessment_instance.create({
@@ -343,6 +364,8 @@ export class ExamService {
               option_order: i.optionOrder,
             })),
           },
+          recommendation_id: target?.recommendationId ?? null,
+          target_objectives: target?.objectives ?? [],
         },
         select: { id: true },
       });
@@ -357,12 +380,22 @@ export class ExamService {
           aggregateType: 'assessment',
           aggregateId: session.id,
           eventType,
-          payload: { assessmentId: session.id, studentId, mode, blueprint: blueprint.code, blueprintVersion: version.version },
+          payload: { assessmentId: session.id, studentId, mode, blueprint: blueprint.code, blueprintVersion: version.version, recommendationId: target?.recommendationId ?? null },
           idempotencyKey: `${eventType}:${session.id}`,
         });
       }
       return { assessmentId: session.id, resumed: false };
+    }
+  }
+
+  /** The newest served revision of a subject (what a new test must be built from), or null when none is served. */
+  async servedUnitId(tx: Tx, unit: { curriculumVersionId: string; gradeId: string; subjectId: string }): Promise<string | null> {
+    const row = await tx.curriculum_subject_version.findFirst({
+      where: { curriculum_version_id: unit.curriculumVersionId, grade_id: unit.gradeId, subject_id: unit.subjectId, state: { in: this.servedStates() } },
+      orderBy: { revision: 'desc' },
+      select: { id: true },
     });
+    return row?.id ?? null;
   }
 
   // ── take the test ─────────────────────────────────────────────────────────

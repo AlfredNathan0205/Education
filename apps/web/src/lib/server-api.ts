@@ -31,6 +31,8 @@ const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
   { method: 'GET', path: 'home' },
   // Mastery (Step 13): the student's own, labels only.
   { method: 'GET', path: 'mastery' },
+  // Recommendations (Step 14): the student's own.
+  { method: 'GET', path: 'recommendations' },
 ];
 
 /** Admin curriculum routes carry a unit id, so they are matched by an exact pattern, never a prefix. */
@@ -67,6 +69,9 @@ const ALLOWED_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: 'POST', pattern: new RegExp(`^exam/assessments/${UUID}/questions/\\d{1,2}/(lock|skip)$`) },
   { method: 'GET', pattern: new RegExp(`^exam/assessments/${UUID}/result$`) },
   { method: 'POST', pattern: new RegExp(`^guardian/approvals/${UUID}/withdraw$`) },
+  // Practice and retest (Step 14).
+  { method: 'POST', pattern: new RegExp(`^recommendations/${UUID}/(start|dismiss)$`) },
+  { method: 'POST', pattern: new RegExp(`^recommendations/from-result/${UUID}$`) },
 ];
 
 export function isAllowed(method: string, path: string): boolean {
