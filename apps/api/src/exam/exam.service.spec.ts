@@ -48,7 +48,7 @@ function build(opts: Opts = {}, config: Partial<ExamConfig> = {}) {
       explanation: `Because ${q}`,
       difficulty: q <= total / 3 ? 'EASY' : q <= (2 * total) / 3 ? 'MEDIUM' : 'HARD',
       question: { id: `q${q}`, objective_path: `C${(q % 3) + 1}/T1/M1/O${(q % 4) + 1}`, curriculum_version_id: CV, grade_id: GRADE, subject_id: SUBJECT },
-      options: [1, 2, 3, 4].map((p) => ({ revision_id: `r${q}`, position: p, text: `Opt ${q}-${p}`, is_correct: p === (q % 4) + 1 })),
+      options: [0, 1, 2, 3].map((p) => ({ revision_id: `r${q}`, position: p, text: `Opt ${q}-${p}`, is_correct: p === q % 4 })),
     });
   }
   const blueprints: any[] = opts.blueprints ?? [blueprint('QUICK10', { EASY: 5, MEDIUM: 3, HARD: 2 })];

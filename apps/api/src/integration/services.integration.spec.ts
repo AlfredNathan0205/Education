@@ -29,6 +29,7 @@ import { GuardianService } from '../guardian/guardian.service';
 import { DEV_DRAFT_WORDING_REFERENCE } from '../guardian/consent-texts';
 import { GuardianConflictError, GuardianNotPermittedError, GuardianUnavailableError } from '../guardian/guardian.errors';
 import { QuestionService } from '../question/question.service';
+import { optionRows } from '../question/question-domain';
 import { PublicationService } from '../publication/publication.service';
 import { BlueprintService } from '../blueprint/blueprint.service';
 import { ItemInvalidationService } from '../exam/item-invalidation.service';
@@ -908,7 +909,7 @@ describe('ExamService (real DB)', () => {
           stem_hash: `exam-hash-${uniq}-${k}`,
           explanation: `Because ${k}`,
           difficulty: (['EASY', 'MEDIUM', 'HARD'] as const)[k % 3],
-          options: { create: [1, 2, 3, 4].map((p) => ({ position: p, text: `Answer ${k}-${p}`, is_correct: p === ((k + 1) % 4) + 1 })) },
+          options: { create: optionRows([0, 1, 2, 3].map((p) => `Answer ${k}-${p}`), (k + 1) % 4) },
         },
       });
       // Approved is not published: tests are built only from published questions.
@@ -1385,7 +1386,7 @@ describe('ExamService (real DB)', () => {
     const { accountId } = await adult();
     const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
     const first = (await itemsOf(assessmentId))[0];
-    await prisma.question_option.deleteMany({ where: { revision_id: first.question_revision_id, position: 4 } });
+    await prisma.question_option.deleteMany({ where: { revision_id: first.question_revision_id, position: 3 } });
     const v = await exam.present(accountId, assessmentId);
     expect(v).toMatchObject({ phase: 'QUESTION', removed: 1 });
     expect(v.question!.position).toBe(2);
