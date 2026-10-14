@@ -59,7 +59,7 @@ export interface UnitRef {
   subjectName: string;
 }
 
-const ACTIVE = ['OPEN', 'STARTED'];
+const ACTIVE: any[] = ['OPEN', 'STARTED'];
 
 /**
  * Recommendations, practice and retest (Step 14; spec domain 15 "Recommendations": Next Best Action, practice/retest
