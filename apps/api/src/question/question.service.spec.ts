@@ -22,6 +22,8 @@ function makeDb(tree: any[] = TREE) {
   const options: any[] = [];
   const events: any[] = [];
   const runs: any[] = [];
+  const publications: any[] = [];
+  const pubEvents: any[] = [];
   let currentTree = tree;
 
   const withRevs = (q: any, take?: number) => ({
@@ -81,6 +83,11 @@ function makeDb(tree: any[] = TREE) {
       findFirst: jest.fn(async ({ where }: any) => [...runs].reverse().find((x) => x.revision_id === where.revision_id) ?? null),
     },
     generation_attempt: { findFirst: jest.fn(async () => null) },
+    question_publication: {
+      findUnique: jest.fn(async ({ where }: any) => publications.find((p) => p.revision_id === where.revision_id) ?? null),
+      update: jest.fn(async ({ where, data }: any) => Object.assign(publications.find((p) => p.revision_id === where.revision_id), data)),
+    },
+    question_publication_event: { create: jest.fn(async ({ data }: any) => pubEvents.push(data)) },
     question_option: {
       deleteMany: jest.fn(async ({ where }: any) => {
         for (let i = options.length - 1; i >= 0; i--) if (options[i].revision_id === where.revision_id) options.splice(i, 1);
@@ -91,7 +98,7 @@ function makeDb(tree: any[] = TREE) {
   };
   client.$transaction = jest.fn((cb: any) => cb(client));
   const service = new QuestionService({ client } as any);
-  return { client, service, questions, revisions, options, events, runs, setTree: (t: any[]) => (currentTree = t) };
+  return { client, service, questions, revisions, options, events, runs, publications, pubEvents, setTree: (t: any[]) => (currentTree = t) };
 }
 
 const HEAD = 'question_code,objective_code,stem,option_a,option_b,option_c,option_d,correct,difficulty,cognitive,explanation';
@@ -344,6 +351,49 @@ describe('QuestionService: governance', () => {
     await db.service.transition(rev.id, 'QUARANTINED', reviewer2, { reasonCode: 'ANSWER_WRONG', note: 'A student reported the key is wrong.' });
     expect(rev.state).toBe('QUARANTINED');
     expect(db.events[db.events.length - 1]).toMatchObject({ from_state: 'APPROVED', to_state: 'QUARANTINED', reason_code: 'ANSWER_WRONG' });
+  });
+
+  describe('publication follows the question', () => {
+    const publish = (db: ReturnType<typeof makeDb>, revId: string) => db.publications.push({ revision_id: revId, state: 'PUBLISHED', withdrawn_by: null });
+
+    it('quarantine withdraws the publication, and restoring does not publish it again', async () => {
+      const db = makeDb();
+      const rev = await seedApproved(db);
+      publish(db, rev.id);
+      await db.service.transition(rev.id, 'QUARANTINED', reviewer2, { reasonCode: 'ANSWER_WRONG', note: 'Key looks wrong.' });
+      expect(db.publications[0]).toMatchObject({ state: 'WITHDRAWN', withdrawn_by: 'acc-rev', withdraw_reason_code: 'ANSWER_WRONG' });
+      expect(db.pubEvents[0]).toMatchObject({ action: 'WITHDRAW', actor_kind: 'HUMAN', reason_code: 'ANSWER_WRONG' });
+      await db.service.transition(rev.id, 'APPROVED', approver, { reasonCode: 'OTHER', note: 'Checked, fine.' });
+      expect(db.publications[0].state).toBe('WITHDRAWN');
+    });
+
+    it('retiring withdraws it', async () => {
+      const db = makeDb();
+      const rev = await seedApproved(db);
+      publish(db, rev.id);
+      await db.service.transition(rev.id, 'RETIRED', reviewer2, { reasonCode: 'OTHER', note: 'No longer needed.' });
+      expect(db.publications[0].state).toBe('WITHDRAWN');
+    });
+
+    it('a newer approved version replaces it, and the old publication is withdrawn by the system', async () => {
+      const db = makeDb();
+      const first = await seedApproved(db);
+      publish(db, first.id);
+      await db.service.apply(UNIT, await db.service.plan(UNIT, csv(r('Q1', 'O1', 'Which unit measures quantity Q1 exactly?'))), ctx());
+      const second = db.revisions[1];
+      await db.service.transition(second.id, 'IN_REVIEW', editor, {});
+      await db.service.transition(second.id, 'APPROVED', reviewer2, { answerVerified: true });
+      expect(db.publications[0].state).toBe('WITHDRAWN');
+      expect(db.pubEvents[0]).toMatchObject({ actor_kind: 'SYSTEM', actor_account_id: null });
+      expect(db.publications.some((p) => p.revision_id === second.id)).toBe(false);
+    });
+
+    it('does nothing for a question that was never published', async () => {
+      const db = makeDb();
+      const rev = await seedApproved(db);
+      await db.service.transition(rev.id, 'QUARANTINED', reviewer2, { reasonCode: 'OTHER', note: 'Pulled while checked.' });
+      expect(db.pubEvents).toHaveLength(0);
+    });
   });
 
   it('restores only by an approver, and not when a newer version is already approved', async () => {

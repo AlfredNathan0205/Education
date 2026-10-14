@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@exam-app/database';
 import { createHash } from 'node:crypto';
+import { bankStatus, type BankStatus } from '../publication/publication-domain';
+import { withdrawInTx } from '../publication/publication-write';
 import { DatabaseService } from '../database/database.service';
 import {
   EDITABLE_STATES,
@@ -62,6 +64,8 @@ export interface QuestionRow {
   state: QuestionState;
   revision: number;
   origin: QuestionOrigin;
+  /** Bank status: NOT_PUBLISHED, WITHDRAWN, NEW, HEALTHY, WATCH, DEGRADED, QUARANTINED or RETIRED. */
+  bankStatus: BankStatus;
 }
 
 export interface QuestionDetail extends QuestionRow {
@@ -72,6 +76,7 @@ export interface QuestionDetail extends QuestionRow {
   aiSource: string | null;
   /** The latest deterministic check on this exact revision, if one has run. */
   validation: { validatorVersion: string; passed: boolean; findings: Finding[]; at: string } | null;
+  publication: { state: 'PUBLISHED' | 'WITHDRAWN'; publishedAt: string; withdrawnReason: string | null; withdrawnNote: string | null } | null;
   /** How the AI factory scored this draft (advisory; a person decides). Null for anything not made by the factory. */
   generation: { batchId: string; route: string | null; confidence: number | null; repairs: number; issues: { role: string; message: string }[]; reason: string | null } | null;
   history: { from: string | null; to: string; actorKind: string; reasonCode: string | null; note: string | null; at: string }[];
@@ -401,6 +406,8 @@ export class QuestionService {
         for (const p of previous) {
           await tx.question_revision.update({ where: { id: p.id }, data: { state: 'SUPERSEDED' } });
           await this.event(tx, p.id, 'APPROVED', 'SUPERSEDED', { kind: 'SYSTEM', accountId: null }, `replaced by revision ${rev.revision}`);
+          // Approval is not publication: the new version must be published by a person. The old one stops being served now.
+          await withdrawInTx(tx, p.id, { kind: 'SYSTEM', accountId: null }, 'OTHER', `replaced by revision ${rev.revision}`);
         }
         await tx.question_revision.update({
           where: { id: revisionId },
@@ -411,6 +418,10 @@ export class QuestionService {
           where: { id: revisionId },
           data: { state: to, reviewed_by: accountId, review_note: input.note?.trim() || null },
         });
+      }
+      if (to === 'QUARANTINED' || to === 'RETIRED') {
+        // Pulled from the bank in the same step. Restoring a quarantined question does not publish it again.
+        await withdrawInTx(tx, revisionId, accountId ? { kind: 'HUMAN', accountId } : { kind: 'SYSTEM', accountId: null }, input.reasonCode ?? null, input.note?.trim() || `moved to ${to.toLowerCase()}`);
       }
       await this.event(tx, revisionId, rev.state, to, actor, input.note?.trim() || null, input.reasonCode ?? null);
       return to;
@@ -489,7 +500,7 @@ export class QuestionService {
       where: { curriculum_version_id: unit.curriculumVersionId, grade_id: unit.gradeId, subject_id: unit.subjectId },
       orderBy: { code: 'asc' },
       take: 500,
-      include: { revisions: { orderBy: { revision: 'desc' }, take: 1 } },
+      include: { bank_state: true, revisions: { orderBy: { revision: 'desc' }, take: 1, include: { publication: true } } },
     });
     const rows = qs.map((q) => {
       const r = q.revisions[0];
@@ -504,6 +515,7 @@ export class QuestionService {
         state: r.state,
         revision: r.revision,
         origin: r.origin,
+        bankStatus: bankStatus(r.state, r.publication?.state ?? null, q.bank_state?.health ?? null),
       } as QuestionRow;
     });
     return state ? rows.filter((r) => r.state === state) : rows;
@@ -512,7 +524,7 @@ export class QuestionService {
   async detail(revisionId: string): Promise<QuestionDetail> {
     const r: any = await this.db.client.question_revision.findUnique({
       where: { id: revisionId },
-      include: { options: { orderBy: { position: 'asc' } }, question: true, events: { orderBy: { occurred_at: 'asc' } }, validation_runs: { orderBy: { created_at: 'desc' }, take: 1 } },
+      include: { options: { orderBy: { position: 'asc' } }, question: { include: { bank_state: true } }, publication: true, events: { orderBy: { occurred_at: 'asc' } }, validation_runs: { orderBy: { created_at: 'desc' }, take: 1 } },
     });
     if (!r) throw new QuestionNotFoundError('question');
     const gen: any = r.origin === 'AI_DRAFT' ? await this.db.client.generation_attempt.findFirst({ where: { question_revision_id: revisionId } }) : null;
@@ -527,6 +539,8 @@ export class QuestionService {
       state: r.state,
       revision: r.revision,
       origin: r.origin,
+      bankStatus: bankStatus(r.state, r.publication?.state ?? null, r.question.bank_state?.health ?? null),
+      publication: r.publication ? { state: r.publication.state, publishedAt: new Date(r.publication.published_at).toISOString(), withdrawnReason: r.publication.withdraw_reason_code ?? null, withdrawnNote: r.publication.withdraw_note ?? null } : null,
       explanation: r.explanation ?? null,
       options: r.options.map((o: any) => ({ label: OPTION_LABELS[o.position], text: o.text, isCorrect: o.is_correct })),
       reviewNote: r.review_note ?? null,

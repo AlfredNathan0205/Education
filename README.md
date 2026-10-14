@@ -128,6 +128,14 @@ $F batches ; $F show <batchId> ; $F stop <batchId>
 
 Drafts appear in the question bank screen with their score and reasons, marked as AI drafts.
 
+**Publication** — approved is not published. Tests are built only from questions an approver has published.
+Approvers publish in the question bank screen ("Publish all approved questions" for a subject, or per question).
+To see how much of the bank is actually in the serving bank (read-only):
+
+```bash
+docker compose exec api node apps/api/dist/publication/cli/bank.js status ICSE GRADE_8 PHYSICS
+```
+
 Data is stored in a Docker named volume (`pgdata`) and survives restarts.
 Run `docker compose down -v` to wipe everything and start fresh.
 

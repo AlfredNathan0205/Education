@@ -11,6 +11,7 @@ import { AuthzModule } from './authz/authz.module';
 import { StudentModule } from './student/student.module';
 import { CurriculumModule } from './curriculum/curriculum.module';
 import { QuestionModule } from './question/question.module';
+import { PublicationModule } from './publication/publication.module';
 import { ExamModule } from './exam/exam.module';
 import { GuardianModule } from './guardian/guardian.module';
 import { SchoolModule } from './school/school.module';
@@ -31,6 +32,7 @@ import { SchoolModule } from './school/school.module';
     PrivacyModule,
     CurriculumModule,
     QuestionModule,
+    PublicationModule,
     ExamModule,
     GuardianModule,
     StudentModule,

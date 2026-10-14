@@ -540,7 +540,7 @@ export class ExamService {
     return studentId;
   }
 
-  /** Approved questions of the unit whose objective still exists in this curriculum revision. */
+  /** Approved and published questions of the unit whose objective still exists in this curriculum revision. */
   private async loadPool(
     db: Tx,
     unit: { id: string; curriculum_version_id: string; grade_id: string; subject_id: string },
@@ -556,7 +556,12 @@ export class ExamService {
     const revs = await db.question_revision.findMany({
       where: {
         state: 'APPROVED',
-        question: { curriculum_version_id: unit.curriculum_version_id, grade_id: unit.grade_id, subject_id: unit.subject_id },
+        // Approved is not published: only a version a person has published is served, and not one marked DEGRADED.
+        publication: { is: { state: 'PUBLISHED' } },
+        question: {
+          curriculum_version_id: unit.curriculum_version_id, grade_id: unit.grade_id, subject_id: unit.subject_id,
+          NOT: { bank_state: { is: { health: 'DEGRADED' } } },
+        },
       },
       select: { id: true, difficulty: true, stem_hash: true, question: { select: { id: true, objective_path: true } } },
     });

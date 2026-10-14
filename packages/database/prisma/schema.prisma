@@ -771,6 +771,7 @@ model question {
   created_at            DateTime @default(now())
 
   revisions question_revision[]
+  bank_state question_bank_state?
 
   @@unique([curriculum_version_id, grade_id, subject_id, code])
   @@index([curriculum_version_id, grade_id, subject_id])
@@ -809,6 +810,7 @@ model question_revision {
   events   question_event[]
   validation_runs question_validation_run[]
   instance_items assessment_instance_question[]
+  publication question_publication?
 
   @@unique([question_id, revision])
   @@index([state])
@@ -1354,4 +1356,70 @@ model ai_call_log {
 
   @@index([batch_id])
   @@index([created_at])
+}
+
+
+// ============================================================================
+// Step 9: Question bank and publication. Approved is not published (spec invariant 7).
+// ============================================================================
+
+enum publication_state {
+  PUBLISHED
+  WITHDRAWN
+}
+
+enum publication_action {
+  PUBLISH
+  WITHDRAW
+}
+
+/// Stored health of a published question. Quarantined and retired are read from the revision's state, not stored here.
+enum bank_health {
+  NEW
+  HEALTHY
+  WATCH
+  DEGRADED
+}
+
+/// One row per revision. Only a PUBLISHED row on an APPROVED revision can be served. A person publishes; the AI never does.
+model question_publication {
+  id                   String            @id @default(uuid()) @db.Uuid
+  revision_id          String            @unique @db.Uuid
+  state                publication_state
+  published_by         String            @db.Uuid
+  published_at         DateTime          @default(now())
+  withdrawn_by         String?           @db.Uuid
+  withdrawn_at         DateTime?
+  withdraw_reason_code String?           @db.VarChar(40)
+  withdraw_note        String?           @db.VarChar(1000)
+
+  revision question_revision @relation(fields: [revision_id], references: [id])
+
+  @@index([state])
+}
+
+/// Append-only history of publishing and withdrawing. A system withdrawal (quarantine, retire) has no account.
+model question_publication_event {
+  id         String             @id @default(uuid()) @db.Uuid
+  revision_id String            @db.Uuid
+  action     publication_action
+  actor_kind String             @db.VarChar(8)
+  actor_account_id String?      @db.Uuid
+  reason_code String?           @db.VarChar(40)
+  note       String?            @db.VarChar(1000)
+  occurred_at DateTime          @default(now())
+
+  @@index([revision_id])
+}
+
+/// Health of a question across its revisions. No row means NEW. Set by a person until live-quality signals exist.
+model question_bank_state {
+  question_id String      @id @db.Uuid
+  health      bank_health
+  changed_by  String?     @db.Uuid
+  reason_code String?     @db.VarChar(40)
+  note        String?     @db.VarChar(1000)
+  updated_at  DateTime    @updatedAt
+
+  question question @relation(fields: [question_id], references: [id])
 }

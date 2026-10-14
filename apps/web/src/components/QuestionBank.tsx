@@ -2,13 +2,16 @@
 
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
 import {
+  BANK_STATUS_LABEL,
   REASON_CODE_LABELS,
   ApiError,
   bff,
   type AdminUnit,
   type QuestionDetail,
   type QuestionRow,
+  type PublishUnitResult,
   type QuestionUploadResult,
+  type UnitBankSummary,
 } from '@/lib/client-api';
 
 const MAX_BYTES = 2_000_000;
@@ -56,6 +59,9 @@ export function QuestionBank() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [summary, setSummary] = useState<UnitBankSummary | null>(null);
+  const [health, setHealth] = useState('');
+  const [published, setPublished] = useState<PublishUnitResult | null>(null);
 
   useEffect(() => {
     bff<AdminUnit[]>('GET', 'admin/questions/units')
@@ -68,6 +74,7 @@ export function QuestionBank() {
 
   async function loadRows(id: string) {
     setRows(null);
+    bff<UnitBankSummary>('GET', `admin/publication/units/${id}/summary`).then(setSummary).catch(() => setSummary(null));
     try {
       setRows(await bff<QuestionRow[]>('GET', `admin/questions/units/${id}/questions`));
     } catch (e) {
@@ -78,6 +85,8 @@ export function QuestionBank() {
 
   function chooseUnit(id: string) {
     setUnitId(id);
+    setSummary(null);
+    setPublished(null);
     setPreview(null);
     setDetail(null);
     setMessage(null);
@@ -143,6 +152,26 @@ export function QuestionBank() {
       setNote('');
       setReason('');
       setVerified(false);
+      await loadRows(unitId);
+    });
+
+  const publishAll = () =>
+    guarded(async () => {
+      const r = await bff<PublishUnitResult>('POST', `admin/publication/units/${unitId}/publish-all`);
+      setPublished(r);
+      setMessage(`Published ${r.published} question${r.published === 1 ? '' : 's'}${r.skipped.length ? `; ${r.skipped.length} could not be published (see below)` : ''}.`);
+      await loadRows(unitId);
+    });
+
+  const publication = (action: 'publish' | 'withdraw' | 'health', body?: unknown, done?: string) =>
+    guarded(async () => {
+      if (!detail) return;
+      await bff('POST', `admin/publication/revisions/${detail.revisionId}/${action}`, body);
+      setMessage(done ?? 'Done.');
+      setDetail(await bff<QuestionDetail>('GET', `admin/questions/revisions/${detail.revisionId}`));
+      setNote('');
+      setReason('');
+      setHealth('');
       await loadRows(unitId);
     });
 
@@ -218,6 +247,22 @@ export function QuestionBank() {
           )}
 
           <h2>Questions</h2>
+          {summary && (
+            <div aria-label="Publication summary">
+              <p className="muted">
+                {summary.total} questions. Tests are built only from published questions: {summary.byStatus.NEW + summary.byStatus.HEALTHY + summary.byStatus.WATCH} in the bank
+                {summary.byStatus.DEGRADED ? `, ${summary.byStatus.DEGRADED} held back as degraded` : ''}; {summary.awaitingPublication} approved and waiting to be published.
+              </p>
+              {summary.awaitingPublication > 0 && (
+                <button className="btn" disabled={busy} onClick={publishAll}>Publish all approved questions (approvers only)</button>
+              )}
+              {published && published.skipped.length > 0 && (
+                <ul>
+                  {published.skipped.map((k) => <li key={k.code} className="error"><strong>{k.code}:</strong> {k.reasons.join('; ')}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
           <div className="seg" role="group" aria-label="Show">
             {FILTERS.map((f) => (
               <button key={f.key} type="button" aria-pressed={filter === f.key} onClick={() => setFilter(f.key)}>{f.label}</button>
@@ -232,7 +277,7 @@ export function QuestionBank() {
                   <button type="button" className="btn secondary" onClick={() => open(r)} aria-label={`Open question ${r.code}`}>
                     {r.code}
                   </button>{' '}
-                  <span className="muted">{STATE_LABEL[r.state]} · {r.difficulty.toLowerCase()} · {r.cognitive ?? 'no cognitive level'} · v{r.revision}{r.origin === 'AI_DRAFT' ? ' · AI draft' : ''}</span>
+                  <span className="muted">{STATE_LABEL[r.state]} · {r.difficulty.toLowerCase()} · {r.cognitive ?? 'no cognitive level'} · v{r.revision}{r.origin === 'AI_DRAFT' ? ' · AI draft' : ''}{r.state === 'APPROVED' ? ` · ${BANK_STATUS_LABEL[r.bankStatus]}` : ''}</span>
                   <div>{r.stem}</div>
                   <div className="muted">{r.objectivePath}</div>
                 </li>
@@ -331,6 +376,26 @@ export function QuestionBank() {
                 <label htmlFor="note2">Note (what you found, at least 5 characters)</label>
                 <input id="note2" value={note} onChange={(e) => setNote(e.target.value)} />
               </div>
+              <p className="muted">
+                Bank status: {BANK_STATUS_LABEL[detail.bankStatus]}.
+                {detail.publication?.state === 'WITHDRAWN' ? ` Withdrawn${detail.publication.withdrawnNote ? `: ${detail.publication.withdrawnNote}` : ''}.` : ''}
+                {detail.bankStatus === 'NOT_PUBLISHED' ? ' Approved is not published: this question is not in any test until an approver publishes it.' : ''}
+              </p>
+              {detail.bankStatus === 'NOT_PUBLISHED' || detail.bankStatus === 'WITHDRAWN' ? (
+                <button className="btn" disabled={busy} onClick={() => publication('publish', undefined, 'Published: it can now appear in tests.')}>Publish (approvers only)</button>
+              ) : (
+                <>
+                  <button className="btn secondary" disabled={busy || !reason || note.trim().length < 5} onClick={() => publication('withdraw', { reasonCode: reason, note }, 'Withdrawn: it will not appear in any new test.')}>Withdraw from the bank</button>{' '}
+                  <select aria-label="Set health" value={health} onChange={(e) => setHealth(e.target.value)}>
+                    <option value="">Set health…</option>
+                    <option value="HEALTHY">Healthy</option>
+                    <option value="WATCH">Watch</option>
+                    <option value="DEGRADED">Degraded (stop serving)</option>
+                  </select>{' '}
+                  <button className="btn secondary" disabled={busy || !health || !reason || note.trim().length < 5} onClick={() => publication('health', { health, reasonCode: reason, note }, 'Health updated.')}>Save health</button>
+                </>
+              )}
+              <br />
               <button className="btn secondary" disabled={busy || !reason || note.trim().length < 5} onClick={() => act('quarantine', { reasonCode: reason, note }, 'Quarantined: it will not appear in any new test.')}>Quarantine (stop using it now)</button>{' '}
               <button className="btn secondary" disabled={busy || !reason || note.trim().length < 5} onClick={() => act('retire', { reasonCode: reason, note }, 'Retired.')}>Retire this question</button>
             </>
