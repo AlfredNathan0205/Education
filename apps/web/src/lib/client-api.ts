@@ -143,7 +143,10 @@ export interface ExamUnit {
   gradeCode: string;
   subjectName: string;
   usableQuestions: number;
+  /** Quick 10 can be built now. */
   ready: boolean;
+  /** Every test this subject offers (Step 10). The student screen shows only Quick 10 until Step 12. */
+  tests: Array<{ code: string; name: string; total: number; ready: boolean }>;
 }
 
 export interface MyAssessment {
@@ -249,3 +252,93 @@ export interface SchoolHit {
   city: string | null;
   branches: Array<{ id: string; name: string }>;
 }
+
+// ── Test designs (Step 10) ─────────────────────────────────────────────────
+
+export type BlueprintDifficulty = 'EASY' | 'MEDIUM' | 'HARD';
+export type BlueprintScopeMode = 'WHOLE_SUBJECT' | 'CHAPTERS' | 'STUDENT_FOCUS';
+
+export interface BlueprintDesign {
+  totalQuestions: number;
+  difficulty: Record<BlueprintDifficulty, number>;
+  types: Array<{ type: 'MCQ'; count: number }>;
+  scope: { mode: BlueprintScopeMode; strict: boolean; chapters: string[] };
+  cells: Array<{ chapterCode: string | null; difficulty: BlueprintDifficulty | null; cognitive: 'C1' | 'C2' | 'C3' | 'C4' | null; minCount: number }>;
+  preferUnseen: boolean;
+  openingDifficulty: BlueprintDifficulty | null;
+  notes: string | null;
+}
+
+export interface BlueprintSubject {
+  curriculumCode: string;
+  gradeCode: string;
+  subjectCode: string;
+}
+
+export interface BlueprintSummary {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  subject: BlueprintSubject | null;
+  published: { versionId: string; version: number; totalQuestions: number; publishedAt: string | null } | null;
+  draft: { versionId: string; version: number } | null;
+}
+
+export interface BlueprintDetail extends BlueprintSummary {
+  versions: Array<{
+    versionId: string;
+    version: number;
+    status: 'DRAFT' | 'PUBLISHED' | 'RETIRED';
+    design: BlueprintDesign;
+    createdAt: string;
+    publishedAt: string | null;
+    retiredAt: string | null;
+    testsBuilt: number;
+  }>;
+}
+
+export type BlueprintRelaxation =
+  | { kind: 'DIFFICULTY_SUBSTITUTED'; wanted: BlueprintDifficulty; got: BlueprintDifficulty; count: number }
+  | { kind: 'CELL_MINIMUM_UNMET'; cell: number; wanted: number; got: number }
+  | { kind: 'SCOPE_WIDENED'; reason: 'NO_FOCUS_CHAPTERS' | 'TOO_FEW_IN_SCOPE'; outOfScope: number }
+  | { kind: 'SEEN_QUESTIONS_USED'; count: number }
+  | { kind: 'HEALTH_WATCH_USED'; count: number };
+
+export interface BlueprintPreviewHead {
+  blueprint: string;
+  version: number;
+  status: 'DRAFT' | 'PUBLISHED' | 'RETIRED';
+  unitId: string;
+  seed: string;
+  note: string | null;
+}
+
+export type BlueprintPreview =
+  | (BlueprintPreviewHead & {
+      ok: true;
+      report: {
+        requested: Record<BlueprintDifficulty, number>;
+        delivered: Record<BlueprintDifficulty, number>;
+        relaxations: BlueprintRelaxation[];
+        chapters: number;
+        objectives: number;
+        cognitive: Record<'C1' | 'C2' | 'C3' | 'C4' | 'UNTAGGED', number>;
+        pool: { offered: number; duplicates: number; wrongType: number; outOfScope: number; eligible: number };
+      };
+      items: Array<{
+        position: number;
+        code: string;
+        stem: string;
+        chapter: string;
+        objectivePath: string;
+        difficulty: BlueprintDifficulty;
+        cognitive: string | null;
+        health: string;
+        requirement: 'CELL' | 'DIFFICULTY' | 'SUBSTITUTE';
+        reasons: string[];
+        candidates: number;
+      }>;
+    })
+  | (BlueprintPreviewHead & { ok: false; available: number; needed: number });

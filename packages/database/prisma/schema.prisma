@@ -875,7 +875,7 @@ model assessment_instance {
   id                 String          @id @default(uuid()) @db.Uuid
   student_id         String          @db.Uuid
   mode               assessment_mode
-  /// e.g. "QUICK10" and its version; the blueprint lives in code and is recorded here for audit.
+  /// e.g. "QUICK10" and its version number, copied from the published blueprint version used (see assembly_run).
   blueprint_code     String          @db.VarChar(32)
   blueprint_version  Int
   curriculum_version_id String       @db.Uuid
@@ -892,6 +892,8 @@ model assessment_instance {
   student student                    @relation(fields: [student_id], references: [id])
   items   assessment_instance_question[]
   session assessment_session?
+  /// How the instance was assembled from a published blueprint version (Step 10). Null on instances made before Step 10.
+  assembly_run assessment_assembly_run?
 
   @@index([student_id, assembled_at])
 }
@@ -1422,4 +1424,174 @@ model question_bank_state {
   updated_at  DateTime    @updatedAt
 
   question question @relation(fields: [question_id], references: [id])
+}
+
+// ---------------------------------------------------------------------------
+// Step 10 — Assessment blueprints and assembly. Blueprint != Instance: a blueprint version is the design
+// (how many questions, what mix, what scope); an instance is one student's locked test built from it.
+// A published version is never edited; a change is a new version. Every assembly is recorded with one
+// decision per question and the list of anything that had to be relaxed.
+// ---------------------------------------------------------------------------
+
+enum blueprint_version_status {
+  DRAFT
+  PUBLISHED
+  RETIRED
+}
+
+enum blueprint_scope_mode {
+  /// Every chapter of the subject.
+  WHOLE_SUBJECT
+  /// Only the chapters listed in blueprint_scope. The blueprint must be bound to one subject.
+  CHAPTERS
+  /// The chapters the student chose to focus on (Step 5).
+  STUDENT_FOCUS
+}
+
+model assessment_blueprint {
+  id              String   @id @default(uuid()) @db.Uuid
+  /// Stable name used in code and on instances, e.g. QUICK10.
+  code            String   @unique @db.VarChar(32)
+  name            String   @db.VarChar(120)
+  description     String?  @db.VarChar(1000)
+  /// Off: no student is given this test, even with a published version. Previews still work.
+  enabled         Boolean  @default(false)
+  /// All three null = usable for any subject. All three set = only that subject; required for chapter scope or chapter cells.
+  curriculum_code String?  @db.VarChar(32)
+  grade_code      String?  @db.VarChar(16)
+  subject_code    String?  @db.VarChar(64)
+  created_by      String?  @db.Uuid
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  versions assessment_blueprint_version[]
+}
+
+/// One version of a blueprint. At most one PUBLISHED and one DRAFT per blueprint (partial unique indexes in the migration).
+model assessment_blueprint_version {
+  id                 String                   @id @default(uuid()) @db.Uuid
+  blueprint_id       String                   @db.Uuid
+  version            Int
+  status             blueprint_version_status @default(DRAFT)
+  total_questions    Int
+  scope_mode         blueprint_scope_mode     @default(WHOLE_SUBJECT)
+  /// Strict: never go outside the scope; too few questions means no test. Not strict: widen and record it.
+  scope_strict       Boolean                  @default(false)
+  /// Rank questions the student has not seen above ones they have.
+  prefer_unseen      Boolean                  @default(true)
+  /// Put a question of this difficulty first, when the test has one.
+  opening_difficulty question_difficulty?
+  notes              String?                  @db.VarChar(1000)
+  created_by         String?                  @db.Uuid
+  created_at         DateTime                 @default(now())
+  published_by       String?                  @db.Uuid
+  published_at       DateTime?
+  retired_at         DateTime?
+
+  blueprint    assessment_blueprint               @relation(fields: [blueprint_id], references: [id])
+  scopes       blueprint_scope[]
+  difficulties blueprint_difficulty_requirement[]
+  types        blueprint_type_requirement[]
+  cells        blueprint_cell_requirement[]
+  runs         assessment_assembly_run[]
+
+  @@unique([blueprint_id, version])
+}
+
+/// Chapters in scope for a CHAPTERS blueprint version (chapter codes of the bound subject).
+model blueprint_scope {
+  id           String @id @default(uuid()) @db.Uuid
+  version_id   String @db.Uuid
+  chapter_code String @db.VarChar(64)
+
+  version assessment_blueprint_version @relation(fields: [version_id], references: [id], onDelete: Cascade)
+
+  @@unique([version_id, chapter_code])
+}
+
+/// How many questions of each difficulty. The counts add up to total_questions.
+model blueprint_difficulty_requirement {
+  id         String              @id @default(uuid()) @db.Uuid
+  version_id String              @db.Uuid
+  difficulty question_difficulty
+  count      Int
+
+  version assessment_blueprint_version @relation(fields: [version_id], references: [id], onDelete: Cascade)
+
+  @@unique([version_id, difficulty])
+}
+
+/// How many questions of each type. The counts add up to total_questions. Only MCQ exists today.
+model blueprint_type_requirement {
+  id            String        @id @default(uuid()) @db.Uuid
+  version_id    String        @db.Uuid
+  question_type question_type
+  count         Int
+
+  version assessment_blueprint_version @relation(fields: [version_id], references: [id], onDelete: Cascade)
+
+  @@unique([version_id, question_type])
+}
+
+/// "At least min_count questions matching this cell". A null field matches anything; at least one field is set.
+model blueprint_cell_requirement {
+  id           String               @id @default(uuid()) @db.Uuid
+  version_id   String               @db.Uuid
+  position     Int
+  chapter_code String?              @db.VarChar(64)
+  difficulty   question_difficulty?
+  cognitive    question_cognitive?
+  min_count    Int
+
+  version assessment_blueprint_version @relation(fields: [version_id], references: [id], onDelete: Cascade)
+
+  @@unique([version_id, position])
+}
+
+/// One assembly that produced an instance. Read-only previews are not stored.
+model assessment_assembly_run {
+  id                   String          @id @default(uuid()) @db.Uuid
+  instance_id          String          @unique @db.Uuid
+  blueprint_version_id String          @db.Uuid
+  /// Version of the assembly rules, so an old run stays interpretable when the rules change.
+  engine_version       String          @db.VarChar(32)
+  seed                 String          @db.VarChar(64)
+  mode                 assessment_mode
+  /// Questions that could be used after removing duplicates, wrong types and (strict) out-of-scope ones.
+  eligible_count       Int
+  requested            Json
+  delivered            Json
+  /// Every place the design could not be met exactly: difficulty substitutions, unmet cells, widened scope, seen questions used.
+  relaxations          Json
+  relaxed              Boolean
+  created_at           DateTime        @default(now())
+
+  instance          assessment_instance            @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+  blueprint_version assessment_blueprint_version   @relation(fields: [blueprint_version_id], references: [id])
+  decisions         assessment_assembly_decision[]
+
+  @@index([blueprint_version_id, created_at])
+}
+
+/// Why each question in an instance was chosen.
+model assessment_assembly_decision {
+  id                   String               @id @default(uuid()) @db.Uuid
+  run_id               String               @db.Uuid
+  /// Position in the instance (1-based).
+  position             Int
+  question_revision_id String               @db.Uuid
+  question_id          String               @db.Uuid
+  /// CELL (to meet a minimum), DIFFICULTY (normal mix) or SUBSTITUTE (a short difficulty filled from the nearest one).
+  requirement          String               @db.VarChar(16)
+  cell_position        Int?
+  wanted_difficulty    question_difficulty
+  difficulty           question_difficulty
+  /// e.g. UNSEEN, NEW_CHAPTER, NEW_OBJECTIVE, NEW_COGNITIVE, OUT_OF_SCOPE, HEALTH_WATCH, TIE_BREAK_RANDOM.
+  reasons              String[]
+  /// How many questions were eligible for this slot.
+  candidates           Int
+
+  run assessment_assembly_run @relation(fields: [run_id], references: [id], onDelete: Cascade)
+
+  @@unique([run_id, position])
 }

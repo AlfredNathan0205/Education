@@ -15,6 +15,9 @@ const SUBJECT = 'chem';
 
 interface Opts {
   questions?: number;
+  /** Blueprints in the database. Defaults to QUICK10 v1 published and switched on, as the migration seeds it. */
+  blueprints?: any[];
+  focus?: string[];
   unitState?: string;
   classified?: boolean;
   consent?: boolean;
@@ -46,6 +49,7 @@ function build(opts: Opts = {}, config: Partial<ExamConfig> = {}) {
       options: [1, 2, 3, 4].map((p) => ({ revision_id: `r${q}`, position: p, text: `Opt ${q}-${p}`, is_correct: p === (q % 4) + 1 })),
     });
   }
+  const blueprints: any[] = opts.blueprints ?? [blueprint('QUICK10', { EASY: 5, MEDIUM: 3, HARD: 2 })];
   const correctPosition = (revisionId: string) => revisions.find((r) => r.id === revisionId).options.find((o: any) => o.is_correct).position;
 
   const store = {
@@ -57,7 +61,10 @@ function build(opts: Opts = {}, config: Partial<ExamConfig> = {}) {
     submissions: [] as any[],
     results: [] as any[],
     exposures: [] as any[],
+    runs: [] as any[],
   };
+  const unitWith = (u: any) => ({ ...u, curriculum_version: { label: '2026-27', curriculum: { code: 'ICSE' } }, grade: { code: 'GRADE_8' }, subject: { code: 'CHEM', name: 'Chemistry' } });
+  const withPublished = (b: any) => ({ ...b, versions: b.versions.filter((v: any) => v.status === 'PUBLISHED') });
 
   const compose = (s: any) => {
     const inst = store.instances.find((i) => i.id === s.instance_id);
@@ -89,9 +96,12 @@ function build(opts: Opts = {}, config: Partial<ExamConfig> = {}) {
       findMany: jest.fn(async ({ where }: any) =>
         units
           .filter((u) => where.state.in.includes(u.state))
-          .map((u) => ({ ...u, curriculum_version: { label: '2026-27', curriculum: { code: 'ICSE' } }, grade: { code: 'GRADE_8' }, subject: { name: 'Chemistry' } })),
+          .map(unitWith),
       ),
-      findUnique: jest.fn(async ({ where }: any) => units.find((u) => u.id === where.id) ?? null),
+      findUnique: jest.fn(async ({ where }: any) => {
+        const u = units.find((x) => x.id === where.id);
+        return u ? unitWith(u) : null;
+      }),
       findFirst: jest.fn(async ({ where }: any) =>
         units
           .filter((u) => u.curriculum_version_id === where.curriculum_version_id && u.grade_id === where.grade_id && u.subject_id === where.subject_id && where.state.in.includes(u.state))
@@ -121,6 +131,24 @@ function build(opts: Opts = {}, config: Partial<ExamConfig> = {}) {
           hit.times_seen += update.times_seen.increment;
         } else store.exposures.push({ ...create, last_seen_at: new Date(), times_seen: 1 });
       }),
+    },
+    assessment_blueprint: {
+      findUnique: jest.fn(async ({ where }: any) => {
+        const b = blueprints.find((x) => x.code === where.code);
+        return b ? withPublished(b) : null;
+      }),
+      findMany: jest.fn(async ({ where }: any) => blueprints.filter((b) => b.enabled === where.enabled).map(withPublished)),
+    },
+    assessment_assembly_run: {
+      create: jest.fn(async ({ data }: any) => {
+        const { decisions, ...rest } = data;
+        store.runs.push({ id: id('run'), ...rest, decisions: decisions.create });
+      }),
+    },
+    student_chapter_selection: {
+      findMany: jest.fn(async ({ where }: any) =>
+        where.student_id === STUDENT && where.subject_code === 'CHEM' ? (opts.focus ?? []).map((c) => ({ chapter_code: c })) : [],
+      ),
     },
     assessment_instance: {
       create: jest.fn(async ({ data }: any) => {
@@ -169,6 +197,40 @@ function build(opts: Opts = {}, config: Partial<ExamConfig> = {}) {
   };
   const service = new ExamService({ client } as any, privacy, outbox, cfg);
   return { service, store, client, published, privacy, units, revisions, correctPosition };
+}
+
+/** A blueprint row as Prisma returns it with its versions and their parts. */
+function blueprint(
+  code: string,
+  mix: Record<'EASY' | 'MEDIUM' | 'HARD', number>,
+  over: { enabled?: boolean; status?: string; scope?: string; strict?: boolean; chapters?: string[]; subject?: string | null } = {},
+): any {
+  const total = mix.EASY + mix.MEDIUM + mix.HARD;
+  return {
+    id: `bp-${code}`,
+    code,
+    name: `${code} test`,
+    enabled: over.enabled ?? true,
+    curriculum_code: over.subject ? 'ICSE' : null,
+    grade_code: over.subject ? 'GRADE_8' : null,
+    subject_code: over.subject ?? null,
+    versions: [
+      {
+        id: `bv-${code}-1`,
+        version: 1,
+        status: over.status ?? 'PUBLISHED',
+        total_questions: total,
+        prefer_unseen: true,
+        opening_difficulty: 'EASY',
+        scope_mode: over.scope ?? 'WHOLE_SUBJECT',
+        scope_strict: over.strict ?? false,
+        difficulties: (['EASY', 'MEDIUM', 'HARD'] as const).map((d) => ({ difficulty: d, count: mix[d] })),
+        types: [{ question_type: 'MCQ', count: total }],
+        cells: [],
+        scopes: (over.chapters ?? []).map((c) => ({ chapter_code: c })),
+      },
+    ],
+  };
 }
 
 /** The displayed slot that holds the correct answer for the current item. */
@@ -661,5 +723,97 @@ describe('ExamService: exposure and variety across tests', () => {
     expect(secondItems).toHaveLength(10);
     expect(secondItems.filter((i) => firstIds.has(i.question_id))).toHaveLength(0);
     expect(h.store.instances[1].assembly_report.unseen).toBe(10);
+  });
+});
+
+describe('ExamService: tests built from published blueprints (Step 10)', () => {
+  it('records how the test was assembled: the version, one decision per question, and what was relaxed', async () => {
+    const h = build();
+    await start(h);
+    expect(h.store.instances[0]).toMatchObject({ blueprint_code: 'QUICK10', blueprint_version: 1 });
+    expect(h.store.runs).toHaveLength(1);
+    const run = h.store.runs[0];
+    expect(run).toMatchObject({ instance_id: h.store.instances[0].id, blueprint_version_id: 'bv-QUICK10-1', engine_version: 'assembly-v1', mode: 'TEST', relaxed: false });
+    expect(run.seed).toBe(h.store.instances[0].seed);
+    expect(run.decisions).toHaveLength(10);
+    expect(run.decisions.map((d: any) => d.position)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    for (const d of run.decisions) {
+      const item = h.store.items.find((i) => i.position === d.position);
+      expect(d.question_revision_id).toBe(item.question_revision_id);
+    }
+  });
+
+  it('lists the tests a student may take for each subject', async () => {
+    const h = build({ blueprints: [blueprint('QUICK10', { EASY: 5, MEDIUM: 3, HARD: 2 }), blueprint('SUBJECT20', { EASY: 8, MEDIUM: 7, HARD: 5 }), blueprint('OFF', { EASY: 1, MEDIUM: 0, HARD: 0 }, { enabled: false })] });
+    const [u] = await h.service.listUnits(ACCOUNT);
+    expect(u.tests).toEqual([
+      { code: 'QUICK10', name: 'QUICK10 test', total: 10, ready: true },
+      { code: 'SUBJECT20', name: 'SUBJECT20 test', total: 20, ready: true },
+    ]);
+    const [few] = await build({ questions: 15, blueprints: [blueprint('QUICK10', { EASY: 5, MEDIUM: 3, HARD: 2 }), blueprint('SUBJECT20', { EASY: 8, MEDIUM: 7, HARD: 5 })] }).service.listUnits(ACCOUNT);
+    expect(few.tests.map((t) => t.ready)).toEqual([true, false]);
+  });
+
+  it('builds a 20-question test from its blueprint', async () => {
+    const h = build({ blueprints: [blueprint('QUICK10', { EASY: 5, MEDIUM: 3, HARD: 2 }), blueprint('SUBJECT20', { EASY: 8, MEDIUM: 7, HARD: 5 })] });
+    await h.service.create(ACCOUNT, { subjectVersionId: 'sv-1', mode: 'TEST', blueprint: 'SUBJECT20' });
+    expect(h.store.items).toHaveLength(20);
+    expect(h.store.instances[0].assembly_report.delivered).toEqual({ EASY: 8, MEDIUM: 7, HARD: 5 });
+    expect(h.published.find((e) => e.eventType === 'assessment.created.v1')!.payload).toMatchObject({ blueprint: 'SUBJECT20', blueprintVersion: 1 });
+  });
+
+  it('keeps one open test per blueprint: the same one resumes, a different one is new', async () => {
+    const h = build({ blueprints: [blueprint('QUICK10', { EASY: 5, MEDIUM: 3, HARD: 2 }), blueprint('SUBJECT20', { EASY: 8, MEDIUM: 7, HARD: 5 })] });
+    const a = await start(h);
+    expect(await start(h)).toEqual({ assessmentId: a.assessmentId, resumed: true });
+    const b = await h.service.create(ACCOUNT, { subjectVersionId: 'sv-1', mode: 'TEST', blueprint: 'SUBJECT20' });
+    expect(b.resumed).toBe(false);
+    expect(b.assessmentId).not.toBe(a.assessmentId);
+  });
+
+  it('refuses a blueprint that is unknown, switched off, unpublished or for another subject', async () => {
+    const cases = [
+      { blueprints: [blueprint('QUICK10', { EASY: 5, MEDIUM: 3, HARD: 2 }, { enabled: false })] },
+      { blueprints: [blueprint('QUICK10', { EASY: 5, MEDIUM: 3, HARD: 2 }, { status: 'DRAFT' })] },
+      { blueprints: [blueprint('QUICK10', { EASY: 5, MEDIUM: 3, HARD: 2 }, { subject: 'PHYS' })] },
+      { blueprints: [] },
+    ];
+    for (const opts of cases) {
+      const h = build(opts);
+      await expect(start(h)).rejects.toThrow(/not available/);
+      expect(h.store.instances).toHaveLength(0);
+      const [u] = await h.service.listUnits(ACCOUNT);
+      expect(u.ready).toBe(false);
+    }
+    await expect(start(build({ blueprints: [blueprint('QUICK10', { EASY: 5, MEDIUM: 3, HARD: 2 }, { subject: 'CHEM' })] }))).resolves.toMatchObject({ resumed: false });
+  });
+
+  it('refuses a malformed blueprint code before touching anything', async () => {
+    const h = build();
+    await expect(h.service.create(ACCOUNT, { subjectVersionId: 'sv-1', mode: 'TEST', blueprint: 'quick 10' })).rejects.toBeInstanceOf(ExamInputError);
+  });
+
+  it('a focus blueprint uses the chapters the student chose', async () => {
+    const focus = blueprint('FOCUS10', { EASY: 4, MEDIUM: 3, HARD: 3 }, { scope: 'STUDENT_FOCUS', strict: true });
+    const h = build({ blueprints: [focus], focus: ['C2'] });
+    await h.service.create(ACCOUNT, { subjectVersionId: 'sv-1', mode: 'PRACTICE', blueprint: 'FOCUS10' });
+    expect(h.store.items.every((i) => i.objective_path.startsWith('C2/'))).toBe(true);
+    expect(h.store.instances[0].assembly_report.scope).toEqual({ mode: 'STUDENT_FOCUS', strict: true, chapters: ['C2'] });
+  });
+
+  it('a strict focus blueprint asks the student to choose chapters first', async () => {
+    const h = build({ blueprints: [blueprint('FOCUS10', { EASY: 4, MEDIUM: 3, HARD: 3 }, { scope: 'STUDENT_FOCUS', strict: true })] });
+    await expect(h.service.create(ACCOUNT, { subjectVersionId: 'sv-1', mode: 'TEST', blueprint: 'FOCUS10' })).rejects.toThrow(/Choose the chapters/);
+  });
+
+  it('scores a non-Quick-10 test under the general policy name', async () => {
+    const h = build({ blueprints: [blueprint('QUICK10', { EASY: 5, MEDIUM: 3, HARD: 2 }), blueprint('SHORT', { EASY: 1, MEDIUM: 1, HARD: 0 })] });
+    const { assessmentId } = await h.service.create(ACCOUNT, { subjectVersionId: 'sv-1', mode: 'TEST', blueprint: 'SHORT' });
+    for (let p = 1; p <= 2; p++) {
+      await h.service.present(ACCOUNT, assessmentId);
+      await h.service.lock(ACCOUNT, assessmentId, p, { slot: correctSlot(h, p), activeMs: 1000, idempotencyKey: key() });
+    }
+    await h.service.submit(ACCOUNT, assessmentId);
+    expect(h.store.results[0]).toMatchObject({ total: 2, correct: 2, scoring_policy: 'ONE_MARK_PER_CORRECT_V1' });
   });
 });
