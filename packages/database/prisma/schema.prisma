@@ -1950,3 +1950,117 @@ model recommendation_refresh {
 
   @@index([student_id, created_at])
 }
+
+// ── Step 15: competitive points, XP and leaderboards ──────────────────────
+
+/// The rules for CP, XP and ranking. Exactly one ACTIVE (partial unique index in the migration).
+model competitive_scoring_policy {
+  id         String   @id @default(uuid()) @db.Uuid
+  code       String   @unique @db.VarChar(32)
+  /// ACTIVE or RETIRED.
+  status     String   @db.VarChar(16)
+  /// See competition-domain.ts for the shape.
+  params     Json
+  notes      String?  @db.VarChar(1000)
+  created_at DateTime @default(now())
+
+  qualifications competitive_qualification[]
+  cp_events      cp_event[]
+  xp_events      xp_event[]
+}
+
+/// Whether one result revision of one finished test counts competitively, why, and the CP it earns. One row per
+/// (session, result revision); -1 is the revision of an invalidated test. The latest row is the current one.
+model competitive_qualification {
+  id                    String   @id @default(uuid()) @db.Uuid
+  session_id            String   @db.Uuid
+  result_revision       Int
+  student_id            String   @db.Uuid
+  policy_version_id     String   @db.Uuid
+  curriculum_version_id String   @db.Uuid
+  grade_id              String   @db.Uuid
+  subject_id            String   @db.Uuid
+  blueprint_code        String   @db.VarChar(32)
+  qualified             Boolean
+  /// Why not: NOT_A_TEST, NOT_COMPETITIVE_DESIGN, NOT_COMMITTED, INVALIDATED, TOO_FEW_QUESTIONS.
+  reasons               String[]
+  eligible_questions    Int
+  fresh_questions       Int
+  correct               Int
+  accuracy              Float
+  weighted_accuracy     Float
+  difficulty_score      Float
+  cp                    Int
+  /// The parts of the CP: base, accuracy and improvement.
+  parts                 Json
+  /// When the test was finished: decides its week, also for later corrections.
+  finished_at           DateTime
+  created_at            DateTime @default(now())
+
+  policy    competitive_scoring_policy @relation(fields: [policy_version_id], references: [id])
+  cp_events cp_event[]
+
+  @@unique([session_id, result_revision])
+  @@index([student_id, finished_at])
+  @@index([curriculum_version_id, grade_id, finished_at])
+}
+
+enum cp_event_kind {
+  AWARD
+  /// A correction after a rescore (positive or negative).
+  ADJUSTMENT
+  /// The test no longer earns anything (invalidated): the rest is taken back.
+  REVERSAL
+}
+
+/// The CP ledger. Append-only: a database trigger refuses UPDATE and DELETE; corrections are compensating entries
+/// dated to the week the test was finished, so a past week's board is corrected in place.
+model cp_event {
+  id                    String        @id @default(uuid()) @db.Uuid
+  student_id            String        @db.Uuid
+  session_id            String        @db.Uuid
+  qualification_id      String        @db.Uuid
+  policy_version_id     String        @db.Uuid
+  curriculum_version_id String        @db.Uuid
+  grade_id              String        @db.Uuid
+  subject_id            String        @db.Uuid
+  kind                  cp_event_kind
+  amount                Int
+  /// The finish time of the test it is for (decides the leaderboard week).
+  earned_at             DateTime
+  created_at            DateTime      @default(now())
+
+  qualification competitive_qualification  @relation(fields: [qualification_id], references: [id])
+  policy        competitive_scoring_policy @relation(fields: [policy_version_id], references: [id])
+
+  @@index([student_id, earned_at])
+  @@index([curriculum_version_id, grade_id, earned_at])
+}
+
+/// XP for taking part (tests and practice). One per finished session; never reversed.
+model xp_event {
+  id                String   @id @default(uuid()) @db.Uuid
+  student_id        String   @db.Uuid
+  session_id        String   @unique @db.Uuid
+  policy_version_id String   @db.Uuid
+  amount            Int
+  /// TEST or PRACTICE.
+  mode              String   @db.VarChar(16)
+  earned_at         DateTime
+  created_at        DateTime @default(now())
+
+  policy competitive_scoring_policy @relation(fields: [policy_version_id], references: [id])
+
+  @@index([student_id, earned_at])
+}
+
+/// How a student appears to other students: a neutral handle only, never a name, school or place. Minors are not
+/// shown to others at all in Release 1 (spec: minor default Friends Only; friends come in Step 16). An adult may
+/// choose to be hidden (shown_to_others = false); null means the default for their age.
+model public_profile {
+  student_id      String   @id @db.Uuid
+  handle          String   @unique @db.VarChar(24)
+  shown_to_others Boolean?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+}

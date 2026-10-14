@@ -12,6 +12,7 @@ const PEOPLE = {
   'focus@example.com': { name: 'Ravi', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_8' }, chapters: { PHYSICS: ['PHY-CH01', 'PHY-CH02'] } },
   'soon@example.com': { name: 'Mei', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_9' }, chapters: {} },
   'new@example.com': { name: null, cohort: null, chapters: {}, isNew: true },
+  'kid@example.com': { name: 'Kiran', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_8' }, chapters: {}, minor: true },
 };
 
 const SUBJECTS = [
@@ -26,6 +27,42 @@ const TESTS = [
 const sessions = new Map(); // token -> email
 const assessments = new Map(); // id -> assessment
 const recs = new Map(); // id -> recommendation (Step 14)
+const hidden = new Set(); // emails of adults who chose to be hidden (Step 15)
+
+/** Step 15. The real API scores tests about 30 seconds after submit; the stub scores at once: 90 x correct / total. */
+function competeFor(p) {
+  const units = unitsFor(p);
+  const tests = mine(p.email).filter((a) => a.status === 'SUBMITTED' && a.mode === 'TEST' && ['QUICK10', 'FOCUS10'].includes(a.blueprint));
+  const xp = mine(p.email).filter((a) => a.status === 'SUBMITTED').reduce((s, a) => s + a.items.filter((i) => i.state === 'LOCKED').length + 5, 0);
+  const handle = p.minor ? 'Learner-KQ7M2D' : 'Learner-AB3XYZ';
+  const shown = !p.minor && !hidden.has(p.email);
+  const board = (scope, title, subjectCode) => {
+    const mineHere = tests.filter((a) => !subjectCode || a.subject.subjectCode === subjectCode);
+    const cp = mineHere.reduce((s, a) => s + Math.round((90 * a.result.correct) / a.result.total), 0);
+    const ranked = mineHere.length >= 2;
+    const rivals = [{ handle: 'Learner-R1V4LS', cp: subjectCode ? 120 : 150 }];
+    const all = [...rivals.map((r) => ({ ...r, you: false })), ...(ranked ? [{ handle, cp, you: true }] : [])].sort((a, b) => b.cp - a.cp);
+    const entries = all.map((e, i) => ({ rank: i + 1, ...e }));
+    return {
+      scope,
+      title,
+      subjectCode,
+      entries,
+      rankedCount: entries.length,
+      you: { cp, qualified: mineHere.length, eligibleQuestions: 10 * mineHere.length, rank: entries.find((e) => e.you)?.rank ?? null, needs: { tests: Math.max(0, 2 - mineHere.length), questions: Math.max(0, 20 - 10 * mineHere.length) } },
+    };
+  };
+  return {
+    policy: 'CP_V1',
+    week: { start: '2026-10-11T18:30:00.000Z', end: '2026-10-18T18:30:00.000Z' },
+    handle,
+    shownToOthers: shown,
+    canChangeVisibility: !p.minor,
+    xp: { week: xp, total: xp },
+    boards: units.length ? [board('COHORT', 'All subjects · ICSE Grade 8', null), ...units.map((u) => board('SUBJECT', u.subjectName, u.subjectCode))] : [],
+    pending: 0,
+  };
+}
 const difficulty = (i) => (i < 5 ? 'EASY' : i < 8 ? 'MEDIUM' : 'HARD');
 
 function person(req) {
@@ -185,6 +222,7 @@ const server = createServer(async (req, res) => {
   if (key === 'POST __reset') {
     assessments.clear();
     recs.clear();
+    hidden.clear();
     return json(res, 200, { reset: true });
   }
   if (key === 'POST identity/otp/request') return json(res, 202, { sent: true });
@@ -227,6 +265,13 @@ const server = createServer(async (req, res) => {
         return { subjectVersionId: u.subjectVersionId, subjectCode: u.subjectCode, subjectName: u.subjectName, objectives: 4, started: tested ? 2 : 0, reportable: 0, chapters };
       }),
     });
+  }
+  if (key === 'GET compete') return json(res, 200, competeFor(p));
+  if (key === 'PUT compete/visibility') {
+    if (p.minor) return json(res, 409, { message: 'Students who are minors are not shown to other students on leaderboards yet, so there is nothing to change' });
+    if (body.shown) hidden.delete(p.email);
+    else hidden.add(p.email);
+    return json(res, 200, { shownToOthers: !!body.shown });
   }
   if (key === 'GET exam/units') return json(res, 200, unitsFor(p));
   if (key === 'GET exam/assessments') return json(res, 200, mine(p.email).map(row));
