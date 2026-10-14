@@ -414,3 +414,38 @@ export interface HomeView {
 export function gradeLabel(code: string): string {
   return code.replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
 }
+
+// ── Mastery (Step 13) ────────────────────────────────────────────────────
+
+export type MasteryLabel = 'NOT_STARTED' | 'BUILDING_EVIDENCE' | 'NEEDS_ATTENTION' | 'DEVELOPING' | 'SECURE' | 'STRONG';
+
+export const MASTERY_LABEL: Record<MasteryLabel, string> = {
+  NOT_STARTED: 'Not started',
+  BUILDING_EVIDENCE: 'Building evidence',
+  NEEDS_ATTENTION: 'Needs attention',
+  DEVELOPING: 'Developing',
+  SECURE: 'Secure',
+  STRONG: 'Strong',
+};
+
+export interface MasteryView {
+  policy: string;
+  pending: number;
+  subjects: Array<{
+    subjectVersionId: string;
+    subjectCode: string;
+    subjectName: string;
+    objectives: number;
+    started: number;
+    reportable: number;
+    chapters: Array<{
+      code: string;
+      title: string;
+      label: MasteryLabel;
+      objectives: number;
+      started: number;
+      reportable: number;
+      items: Array<{ path: string; code: string; statement: string; label: MasteryLabel; answers: number }>;
+    }>;
+  }>;
+}

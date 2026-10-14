@@ -29,10 +29,13 @@ import { GuardianService } from '../guardian/guardian.service';
 import { DEV_DRAFT_WORDING_REFERENCE } from '../guardian/consent-texts';
 import { GuardianConflictError, GuardianNotPermittedError, GuardianUnavailableError } from '../guardian/guardian.errors';
 import { QuestionService } from '../question/question.service';
+import { optionRows } from '../question/question-domain';
 import { PublicationService } from '../publication/publication.service';
 import { BlueprintService } from '../blueprint/blueprint.service';
 import { ItemInvalidationService } from '../exam/item-invalidation.service';
 import { HomeService } from '../home/home.service';
+import { MasteryService } from '../mastery/mastery.service';
+import { MasteryViewService } from '../mastery/mastery-view.service';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
@@ -78,6 +81,12 @@ async function cleanAll() {
   await prisma.ai_call_log.deleteMany();
   await prisma.generation_attempt.deleteMany();
   await prisma.generation_batch.deleteMany();
+  await prisma.mastery_state_change.deleteMany();
+  await prisma.mastery_update_run.deleteMany();
+  await prisma.mastery_evidence_event.deleteMany();
+  await prisma.student_mastery_state.deleteMany();
+  await prisma.student_difficulty_state.deleteMany();
+  await prisma.student_cognitive_state.deleteMany();
   await prisma.assessment_assembly_decision.deleteMany();
   await prisma.assessment_assembly_run.deleteMany();
   // Designs made by tests. The ones the migration seeds (QUICK10, SUBJECT20, SUBJECT25) stay.
@@ -900,7 +909,7 @@ describe('ExamService (real DB)', () => {
           stem_hash: `exam-hash-${uniq}-${k}`,
           explanation: `Because ${k}`,
           difficulty: (['EASY', 'MEDIUM', 'HARD'] as const)[k % 3],
-          options: { create: [1, 2, 3, 4].map((p) => ({ position: p, text: `Answer ${k}-${p}`, is_correct: p === ((k + 1) % 4) + 1 })) },
+          options: { create: optionRows([0, 1, 2, 3].map((p) => `Answer ${k}-${p}`), (k + 1) % 4) },
         },
       });
       // Approved is not published: tests are built only from published questions.
@@ -1377,7 +1386,7 @@ describe('ExamService (real DB)', () => {
     const { accountId } = await adult();
     const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
     const first = (await itemsOf(assessmentId))[0];
-    await prisma.question_option.deleteMany({ where: { revision_id: first.question_revision_id, position: 4 } });
+    await prisma.question_option.deleteMany({ where: { revision_id: first.question_revision_id, position: 3 } });
     const v = await exam.present(accountId, assessmentId);
     expect(v).toMatchObject({ phase: 'QUESTION', removed: 1 });
     expect(v.question!.position).toBe(2);
@@ -1455,6 +1464,70 @@ describe('ExamService (real DB)', () => {
     const after = await homes.home(accountId);
     expect(after).toMatchObject({ firstExperience: false, nextAction: { kind: 'TAKE_TEST', subjectVersionId: unitId } });
     expect(after.subjects[0]).toMatchObject({ completed: 1, lastResult: { assessmentId, correct: 10, total: 10, mode: 'TEST' } });
+  });
+
+  // ---- Step 13: mastery ----
+
+  const mastery = new MasteryService(dbService, outbox);
+  const masteryViews = new MasteryViewService(dbService, exam, authzService);
+  const LO = 'CH01/T01/MC01/LO01';
+
+  async function finishedTest(accountId: string, unitId: string): Promise<string> {
+    const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    await answerAll(accountId, assessmentId);
+    await exam.submit(accountId, assessmentId);
+    return assessmentId;
+  }
+
+  it('mastery: the seeded policy is active; a finished test becomes weighted evidence once; two tests pass the gate', async () => {
+    expect(await prisma.mastery_policy_version.findMany({ where: { status: 'ACTIVE' }, select: { code: true } })).toEqual([{ code: 'MASTERY_V1' }]);
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const { accountId, studentId } = await adult();
+
+    const t1 = await finishedTest(accountId, unitId);
+    expect((await masteryViews.mine(accountId)).pending).toBe(1);
+    const runs = await mastery.reconcile();
+    expect(runs).toEqual([expect.objectContaining({ sessionId: t1, evidenceAdded: 10, objectivesChanged: 1 })]);
+    expect(await mastery.reconcile()).toEqual([]);
+    expect(await prisma.mastery_evidence_event.count({ where: { student_id: studentId } })).toBe(10);
+    const ev = await prisma.mastery_evidence_event.findFirstOrThrow({ where: { session_id: t1 } });
+    expect(ev).toMatchObject({ objective_path: LO, w_context: 0.9, w_quality: 0.9, w_independence: 1, weight: 0.81, score: 1 });
+    expect(ev.learning_objective_id).not.toBeNull();
+    let state = await prisma.student_mastery_state.findFirstOrThrow({ where: { student_id: studentId, objective_path: LO } });
+    expect(state).toMatchObject({ evidence_count: 10, sessions: 1, label: 'BUILDING_EVIDENCE', reportable: false });
+
+    await finishedTest(accountId, unitId);
+    await mastery.reconcile();
+    state = await prisma.student_mastery_state.findFirstOrThrow({ where: { student_id: studentId, objective_path: LO } });
+    expect(state).toMatchObject({ evidence_count: 20, sessions: 2, families: 12, reportable: true, label: 'STRONG' });
+    expect(state.confidence).toBeGreaterThanOrEqual(85);
+    // The questions seen again count almost nothing.
+    expect(await prisma.mastery_evidence_event.count({ where: { student_id: studentId, w_independence: 0.05 } })).toBe(8);
+    expect(await prisma.mastery_state_change.count({ where: { student_id: studentId } })).toBe(2);
+    expect(await prisma.student_difficulty_state.count({ where: { student_id: studentId } })).toBe(3);
+
+    const view = await masteryViews.mine(accountId);
+    expect(view).toMatchObject({ pending: 0, subjects: [{ objectives: 1, started: 1, reportable: 1, chapters: [{ code: 'CH01', items: [{ path: LO, label: 'STRONG', answers: 20 }] }] }] });
+    expect(JSON.stringify(view)).not.toMatch(/confidence/);
+  });
+
+  it('mastery: invalidating a question withdraws its evidence and recomputes, with the change recorded', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const { accountId, studentId } = await adult();
+    const approver = await roleAccount('CURRICULUM_APPROVER');
+    const t1 = await finishedTest(accountId, unitId);
+    await mastery.reconcile();
+
+    const target = (await itemsOf(t1))[0].question_revision_id;
+    await prisma.question_revision.update({ where: { id: target }, data: { state: 'QUARANTINED' } });
+    await invalidations.invalidate(approver, target, { reasonCode: 'ANSWER_WRONG', note: 'The marked answer is wrong.' });
+    const [run] = await mastery.reconcile();
+    expect(run).toMatchObject({ sessionId: t1, evidenceAdded: 0, evidenceInvalidated: 1, objectivesChanged: 1 });
+    expect(await prisma.mastery_evidence_event.count({ where: { student_id: studentId, invalidation_reason: 'ITEM_INVALIDATED' } })).toBe(1);
+    expect(await prisma.student_mastery_state.findFirstOrThrow({ where: { student_id: studentId, objective_path: LO } })).toMatchObject({ evidence_count: 9 });
+    expect(await prisma.mastery_update_run.findMany({ where: { session_id: t1 }, orderBy: { result_revision: 'asc' }, select: { result_revision: true } })).toEqual([{ result_revision: 0 }, { result_revision: 1 }]);
   });
 });
 

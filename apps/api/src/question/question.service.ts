@@ -8,6 +8,7 @@ import {
   EDITABLE_STATES,
   OPTION_LABELS,
   assertQuestionTransition,
+  optionRows,
   stemHash,
   type QuestionActor,
   type QuestionCognitive,
@@ -245,7 +246,7 @@ export class QuestionService {
       for (const item of plan.items) {
         counts[item.action]++;
         const d = item.draft;
-        const options = d.options.map((text, i) => ({ position: i, text, is_correct: i === d.correctIndex }));
+        const options = optionRows(d.options, d.correctIndex);
         if (item.action === 'UNCHANGED') continue;
 
         if (item.action === 'CREATE') {

@@ -96,14 +96,14 @@ describe('assembleQuick10', () => {
 
   it('gives every item a permutation of the four options', () => {
     for (const i of assembleQuick10(pool({ EASY: 8, MEDIUM: 8, HARD: 8 }), 'x').items) {
-      expect([...i.optionOrder].sort()).toEqual([1, 2, 3, 4]);
+      expect([...i.optionOrder].sort()).toEqual([0, 1, 2, 3]);
     }
   });
 
   it('shuffles the correct position (not always the same slot)', () => {
     const slots = new Set<number>();
     for (let s = 0; s < 40; s++) {
-      for (const i of assembleQuick10(pool({ EASY: 8, MEDIUM: 8, HARD: 8 }), `s${s}`).items) slots.add(i.optionOrder.indexOf(1));
+      for (const i of assembleQuick10(pool({ EASY: 8, MEDIUM: 8, HARD: 8 }), `s${s}`).items) slots.add(i.optionOrder.indexOf(0));
     }
     expect(slots.size).toBe(4);
   });

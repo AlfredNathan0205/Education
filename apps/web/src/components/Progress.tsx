@@ -3,22 +3,23 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { AppNav } from './AppNav';
-import { ApiError, bff, type HomeView, type MyAssessment } from '@/lib/client-api';
+import { ApiError, MASTERY_LABEL, bff, type MasteryLabel, type MasteryView, type MyAssessment } from '@/lib/client-api';
 
 /**
- * Progress before the mastery engine exists (Step 13). It shows results as results, and says plainly that a picture of
- * what the student knows is still being built. It never turns a score into a mastery percentage (spec: Score != Mastery).
+ * Progress (spec STUDENT_WEB; MASTERY_DIAGNOSTICS; CLAIM_GATING): what the student has shown, objective by objective
+ * and chapter by chapter, as gated labels. A label appears only once there is enough independent evidence; before that
+ * it says "Building evidence", never a low score. No percentage is shown anywhere (Score != Mastery).
  */
 export function Progress() {
-  const [home, setHome] = useState<HomeView | null>(null);
+  const [mastery, setMastery] = useState<MasteryView | null>(null);
   const [mine, setMine] = useState<MyAssessment[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([bff<HomeView>('GET', 'home'), bff<MyAssessment[]>('GET', 'exam/assessments')])
-      .then(([h, m]) => {
-        setHome(h);
-        setMine(m);
+    Promise.all([bff<MasteryView>('GET', 'mastery'), bff<MyAssessment[]>('GET', 'exam/assessments')])
+      .then(([m, a]) => {
+        setMastery(m);
+        setMine(a);
       })
       .catch((e) => {
         if (e instanceof ApiError && e.status === 401) window.location.assign('/sign-in');
@@ -30,24 +31,45 @@ export function Progress() {
     <div className="has-nav">
       <AppNav current="progress" />
       <h1>Progress</h1>
-      <section className="card" aria-labelledby="building">
-        <h2 id="building">Building your mastery profile</h2>
-        <p className="muted" style={{ marginBottom: 0 }}>
-          What you have mastered is worked out from several tests across your chapters, not from one score. Until there is
-          enough evidence, we show your results only.
-        </p>
-      </section>
+      <p className="muted">
+        What you know is worked out from many answers across tests, objective by objective. A label appears once there is
+        enough evidence; until then it says Building evidence.
+      </p>
       {error && <p className="error" role="alert">{error}</p>}
-      {!home && !error && <p className="muted" role="status">Loading…</p>}
-      {home &&
-        home.subjects.map((s) => {
-          const done = mine.filter((m) => m.subjectCode === s.subjectCode && m.status === 'SUBMITTED');
-          return (
-            <section key={s.subjectVersionId} className="card" aria-labelledby={`p-${s.subjectCode}`}>
-              <h2 id={`p-${s.subjectCode}`}>{s.subjectName}</h2>
-              {done.length === 0 ? (
-                <p className="muted" style={{ marginBottom: 0 }}>No finished tests yet.</p>
-              ) : (
+      {!mastery && !error && <p className="muted" role="status">Loading…</p>}
+      {mastery && mastery.pending > 0 && (
+        <p className="hint" role="status">Your latest test is still being counted. Check back in a minute.</p>
+      )}
+      {mastery?.subjects.map((s) => {
+        const done = mine.filter((m) => m.subjectCode === s.subjectCode && m.status === 'SUBMITTED');
+        return (
+          <section key={s.subjectVersionId} className="card" aria-labelledby={`p-${s.subjectCode}`}>
+            <h2 id={`p-${s.subjectCode}`}>{s.subjectName}</h2>
+            <p className="muted">
+              {s.reportable} of {s.objectives} objective{s.objectives === 1 ? '' : 's'} with enough evidence · {s.started} started
+            </p>
+            <ul className="plain chapters">
+              {s.chapters.map((c) => (
+                <li key={c.code}>
+                  <details>
+                    <summary>
+                      <span className="chapter-title">{c.title}</span> <Badge label={c.label} />
+                    </summary>
+                    <ul className="plain objectives">
+                      {c.items.map((o) => (
+                        <li key={o.path}>
+                          <span>{o.statement}</span> <Badge label={o.label} />
+                          {o.answers > 0 && <span className="hint"> · {o.answers} answer{o.answers === 1 ? '' : 's'}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                </li>
+              ))}
+            </ul>
+            {done.length > 0 && (
+              <>
+                <h3 style={{ margin: '12px 0 6px', fontSize: '1rem' }}>Results</h3>
                 <ul className="plain" style={{ marginBottom: 0 }}>
                   {done.map((m) => (
                     <li key={m.assessmentId}>
@@ -58,10 +80,15 @@ export function Progress() {
                     </li>
                   ))}
                 </ul>
-              )}
-            </section>
-          );
-        })}
+              </>
+            )}
+          </section>
+        );
+      })}
     </div>
   );
+}
+
+function Badge({ label }: { label: MasteryLabel }) {
+  return <span className={`badge badge-${label.toLowerCase().replace('_', '-')}`}>{MASTERY_LABEL[label]}</span>;
 }

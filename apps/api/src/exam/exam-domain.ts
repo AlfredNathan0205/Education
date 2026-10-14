@@ -148,7 +148,7 @@ export function scoreAssessment(items: ScoredItem[]): ScoreSummary {
   return { total: items.length - excluded, correct, unanswered, excluded, byDifficulty };
 }
 
-/** Map a displayed slot (0..3) to the stored option position (1..4) for this item. */
+/** Map a displayed slot (0..3) to the stored option position (0..3, see OPTION_POSITIONS) for this item. */
 export function slotToPosition(optionOrder: number[], slot: number): number | null {
   if (!Number.isInteger(slot) || slot < 0 || slot >= optionOrder.length) return null;
   return optionOrder[slot];
