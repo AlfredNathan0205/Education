@@ -24,7 +24,12 @@ export const BLUEPRINT_PUBLISH_ROLES: readonly CurriculumRole[] = ['APPROVER', '
 /** Read and preview. */
 export const BLUEPRINT_READ_ROLES: readonly CurriculumRole[] = ['EDITOR', 'REVIEWER', 'APPROVER', 'SUPER_ADMIN'];
 
-export const SCOPE_MODES: ScopeMode[] = ['WHOLE_SUBJECT', 'CHAPTERS', 'STUDENT_FOCUS'];
+export const SCOPE_MODES: ScopeMode[] = ['WHOLE_SUBJECT', 'CHAPTERS', 'STUDENT_FOCUS', 'OBJECTIVES'];
+/**
+ * OBJECTIVES (Step 14): the objectives are chosen per student by a recommendation (practice or retest), never by the
+ * blueprint. Such a blueprint is not offered as an ordinary test.
+ */
+export const isTargeted = (mode: ScopeMode) => mode === 'OBJECTIVES';
 /** The proxy allows one or two digits for a question position; keep well inside that. */
 export const MAX_TOTAL = 50;
 export const MAX_CELLS = 30;
@@ -265,10 +270,18 @@ export function draftOf(v: VersionRow): BlueprintDraft {
 
 /**
  * The scope for one assembly. `studentChapters` is the student's own focus for this subject (null in a preview,
- * where there is no student: a focus blueprint then previews the whole subject and says so).
+ * where there is no student: a focus blueprint then previews the whole subject and says so). `objectives` are the
+ * targets of a practice or retest set; null in a preview, which then previews the whole subject.
  */
-export function resolveScope(v: Pick<VersionRow, 'scope_mode' | 'scope_strict' | 'scopes'>, studentChapters: string[] | null): AssemblyScope {
+export function resolveScope(
+  v: Pick<VersionRow, 'scope_mode' | 'scope_strict' | 'scopes'>,
+  studentChapters: string[] | null,
+  objectives: string[] | null = null,
+): AssemblyScope {
   switch (v.scope_mode) {
+    case 'OBJECTIVES':
+      if (objectives === null) return { mode: 'WHOLE_SUBJECT', chapters: null, strict: false };
+      return { mode: 'OBJECTIVES', chapters: null, strict: v.scope_strict, objectives };
     case 'CHAPTERS':
       return { mode: 'CHAPTERS', chapters: v.scopes.map((s) => s.chapter_code), strict: v.scope_strict };
     case 'STUDENT_FOCUS':

@@ -904,8 +904,13 @@ model assessment_instance {
   session assessment_session?
   /// How the instance was assembled from a published blueprint version (Step 10). Null on instances made before Step 10.
   assembly_run assessment_assembly_run?
+  /// Step 14: the practice or retest recommendation this instance was built for, and the objectives it targeted.
+  recommendation_id  String?         @db.Uuid
+  target_objectives  String[]        @default([])
+  recommendation     recommendation? @relation(fields: [recommendation_id], references: [id])
 
   @@index([student_id, assembled_at])
+  @@index([recommendation_id])
 }
 
 model assessment_instance_question {
@@ -1469,6 +1474,8 @@ enum blueprint_scope_mode {
   CHAPTERS
   /// The chapters the student chose to focus on (Step 5).
   STUDENT_FOCUS
+  /// Step 14: the learning objectives a practice or retest recommendation targets. Never offered as an ordinary test.
+  OBJECTIVES
 }
 
 model assessment_blueprint {
@@ -1767,6 +1774,8 @@ model mastery_update_run {
 
   policy  mastery_policy_version @relation(fields: [policy_version_id], references: [id])
   changes mastery_state_change[]
+  /// Step 14: the recommendation refresh this run triggered (none yet = the reconciler will pick it up).
+  recommendation_refresh recommendation_refresh?
 
   @@unique([session_id, result_revision])
   @@index([student_id, created_at])
@@ -1818,4 +1827,126 @@ model student_cognitive_state {
   updated_at         DateTime           @updatedAt
 
   @@unique([student_id, subject_id, cognitive])
+}
+
+// ── Step 14: recommendations, practice and retest ─────────────────────────
+
+/// The rules that choose practice and retest recommendations. Exactly one ACTIVE (partial unique index in the migration).
+model recommendation_policy_version {
+  id         String   @id @default(uuid()) @db.Uuid
+  code       String   @unique @db.VarChar(32)
+  /// ACTIVE or RETIRED.
+  status     String   @db.VarChar(16)
+  /// See recommendation-domain.ts for the shape.
+  params     Json
+  notes      String?  @db.VarChar(1000)
+  created_at DateTime @default(now())
+
+  recommendations recommendation[]
+  refreshes       recommendation_refresh[]
+}
+
+enum recommendation_kind {
+  /// A PRACTICE set (answers shown after each lock; evidence discounted).
+  PRACTICE
+  /// A short TEST on the same objectives after practice (independent retest).
+  RETEST
+}
+
+enum recommendation_status {
+  OPEN
+  /// A practice or retest was started from it.
+  STARTED
+  COMPLETED
+  /// The student said "not now".
+  DISMISSED
+  /// Replaced by a newer recommendation before it was started.
+  SUPERSEDED
+}
+
+enum recommendation_source {
+  /// Chosen from mastery states after a mastery run.
+  MASTERY
+  /// "Practise what you missed" from a finished test.
+  RESULT
+  /// A retest offered because the practice it follows was finished.
+  PRACTICE_DONE
+}
+
+/// One recommendation for one student and subject. At most one OPEN or STARTED per student and subject (partial
+/// unique index). Every recommendation keeps its reasons, the policy that chose it and what it was chosen from.
+model recommendation {
+  id                    String                @id @default(uuid()) @db.Uuid
+  student_id            String                @db.Uuid
+  curriculum_version_id String                @db.Uuid
+  grade_id              String                @db.Uuid
+  subject_id            String                @db.Uuid
+  kind                  recommendation_kind
+  status                recommendation_status @default(OPEN)
+  source                recommendation_source
+  objective_paths       String[]
+  policy_version_id     String                @db.Uuid
+  /// MASTERY and PRACTICE_DONE: the mastery run whose refresh chose it.
+  source_run_id         String?               @db.Uuid
+  /// RESULT: the finished test whose missed questions it targets.
+  source_assessment_id  String?               @db.Uuid
+  /// RETEST: the practice recommendation it follows.
+  parent_id             String?               @db.Uuid
+  created_at            DateTime              @default(now())
+  updated_at            DateTime              @updatedAt
+  closed_at             DateTime?
+
+  policy    recommendation_policy_version @relation(fields: [policy_version_id], references: [id])
+  parent    recommendation?               @relation("retest_of", fields: [parent_id], references: [id])
+  retests   recommendation[]              @relation("retest_of")
+  reasons   recommendation_reason[]
+  events    recommendation_event[]
+  instances assessment_instance[]
+
+  @@index([student_id, status])
+  @@index([student_id, subject_id, created_at])
+}
+
+/// Why a recommendation targets an objective: a code and the facts behind it (label, mastery, answers, the test).
+model recommendation_reason {
+  id                String   @id @default(uuid()) @db.Uuid
+  recommendation_id String   @db.Uuid
+  objective_path    String   @db.VarChar(300)
+  /// NEEDS_ATTENTION, DEVELOPING, MISSED_MORE_THAN_RIGHT, MISSED_IN_TEST, PRACTISED.
+  code              String   @db.VarChar(32)
+  facts             Json
+
+  recommendation recommendation @relation(fields: [recommendation_id], references: [id], onDelete: Cascade)
+
+  @@index([recommendation_id])
+}
+
+/// What happened to a recommendation: CREATED, STARTED, COMPLETED, REOPENED, DISMISSED, SUPERSEDED.
+model recommendation_event {
+  id                String   @id @default(uuid()) @db.Uuid
+  recommendation_id String   @db.Uuid
+  type              String   @db.VarChar(16)
+  assessment_id     String?  @db.Uuid
+  at                DateTime @default(now())
+
+  recommendation recommendation @relation(fields: [recommendation_id], references: [id], onDelete: Cascade)
+
+  @@index([recommendation_id, at])
+}
+
+/// One refresh of a student's recommendations after one mastery run. Unique per run, so a retry or a second worker
+/// never acts twice on the same evidence.
+model recommendation_refresh {
+  id                String   @id @default(uuid()) @db.Uuid
+  mastery_run_id    String   @unique @db.Uuid
+  student_id        String   @db.Uuid
+  policy_version_id String   @db.Uuid
+  /// What the refresh did: created, completed, reopened, superseded ids.
+  outcome           Json
+  created_at        DateTime @default(now())
+
+  run    mastery_update_run            @relation(fields: [mastery_run_id], references: [id], onDelete: Cascade)
+  policy recommendation_policy_version @relation(fields: [policy_version_id], references: [id])
+
+  @@index([student_id, created_at])
 }

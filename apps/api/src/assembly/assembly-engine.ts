@@ -8,7 +8,8 @@ import { makeRng, shuffle } from './seeded-random';
  *
  * Order of work:
  *   1. remove duplicates (same question, or same normalised wording) and wrong question types; keep to the
- *      chapter scope (a loose scope widens only when its chapters hold too few questions);
+ *      chapter scope (a loose scope widens only when its chapters hold too few questions), or to the objective
+ *      scope of a practice or retest set (a loose one widens a step at a time: micro-concept, topic, chapter, subject);
  *   2. meet each cell minimum ("at least N questions matching ..."), scarcest cell first;
  *   3. fill the difficulty mix, scarcest band first;
  *   4. fill any short band from the nearest band;
@@ -27,7 +28,10 @@ export const COGNITIVE_LEVELS: Cognitive[] = ['C1', 'C2', 'C3', 'C4'];
 export type QuestionType = 'MCQ';
 export const QUESTION_TYPES: QuestionType[] = ['MCQ'];
 export type ServedHealth = 'NEW' | 'HEALTHY' | 'WATCH';
-export type ScopeMode = 'WHOLE_SUBJECT' | 'CHAPTERS' | 'STUDENT_FOCUS';
+export type ScopeMode = 'WHOLE_SUBJECT' | 'CHAPTERS' | 'STUDENT_FOCUS' | 'OBJECTIVES';
+/** How far a loose objective scope had to widen, nearest first. */
+export const WIDEN_LEVELS = ['OBJECTIVE', 'MICRO_CONCEPT', 'TOPIC', 'CHAPTER', 'SUBJECT'] as const;
+export type WidenLevel = (typeof WIDEN_LEVELS)[number];
 
 export interface Candidate {
   revisionId: string;
@@ -70,6 +74,8 @@ export interface AssemblyScope {
   mode: ScopeMode;
   chapters: string[] | null;
   strict: boolean;
+  /** OBJECTIVES scope only: the learning objective paths a practice or retest set is aimed at. */
+  objectives?: string[] | null;
 }
 
 export const WHOLE_SUBJECT: AssemblyScope = { mode: 'WHOLE_SUBJECT', chapters: null, strict: false };
@@ -77,7 +83,7 @@ export const WHOLE_SUBJECT: AssemblyScope = { mode: 'WHOLE_SUBJECT', chapters: n
 export type Relaxation =
   | { kind: 'DIFFICULTY_SUBSTITUTED'; wanted: Difficulty; got: Difficulty; count: number }
   | { kind: 'CELL_MINIMUM_UNMET'; cell: number; wanted: number; got: number }
-  | { kind: 'SCOPE_WIDENED'; reason: 'NO_FOCUS_CHAPTERS' | 'TOO_FEW_IN_SCOPE'; outOfScope: number }
+  | { kind: 'SCOPE_WIDENED'; reason: 'NO_FOCUS_CHAPTERS' | 'TOO_FEW_IN_SCOPE'; outOfScope: number; to?: WidenLevel }
   | { kind: 'SEEN_QUESTIONS_USED'; count: number }
   | { kind: 'HEALTH_WATCH_USED'; count: number };
 
@@ -114,7 +120,7 @@ export interface AssemblyReport {
   chapters: number;
   objectives: number;
   cognitive: Record<Cognitive | 'UNTAGGED', number>;
-  scope: { mode: ScopeMode; strict: boolean; chapters: string[] | null };
+  scope: { mode: ScopeMode; strict: boolean; chapters: string[] | null; objectives?: string[] | null };
   pool: { offered: number; duplicates: number; wrongType: number; outOfScope: number; eligible: number };
 }
 
@@ -134,7 +140,7 @@ export class InsufficientBankError extends Error {
   }
 }
 
-/** A strict student-focus test when the student has chosen no chapters for this subject. */
+/** A strict student-focus test when the student has chosen no chapters, or an objective scope with no objectives. */
 export class EmptyScopeError extends Error {
   constructor() {
     super('No chapters are chosen for this subject');
@@ -143,6 +149,23 @@ export class EmptyScopeError extends Error {
 }
 
 export const chapterOf = (path: string) => path.split('/')[0] ?? path;
+
+/**
+ * How far a question's objective is from the nearest target objective: 0 the objective itself, 1 the same
+ * micro-concept, 2 the same topic, 3 the same chapter, 4 elsewhere in the subject. Paths are chapter/topic/concept/objective.
+ */
+export function objectiveDistance(path: string, targets: readonly string[]): number {
+  const p = path.split('/');
+  let best = 4;
+  for (const t of targets) {
+    const q = t.split('/');
+    let common = 0;
+    while (common < 4 && common < p.length && common < q.length && p[common] === q[common]) common++;
+    best = Math.min(best, 4 - common);
+    if (best === 0) break;
+  }
+  return best;
+}
 const bandDistance = (a: Difficulty, b: Difficulty) => Math.abs(DIFFICULTIES.indexOf(a) - DIFFICULTIES.indexOf(b));
 const typeOf = (c: Candidate): QuestionType => c.questionType ?? 'MCQ';
 
@@ -164,15 +187,22 @@ export function assemble(pool: Candidate[], design: AssemblyDesign, seed: string
   let wrongType = 0;
   let outOfScopeRemoved = 0;
 
-  let inScope: (c: Candidate) => boolean = () => true;
+  // tierOf ranks closeness to the scope (0 = inside). Chapter scopes have two tiers; an objective scope has five.
+  let tierOf: (c: Candidate) => number = () => 0;
+  const inScope = (c: Candidate) => tierOf(c) === 0;
   let widenReason: 'NO_FOCUS_CHAPTERS' | 'TOO_FEW_IN_SCOPE' | null = null;
-  if (scope.chapters !== null) {
+  let widenedTo: WidenLevel | null = null;
+  const objectiveTargets = scope.mode === 'OBJECTIVES' ? (scope.objectives ?? []) : null;
+  if (objectiveTargets !== null) {
+    if (objectiveTargets.length === 0) throw new EmptyScopeError();
+    tierOf = (c) => objectiveDistance(c.objectivePath, objectiveTargets);
+  } else if (scope.chapters !== null) {
     if (scope.chapters.length === 0) {
       if (scope.strict) throw new EmptyScopeError();
       widenReason = 'NO_FOCUS_CHAPTERS';
     } else {
       const set = new Set(scope.chapters);
-      inScope = (c) => set.has(chapterOf(c.objectivePath));
+      tierOf = (c) => (set.has(chapterOf(c.objectivePath)) ? 0 : 1);
     }
   }
 
@@ -192,7 +222,18 @@ export function assemble(pool: Candidate[], design: AssemblyDesign, seed: string
   }
   // A strict scope never leaves its chapters. A loose one stays inside them while they hold enough questions
   // (a difficulty is substituted first), and widens only when they do not.
-  if (scope.chapters !== null && scope.chapters.length > 0) {
+  if (objectiveTargets !== null) {
+    // The nearest ring that holds enough questions; a strict scope never leaves the objectives themselves.
+    let limit = 0;
+    if (!scope.strict) while (limit < 4 && unique.filter((c) => tierOf(c) <= limit).length < design.total) limit++;
+    const keep = unique.filter((c) => tierOf(c) <= limit);
+    outOfScopeRemoved = unique.length - keep.length;
+    unique.splice(0, unique.length, ...keep);
+    if (limit > 0) {
+      widenReason = 'TOO_FEW_IN_SCOPE';
+      widenedTo = WIDEN_LEVELS[limit];
+    }
+  } else if (scope.chapters !== null && scope.chapters.length > 0) {
     const inside = unique.filter(inScope);
     if (scope.strict || inside.length >= design.total) {
       outOfScopeRemoved = unique.length - inside.length;
@@ -212,7 +253,7 @@ export function assemble(pool: Candidate[], design: AssemblyDesign, seed: string
   const picked: Array<{ item: Candidate; decision: Omit<AssemblyDecision, 'position'> }> = [];
 
   const keyOf = (c: Candidate): number[] => [
-    inScope(c) ? 0 : 1,
+    tierOf(c),
     design.preferUnseen && c.lastSeenAt !== null ? 1 : 0,
     c.health === 'WATCH' ? 1 : 0,
     chapters.has(chapterOf(c.objectivePath)) ? 1 : 0,
@@ -315,7 +356,7 @@ export function assemble(pool: Candidate[], design: AssemblyDesign, seed: string
   const chosen = picked.map((p) => p.item);
   const outOfScope = chosen.filter((c) => !inScope(c)).length;
   if (widenReason !== null && (outOfScope > 0 || widenReason === 'NO_FOCUS_CHAPTERS')) {
-    relaxations.push({ kind: 'SCOPE_WIDENED', reason: widenReason, outOfScope });
+    relaxations.push({ kind: 'SCOPE_WIDENED', reason: widenReason, outOfScope, ...(widenedTo ? { to: widenedTo } : {}) });
   }
   const seen = chosen.filter((c) => c.lastSeenAt !== null).length;
   if (design.preferUnseen && seen > 0) relaxations.push({ kind: 'SEEN_QUESTIONS_USED', count: seen });
@@ -355,7 +396,7 @@ export function assemble(pool: Candidate[], design: AssemblyDesign, seed: string
       chapters: chapters.size,
       objectives: objectives.size,
       cognitive,
-      scope: { mode: scope.mode, strict: scope.strict, chapters: scope.chapters },
+      scope: { mode: scope.mode, strict: scope.strict, chapters: scope.chapters, ...(objectiveTargets ? { objectives: [...objectiveTargets] } : {}) },
       pool: { offered: pool.length, duplicates, wrongType, outOfScope: outOfScopeRemoved, eligible: unique.length },
     },
   };

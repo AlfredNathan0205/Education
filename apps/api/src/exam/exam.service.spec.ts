@@ -955,3 +955,44 @@ describe('ExamService: only the student\'s own curriculum and grade (Step 12)', 
     expect(row.submittedAt).not.toBeNull();
   });
 });
+
+describe('ExamService: practice and retest sets aimed at objectives (Step 14)', () => {
+  const both = () => [blueprint('QUICK10', { EASY: 5, MEDIUM: 3, HARD: 2 }), blueprint('PRACTICE10', { EASY: 4, MEDIUM: 4, HARD: 2 }, { scope: 'OBJECTIVES' })];
+
+  it('an objective-scope design is never listed as a test, and cannot be started without a recommendation', async () => {
+    const h = build({ blueprints: both() });
+    const [u] = await h.service.listUnits(ACCOUNT);
+    expect(u.tests.map((t) => t.code)).toEqual(['QUICK10']);
+    await expect(h.service.create(ACCOUNT, { subjectVersionId: 'sv-1', mode: 'PRACTICE', blueprint: 'PRACTICE10' })).rejects.toThrow(/started from a recommendation/);
+    expect(h.store.instances).toHaveLength(0);
+  });
+
+  it('builds the set on the target objectives, records the recommendation, and resumes it for the same recommendation only', async () => {
+    const h = build({ blueprints: both() });
+    const target = { objectives: ['C2/T1/M1/O2'], recommendationId: 'rec-1' };
+    const a = await h.service.createIn(h.client, STUDENT, { subjectVersionId: 'sv-1', mode: 'PRACTICE', blueprint: 'PRACTICE10', target });
+    expect(a.resumed).toBe(false);
+    const inst = h.store.instances[0];
+    expect(inst).toMatchObject({ blueprint_code: 'PRACTICE10', mode: 'PRACTICE', recommendation_id: 'rec-1', target_objectives: ['C2/T1/M1/O2'] });
+    expect(inst.assembly_report.scope).toMatchObject({ mode: 'OBJECTIVES', objectives: ['C2/T1/M1/O2'] });
+    // The bank has 2-3 questions on that objective, so the set widens to its micro-concept and says so.
+    expect(inst.assembly_report.relaxations).toContainEqual(expect.objectContaining({ kind: 'SCOPE_WIDENED', to: 'MICRO_CONCEPT' }));
+    expect(h.store.items.every((i) => i.objective_path.startsWith('C2/T1/M1/'))).toBe(true);
+    expect(h.published.find((e) => e.eventType === 'assessment.created.v1')!.payload).toMatchObject({ recommendationId: 'rec-1' });
+
+    expect(await h.service.createIn(h.client, STUDENT, { subjectVersionId: 'sv-1', mode: 'PRACTICE', blueprint: 'PRACTICE10', target })).toEqual({ assessmentId: a.assessmentId, resumed: true });
+    const other = await h.service.createIn(h.client, STUDENT, { subjectVersionId: 'sv-1', mode: 'PRACTICE', blueprint: 'PRACTICE10', target: { ...target, recommendationId: 'rec-2' } });
+    expect(other.resumed).toBe(false);
+  });
+
+  it('an ordinary design takes no target', async () => {
+    const h = build({ blueprints: both() });
+    await expect(h.service.createIn(h.client, STUDENT, { subjectVersionId: 'sv-1', mode: 'TEST', blueprint: 'QUICK10', target: { objectives: ['C1/T1/M1/O1'], recommendationId: 'r' } })).rejects.toBeInstanceOf(ExamInputError);
+  });
+
+  it('servedUnitId finds the newest served revision of a subject', async () => {
+    const h = build();
+    expect(await h.service.servedUnitId(h.client, { curriculumVersionId: CV, gradeId: GRADE, subjectId: SUBJECT })).toBe('sv-1');
+    expect(await h.service.servedUnitId(h.client, { curriculumVersionId: CV, gradeId: GRADE, subjectId: 'other' })).toBeNull();
+  });
+});

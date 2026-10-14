@@ -2,6 +2,7 @@ import {
   EmptyScopeError,
   InsufficientBankError,
   assemble,
+  objectiveDistance,
   type AssemblyDesign,
   type Candidate,
   type Cognitive,
@@ -199,5 +200,59 @@ describe('assemble: scope', () => {
     expect(r.items).toHaveLength(10);
     expect(r.report.relaxations).toContainEqual({ kind: 'SCOPE_WIDENED', reason: 'NO_FOCUS_CHAPTERS', outOfScope: 0 });
     expect(() => assemble(p(), design(), 's', { mode: 'STUDENT_FOCUS', chapters: [], strict: true })).toThrow(EmptyScopeError);
+  });
+});
+
+describe('assemble: objective scope (practice and retest)', () => {
+  const obj = (o: string) => ({ mode: 'OBJECTIVES' as const, chapters: null, strict: false, objectives: [o] });
+  // Target A/T1/M1/O1 has 4 questions; the same micro-concept 4 more; the same topic 4; the same chapter 4; elsewhere 10.
+  const ring = () => [
+    ...many(2, { difficulty: 'EASY', objectivePath: 'A/T1/M1/O1' }),
+    ...many(2, { difficulty: 'MEDIUM', objectivePath: 'A/T1/M1/O1' }),
+    ...many(4, { difficulty: 'EASY', objectivePath: 'A/T1/M1/O2' }),
+    ...many(4, { difficulty: 'MEDIUM', objectivePath: 'A/T1/M2/O3' }),
+    ...many(4, { difficulty: 'HARD', objectivePath: 'A/T2/M3/O4' }),
+    ...many(10, { difficulty: 'HARD', objectivePath: 'B/T1/M1/O5' }),
+  ];
+
+  it('measures distance from the nearest target objective', () => {
+    const t = ['A/T1/M1/O1', 'B/T9/M9/O9'];
+    expect(objectiveDistance('A/T1/M1/O1', t)).toBe(0);
+    expect(objectiveDistance('A/T1/M1/O7', t)).toBe(1);
+    expect(objectiveDistance('A/T1/M5/O7', t)).toBe(2);
+    expect(objectiveDistance('A/T3/M5/O7', t)).toBe(3);
+    expect(objectiveDistance('C/T1/M1/O1', t)).toBe(4);
+    expect(objectiveDistance('B/T9/M2/O1', t)).toBe(2);
+  });
+
+  it('stays on the objectives when they hold enough questions', () => {
+    const pool = [...many(5, { difficulty: 'EASY', objectivePath: 'A/T1/M1/O1' }), ...many(5, { difficulty: 'MEDIUM', objectivePath: 'A/T1/M1/O1' }), ...many(8, { difficulty: 'HARD', objectivePath: 'A/T1/M1/O2' })];
+    const r = assemble(pool, design(), 's', obj('A/T1/M1/O1'));
+    expect(r.items.every((i) => i.objectivePath === 'A/T1/M1/O1')).toBe(true);
+    expect(r.report.relaxations.find((x) => x.kind === 'SCOPE_WIDENED')).toBeUndefined();
+    expect(r.report.scope.objectives).toEqual(['A/T1/M1/O1']);
+  });
+
+  it('widens one ring at a time, nearest first, and says how far', () => {
+    const r = assemble(ring(), design(), 's', obj('A/T1/M1/O1'));
+    // 4 + 4 (same micro-concept) = 8 < 10, so the topic ring is used: 12 candidates, nothing from chapter B.
+    expect(r.items.filter((i) => i.objectivePath === 'A/T1/M1/O1')).toHaveLength(4);
+    expect(r.items.some((i) => i.objectivePath.startsWith('B/') || i.objectivePath.startsWith('A/T2'))).toBe(false);
+    expect(r.report.relaxations).toContainEqual({ kind: 'SCOPE_WIDENED', reason: 'TOO_FEW_IN_SCOPE', outOfScope: 6, to: 'TOPIC' });
+  });
+
+  it('spreads a set over several target objectives', () => {
+    const pool = [
+      ...many(6, { difficulty: 'EASY', objectivePath: 'A/T1/M1/O1' }),
+      ...many(6, { difficulty: 'MEDIUM', objectivePath: 'A/T1/M1/O2' }),
+      ...many(6, { difficulty: 'HARD', objectivePath: 'B/T1/M1/O3' }),
+    ];
+    const r = assemble(pool, design(), 's', { mode: 'OBJECTIVES', chapters: null, strict: false, objectives: ['A/T1/M1/O1', 'A/T1/M1/O2', 'B/T1/M1/O3'] });
+    expect(new Set(r.items.map((i) => i.objectivePath)).size).toBe(3);
+  });
+
+  it('a strict objective scope never widens; no objectives at all is refused', () => {
+    expect(() => assemble(ring(), design(), 's', { ...obj('A/T1/M1/O1'), strict: true })).toThrow(InsufficientBankError);
+    expect(() => assemble(ring(), design(), 's', { mode: 'OBJECTIVES', chapters: null, strict: false, objectives: [] })).toThrow(EmptyScopeError);
   });
 });

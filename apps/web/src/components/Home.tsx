@@ -3,14 +3,15 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { AppNav } from './AppNav';
-import { ApiError, bff, gradeLabel, type HomeView, type NextAction } from '@/lib/client-api';
-import { startTest } from '@/lib/start-test';
+import { ApiError, REASON_TEXT, bff, gradeLabel, type HomeView, type NextAction, type RecommendationView } from '@/lib/client-api';
+import { startRecommendation, startTest } from '@/lib/start-test';
 
 const TEST_NAME: Record<string, string> = { QUICK10: 'Quick 10', FOCUS10: 'Focus 10' };
 
 /**
  * Home (spec STUDENT_WEB): the next best action first, then subjects. Leaderboards and challenges join when they exist
- * (Steps 15 and 16); nothing here shows mastery yet (Step 13), and no percentage is presented as mastery.
+ * (Steps 15 and 16). No percentage is presented as mastery. Step 14 adds the loop's practice and retest: they can be the
+ * next best action, and every open one is listed under "Focus next" with Start and Not now.
  */
 export function Home() {
   const [home, setHome] = useState<HomeView | null>(null);
@@ -28,6 +29,25 @@ export function Home() {
         else setLoadError(e instanceof ApiError ? e.message : 'Could not load your home page.');
       });
   }, []);
+
+  async function act(fn: () => Promise<void>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Something went wrong. Please try again.');
+      setBusy(false);
+    }
+  }
+
+  async function putOff(id: string) {
+    await act(async () => {
+      await bff('POST', `recommendations/${id}/dismiss`);
+      setHome(await bff<HomeView>('GET', 'home'));
+      setBusy(false);
+    });
+  }
 
   async function go(subjectVersionId: string, mode: 'TEST' | 'PRACTICE', blueprint?: string) {
     setBusy(true);
@@ -58,6 +78,9 @@ export function Home() {
     );
   }
   if (!home) return <p className="muted" role="status">Loading…</p>;
+  // The recommendation already shown as the next best action is not listed again.
+  const shown = home.nextAction.kind === 'RETEST' || home.nextAction.kind === 'PRACTICE' ? home.nextAction.recommendationId : null;
+  const focus = home.focus.filter((r) => r.id !== shown);
 
   return (
     <div className="has-nav">
@@ -69,8 +92,25 @@ export function Home() {
         </p>
       )}
 
-      <NextBest action={home.nextAction} busy={busy} onStart={go} />
+      <NextBest
+        action={home.nextAction}
+        busy={busy}
+        onStart={go}
+        onRecommendation={(id) => act(() => startRecommendation(id))}
+        onPutOff={putOff}
+      />
       <div role="alert" aria-live="polite">{error && <p className="error">{error}</p>}</div>
+
+      {focus.length > 0 && (
+        <section aria-labelledby="focus">
+          <h2 id="focus">{home.nextAction.kind === 'RETEST' || home.nextAction.kind === 'PRACTICE' ? 'Also to focus on' : 'Focus next'}</h2>
+          <ul className="subjects">
+            {focus.map((r) => (
+              <FocusItem key={r.id} rec={r} busy={busy} onStart={() => act(() => startRecommendation(r.id))} onPutOff={() => putOff(r.id)} />
+            ))}
+          </ul>
+        </section>
+      )}
 
       {home.inProgress.length > 1 && (
         <section className="card" aria-labelledby="open">
@@ -130,7 +170,47 @@ export function Home() {
   );
 }
 
-function NextBest({ action, busy, onStart }: { action: NextAction; busy: boolean; onStart: (sv: string, mode: 'TEST' | 'PRACTICE', blueprint?: string) => void }) {
+function FocusItem({ rec, busy, onStart, onPutOff }: { rec: RecommendationView; busy: boolean; onStart: () => void; onPutOff: () => void }) {
+  const codes = [...new Set(rec.reasons.map((x) => x.code))];
+  return (
+    <li className="subject" aria-label={`${rec.kind === 'RETEST' ? 'Retest' : 'Practice'} in ${rec.subjectName}`}>
+      <p className="eyebrow">{rec.kind === 'RETEST' ? 'Retest' : 'Practice'} · {rec.subjectName}</p>
+      <ul className="plain">
+        {rec.objectives.map((o) => (
+          <li key={o.path}>
+            {o.statement}
+            {o.chapterTitle && <span className="muted"> · {o.chapterTitle}</span>}
+          </li>
+        ))}
+      </ul>
+      <p className="hint" style={{ margin: '6px 0 10px' }}>{codes.map((c) => REASON_TEXT[c]).join('. ')}.</p>
+      <div className="actions">
+        <button className="btn" disabled={busy} onClick={onStart}>
+          {rec.inProgressAssessmentId ? 'Continue' : rec.kind === 'RETEST' ? 'Start retest' : 'Start practice'}
+        </button>
+        {!rec.inProgressAssessmentId && (
+          <button className="btn secondary" disabled={busy} onClick={onPutOff}>
+            Not now
+          </button>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function NextBest({
+  action,
+  busy,
+  onStart,
+  onRecommendation,
+  onPutOff,
+}: {
+  action: NextAction;
+  busy: boolean;
+  onStart: (sv: string, mode: 'TEST' | 'PRACTICE', blueprint?: string) => void;
+  onRecommendation: (id: string) => void;
+  onPutOff: (id: string) => void;
+}) {
   const card = (title: string, body: React.ReactNode, cta: React.ReactNode) => (
     <section className="card nba" aria-labelledby="nba">
       <p className="eyebrow">Next</p>
@@ -162,6 +242,32 @@ function NextBest({ action, busy, onStart }: { action: NextAction; busy: boolean
         <button className="btn" disabled={busy} onClick={() => onStart(action.subjectVersionId, 'TEST', action.blueprint)}>
           {busy ? 'Preparing…' : `Start ${TEST_NAME[action.blueprint] ?? action.blueprint}`}
         </button>,
+      );
+    case 'RETEST':
+      return card(
+        `Retest in ${action.subjectName}`,
+        `${action.reason} 10 questions, answers shown at the end.`,
+        <div className="actions">
+          <button className="btn" disabled={busy} onClick={() => onRecommendation(action.recommendationId)}>
+            {busy ? 'Preparing…' : 'Start retest'}
+          </button>
+          <button className="btn secondary" disabled={busy} onClick={() => onPutOff(action.recommendationId)}>
+            Not now
+          </button>
+        </div>,
+      );
+    case 'PRACTICE':
+      return card(
+        `Practise in ${action.subjectName}`,
+        `${action.reason} 10 questions, with the answer shown after each one.`,
+        <div className="actions">
+          <button className="btn" disabled={busy} onClick={() => onRecommendation(action.recommendationId)}>
+            {busy ? 'Preparing…' : 'Start practice'}
+          </button>
+          <button className="btn secondary" disabled={busy} onClick={() => onPutOff(action.recommendationId)}>
+            Not now
+          </button>
+        </div>,
       );
   }
 }
