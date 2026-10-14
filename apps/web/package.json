@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "echo 'no linter configured yet'",
     "typecheck": "tsc --noEmit",
-    "test": "echo 'no tests yet'"
+    "test": "echo 'no tests yet'",
+    "test:e2e": "next build && playwright test"
   },
   "dependencies": {
     "next": "^15.0.0",
@@ -16,6 +17,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
     "@types/node": "^20.14.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

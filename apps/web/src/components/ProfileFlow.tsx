@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState, type FormEvent } from 'react';
 import { ApiError, bff, type AcademicView, type SchoolHit, type StudentProfile } from '@/lib/client-api';
 import { profileStep, type ProfileStep } from '@/lib/profile-step';
+import { AppNav } from './AppNav';
 import { GuardianRequest } from '@/components/GuardianRequest';
 
 const ORDER: ProfileStep[] = ['DOB', 'NAME', 'GRADE', 'SCHOOL', 'READY'];
@@ -88,7 +89,7 @@ export function ProfileFlow() {
   const errorBox = <div role="alert" aria-live="polite">{error && <p className="error">{error}</p>}</div>;
 
   return (
-    <>
+    <div className={step === 'READY' ? 'has-nav' : undefined}>
       <ol className="steps" aria-label="Progress">
         {ORDER.map((s, i) => (
           <li key={s} className={i < idx ? 'done' : i === idx ? 'current' : ''} />
@@ -187,6 +188,7 @@ export function ProfileFlow() {
         </section>
       )}
 
+      {step === 'READY' && <AppNav current="profile" />}
       {step === 'READY' && (
         <section className="card" aria-labelledby="r">
           <h1 id="r">Welcome, {profile.displayName}.</h1>
@@ -197,8 +199,8 @@ export function ProfileFlow() {
               : ''}
           </p>
           <p className="muted">Your profile is set.</p>
-          <Link className="btn" href="/tests">Go to tests</Link>{' '}
-          <Link className="btn secondary" href="/profile/chapters">Choose my chapters</Link>
+          <Link className="btn" href="/home">Go to Home</Link>{' '}
+          <Link className="btn secondary" href="/profile/chapters">Choose the chapters I am studying</Link>
           {errorBox}
           {academic?.school ? (
             <p>
@@ -217,6 +219,6 @@ export function ProfileFlow() {
       <form action="/sign-out" method="post">
         <button className="btn secondary" type="submit">Sign out</button>
       </form>
-    </>
+    </div>
   );
 }

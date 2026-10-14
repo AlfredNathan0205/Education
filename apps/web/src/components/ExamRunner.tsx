@@ -137,7 +137,7 @@ export function ExamRunner({ assessmentId }: { assessmentId: string }) {
         <section className="card">
           <h1 ref={headingRef} tabIndex={-1}>This test expired</h1>
           <p className="muted">No answer was locked within the time allowed, so there is no result. You can start a new one.</p>
-          <Link className="btn" href="/tests">Back to tests</Link>
+          <Link className="btn" href="/home">Back to Home</Link>
         </section>
       );
     }
@@ -149,7 +149,7 @@ export function ExamRunner({ assessmentId }: { assessmentId: string }) {
             The questions in it had a problem and were removed, so it does not count. This is not because of anything you
             did. You can start a new one.
           </p>
-          <Link className="btn" href="/tests">Back to tests</Link>
+          <Link className="btn" href="/home">Back to Home</Link>
         </section>
       );
     }
@@ -264,7 +264,7 @@ function ResultView({ result, headingRef }: { result: ExamResult; headingRef: Re
             ) : null,
           )}
         </ul>
-        <Link className="btn" href="/tests">Back to tests</Link>
+        <Link className="btn" href="/home">Back to Home</Link>
       </section>
 
       <h2>Review</h2>

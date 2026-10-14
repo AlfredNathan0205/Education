@@ -24,3 +24,7 @@ packages/database/prisma/migrations/*.sql.bak
 
 # Test
 coverage/
+
+# Playwright
+test-results/
+playwright-report/
