@@ -152,7 +152,7 @@ export interface ExamUnit {
 export interface MyAssessment {
   assessmentId: string;
   mode: 'TEST' | 'PRACTICE';
-  status: 'IN_PROGRESS' | 'SUBMITTED' | 'VOID';
+  status: ExamStatus;
   subjectName: string;
   gradeCode: string;
   startedAt: string;
@@ -161,13 +161,18 @@ export interface MyAssessment {
   total: number | null;
 }
 
+/** INVALIDATED: every question in it was removed, so it does not count (Step 11). */
+export type ExamStatus = 'IN_PROGRESS' | 'SUBMITTED' | 'VOID' | 'INVALIDATED';
+
 export interface ExamView {
   assessmentId: string;
   mode: 'TEST' | 'PRACTICE';
-  status: 'IN_PROGRESS' | 'SUBMITTED' | 'VOID';
+  status: ExamStatus;
   expiresAt: string;
   total: number;
   answered: number;
+  /** Questions taken out of this test (technical problem or found to be wrong). They do not count. */
+  removed: number;
   phase: 'QUESTION' | 'SUMMARY' | 'ENDED';
   question?: { position: number; total: number; pass: 'MAIN' | 'REVISIT'; stem: string; options: Array<{ slot: number; text: string }> };
   summary?: { answered: number; unanswered: number; canReviewSkipped: boolean };
@@ -184,13 +189,16 @@ export interface ExamResult {
   total: number;
   correct: number;
   unanswered: number;
+  removed: number;
+  corrected: boolean;
   byDifficulty: Record<'EASY' | 'MEDIUM' | 'HARD', { total: number; correct: number }>;
   competitiveEligible: boolean;
   items: Array<{
     position: number;
     difficulty: 'EASY' | 'MEDIUM' | 'HARD';
     stem: string;
-    outcome: 'CORRECT' | 'INCORRECT' | 'UNANSWERED';
+    outcome: 'CORRECT' | 'INCORRECT' | 'UNANSWERED' | 'EXCLUDED';
+    excludedReason: 'TECHNICAL_FAILURE' | 'INVALIDATED' | null;
     explanation: string | null;
     options: Array<{ slot: number; text: string; isCorrect: boolean; chosen: boolean }>;
   }>;
@@ -342,3 +350,26 @@ export type BlueprintPreview =
       }>;
     })
   | (BlueprintPreviewHead & { ok: false; available: number; needed: number });
+
+// ── Removing a wrong question from tests already taken (Step 11) ─────────────
+
+export interface InvalidationImpact {
+  revisionId: string;
+  code: string;
+  state: string;
+  items: number;
+  inProgress: number;
+  submitted: number;
+  other: number;
+  blockers: string[];
+  already: { invalidationId: string; at: string; reasonCode: string; note: string } | null;
+}
+
+export interface InvalidationSummary {
+  invalidationId: string;
+  revisionId: string;
+  itemsAffected: number;
+  resultsRescored: number;
+  sessionsInvalidated: number;
+  repeated: boolean;
+}

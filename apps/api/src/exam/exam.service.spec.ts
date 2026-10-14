@@ -159,6 +159,9 @@ function build(opts: Opts = {}, config: Partial<ExamConfig> = {}) {
         return { id: inst.id };
       }),
     },
+    assessment_instance_question: {
+      update: jest.fn(async ({ where, data }: any) => Object.assign(store.items.find((i) => i.id === where.id), data)),
+    },
     assessment_session: {
       create: jest.fn(async ({ data }: any) => {
         const s = { id: id('sess'), status: 'IN_PROGRESS', started_at: new Date(), last_activity_at: new Date(), revisit_used: false, committed_at: null, submitted_at: null, ...data };
@@ -815,5 +818,100 @@ describe('ExamService: tests built from published blueprints (Step 10)', () => {
     }
     await h.service.submit(ACCOUNT, assessmentId);
     expect(h.store.results[0]).toMatchObject({ total: 2, correct: 2, scoring_policy: 'ONE_MARK_PER_CORRECT_V1' });
+  });
+});
+
+describe('ExamService: execution hardening (Step 11)', () => {
+  const revOf = (h: ReturnType<typeof build>, position: number) => h.revisions.find((r) => r.id === h.store.items.find((i) => i.position === position).question_revision_id);
+
+  it('a question that cannot be shown is excluded as a technical failure and the next one is shown', async () => {
+    const h = build();
+    const { assessmentId } = await start(h);
+    revOf(h, 1).options = revOf(h, 1).options.slice(0, 3);
+    const v = await h.service.present(ACCOUNT, assessmentId);
+    expect(v.question!.position).toBe(2);
+    expect(v.removed).toBe(1);
+    expect(h.store.items.find((i) => i.position === 1)).toMatchObject({ excluded: 'TECHNICAL_FAILURE' });
+    expect(h.store.events.map((e) => e.event_type)).toContain('TECHNICAL_FAILURE');
+    expect(h.published.find((e) => e.eventType === 'assessment.item_excluded.v1')!.payload).toMatchObject({ position: 1, reason: 'TECHNICAL_FAILURE' });
+    // The student never saw it, so it is not counted as seen.
+    expect(h.store.exposures.map((e) => e.question_id)).not.toContain(h.store.items.find((i) => i.position === 1).question_id);
+  });
+
+  it('an excluded item does not count: the result leaves it out and says so', async () => {
+    const h = build();
+    const { assessmentId } = await start(h);
+    revOf(h, 1).options = revOf(h, 1).options.slice(0, 3);
+    for (let p = 2; p <= 10; p++) {
+      await h.service.present(ACCOUNT, assessmentId);
+      await h.service.lock(ACCOUNT, assessmentId, p, { slot: correctSlot(h, p), activeMs: 1000, idempotencyKey: key() });
+    }
+    expect(await h.service.present(ACCOUNT, assessmentId)).toMatchObject({ phase: 'SUMMARY', summary: { answered: 9, unanswered: 0 } });
+    await h.service.submit(ACCOUNT, assessmentId);
+    expect(h.store.results[0]).toMatchObject({ total: 9, correct: 9, unanswered: 0 });
+    const r = await h.service.result(ACCOUNT, assessmentId);
+    expect(r).toMatchObject({ total: 9, correct: 9, removed: 1, corrected: false });
+    expect(r.items[0]).toMatchObject({ position: 1, outcome: 'EXCLUDED', excludedReason: 'TECHNICAL_FAILURE' });
+    expect(r.items[0].explanation).toBeNull();
+    expect(r.items[0].options.some((o) => o.isCorrect)).toBe(false);
+  });
+
+  it('a lock that cannot be scored safely is a technical failure, not a wrong answer', async () => {
+    const h = build();
+    const { assessmentId } = await start(h);
+    await h.service.present(ACCOUNT, assessmentId);
+    revOf(h, 1).options.forEach((o: any) => (o.is_correct = true));
+    await expect(h.service.lock(ACCOUNT, assessmentId, 1, { slot: 0, activeMs: 1, idempotencyKey: key() })).rejects.toThrow(/technical problem/);
+    expect(h.store.items.find((i) => i.position === 1).excluded).toBe('TECHNICAL_FAILURE');
+    expect(h.store.responses.find((r) => r.state === 'LOCKED')).toBeUndefined();
+    expect((await h.service.present(ACCOUNT, assessmentId)).question!.position).toBe(2);
+    // The removed question cannot be answered or skipped any more.
+    await expect(h.service.skip(ACCOUNT, assessmentId, 1, { activeMs: 1 })).rejects.toThrow(/removed from your test/);
+  });
+
+  it('when every question fails, the test is cancelled, not scored 0', async () => {
+    const h = build();
+    const { assessmentId } = await start(h);
+    for (const it of h.store.items) h.revisions.find((r) => r.id === it.question_revision_id).stem = '';
+    expect(await h.service.present(ACCOUNT, assessmentId)).toMatchObject({ phase: 'ENDED', status: 'INVALIDATED', removed: 10 });
+    expect(h.store.results).toHaveLength(0);
+    expect(h.published.map((e) => e.eventType)).toContain('assessment.invalidated.v1');
+    await expect(h.service.result(ACCOUNT, assessmentId)).rejects.toThrow(/cancelled/);
+    await expect(h.service.submit(ACCOUNT, assessmentId)).rejects.toThrow(/cancelled/);
+  });
+
+  it('a retried skip with the same key returns the same answer; without a key it is still refused', async () => {
+    const h = build();
+    const { assessmentId } = await start(h);
+    await h.service.present(ACCOUNT, assessmentId);
+    const k = key();
+    await expect(h.service.skip(ACCOUNT, assessmentId, 1, { activeMs: 5, idempotencyKey: k })).resolves.toEqual({ skipped: true });
+    await expect(h.service.skip(ACCOUNT, assessmentId, 1, { activeMs: 5, idempotencyKey: k })).resolves.toEqual({ skipped: true });
+    expect(h.store.responses.find((r) => r.state === 'SKIPPED').skip_count).toBe(1);
+    expect(h.store.events.filter((e) => e.event_type === 'SKIPPED')).toHaveLength(1);
+    await expect(h.service.skip(ACCOUNT, assessmentId, 1, { activeMs: 5, idempotencyKey: key() })).rejects.toBeInstanceOf(ExamConflictError);
+    await expect(h.service.skip(ACCOUNT, assessmentId, 1, { activeMs: 5 })).rejects.toBeInstanceOf(ExamConflictError);
+  });
+
+  it('the sweeper settles expired tests: scored when an answer was locked, void (with an event) when none was', async () => {
+    const h = build();
+    const a = await start(h);
+    await h.service.present(ACCOUNT, a.assessmentId);
+    await h.service.lock(ACCOUNT, a.assessmentId, 1, { slot: correctSlot(h, 1), activeMs: 1, idempotencyKey: key() });
+    const b = await start(h, 'PRACTICE');
+    for (const s of h.store.sessions) s.expires_at = new Date(Date.now() - 1000);
+    expect(await h.service.sweepExpired()).toBe(2);
+    expect(h.store.sessions.find((s) => s.id === a.assessmentId).status).toBe('SUBMITTED');
+    expect(h.store.sessions.find((s) => s.id === b.assessmentId).status).toBe('VOID');
+    expect(h.store.submissions[0]).toMatchObject({ reason: 'EXPIRED' });
+    expect(h.published.filter((e) => e.eventType === 'assessment.expired_incomplete.v1')).toHaveLength(1);
+    expect(await h.service.sweepExpired()).toBe(0);
+  });
+
+  it('the sweeper leaves tests that are still within their window', async () => {
+    const h = build();
+    await start(h);
+    expect(await h.service.sweepExpired()).toBe(0);
+    expect(h.store.sessions[0].status).toBe('IN_PROGRESS');
   });
 });

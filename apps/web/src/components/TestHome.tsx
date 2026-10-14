@@ -103,6 +103,8 @@ export function TestHome() {
                   <Link href={`/tests/${m.assessmentId}`}>
                     {m.subjectName} {m.mode === 'TEST' ? 'test' : 'practice'}: {m.correct} of {m.total}
                   </Link>
+                ) : m.status === 'INVALIDATED' ? (
+                  <span className="muted">{m.subjectName} {m.mode === 'TEST' ? 'test' : 'practice'}: cancelled, its questions were removed (does not count)</span>
                 ) : (
                   <span className="muted">{m.subjectName} {m.mode === 'TEST' ? 'test' : 'practice'}: expired, nothing was answered</span>
                 )}{' '}

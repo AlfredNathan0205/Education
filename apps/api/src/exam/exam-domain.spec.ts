@@ -1,5 +1,6 @@
 import {
   InsufficientBankError,
+  allExcluded,
   assembleQuick10,
   clampActiveMs,
   loadExamConfig,
@@ -162,8 +163,53 @@ describe('scoreAssessment', () => {
       total: 4,
       correct: 2,
       unanswered: 1,
+      excluded: 0,
       byDifficulty: { EASY: { total: 2, correct: 1 }, MEDIUM: { total: 1, correct: 0 }, HARD: { total: 1, correct: 1 } },
     });
+  });
+
+  it('leaves excluded items out entirely: they never count as the learner\'s error (Step 11)', () => {
+    const s = scoreAssessment([
+      { difficulty: 'EASY', locked: true, isCorrect: true },
+      { difficulty: 'EASY', locked: true, isCorrect: false, excluded: true },
+      { difficulty: 'MEDIUM', locked: false, isCorrect: null, excluded: true },
+      { difficulty: 'HARD', locked: false, isCorrect: null },
+    ]);
+    expect(s).toEqual({
+      total: 2,
+      correct: 1,
+      unanswered: 1,
+      excluded: 2,
+      byDifficulty: { EASY: { total: 1, correct: 1 }, MEDIUM: { total: 0, correct: 0 }, HARD: { total: 1, correct: 0 } },
+    });
+  });
+
+  it('knows when every item is excluded', () => {
+    expect(allExcluded([{ excluded: true }, { excluded: true }])).toBe(true);
+    expect(allExcluded([{ excluded: true }, {}])).toBe(false);
+    expect(allExcluded([])).toBe(false);
+  });
+});
+
+describe('nextStep with excluded items (Step 11)', () => {
+  it('never presents an excluded item and leaves it out of the summary', () => {
+    const items = [
+      { position: 1, state: 'LOCKED' as const, skipCount: 0 },
+      { position: 2, state: null, skipCount: 0, excluded: true },
+      { position: 3, state: null, skipCount: 0 },
+    ];
+    expect(nextStep(items, false)).toEqual({ kind: 'ITEM', position: 3, pass: 'MAIN' });
+    const done = items.map((i) => (i.position === 3 ? { ...i, state: 'LOCKED' as const } : i));
+    expect(nextStep(done, false)).toEqual({ kind: 'SUMMARY', answered: 2, unanswered: 0, canReviewSkipped: false });
+  });
+
+  it('does not revisit a skipped item that was excluded afterwards', () => {
+    const items = [
+      { position: 1, state: 'SKIPPED' as const, skipCount: 1, excluded: true },
+      { position: 2, state: 'SKIPPED' as const, skipCount: 1 },
+    ];
+    expect(nextStep(items, true)).toEqual({ kind: 'ITEM', position: 2, pass: 'REVISIT' });
+    expect(nextStep([items[0]], true)).toEqual({ kind: 'SUMMARY', answered: 0, unanswered: 0, canReviewSkipped: false });
   });
 });
 

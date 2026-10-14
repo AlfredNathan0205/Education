@@ -45,6 +45,9 @@ const ALLOWED_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: 'GET', pattern: new RegExp(`^admin/publication/units/${UUID}/summary$`) },
   { method: 'POST', pattern: new RegExp(`^admin/publication/units/${UUID}/publish-all$`) },
   { method: 'POST', pattern: new RegExp(`^admin/publication/revisions/${UUID}/(publish|withdraw|health)$`) },
+  // Removing a wrong question from tests already taken (Step 11).
+  { method: 'GET', pattern: new RegExp(`^admin/assessment-items/revisions/${UUID}/impact$`) },
+  { method: 'POST', pattern: new RegExp(`^admin/assessment-items/revisions/${UUID}/invalidate$`) },
   // Test designs (Step 10).
   { method: 'GET', pattern: /^admin\/blueprints$/ },
   { method: 'POST', pattern: /^admin\/blueprints$/ },

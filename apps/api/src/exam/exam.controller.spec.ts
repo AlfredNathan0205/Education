@@ -64,6 +64,13 @@ describe('ExamController input checks', () => {
     await controller.skip(req, ID, '4', { activeMs: 9 });
     expect(exam.skip).toHaveBeenCalledWith('acct', ID, 4, { activeMs: 9 });
   });
+  it('skip passes a well-formed request key and refuses a bad one', async () => {
+    const { controller, exam } = make();
+    await expect(controller.skip(req, ID, '4', { activeMs: 9, idempotencyKey: 'short' })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(controller.skip(req, ID, '4', { activeMs: 9, idempotencyKey: 12345678 })).rejects.toBeInstanceOf(BadRequestException);
+    await controller.skip(req, ID, '4', { activeMs: 9, idempotencyKey: 'abcdefgh12' });
+    expect(exam.skip).toHaveBeenLastCalledWith('acct', ID, 4, { activeMs: 9, idempotencyKey: 'abcdefgh12' });
+  });
 });
 
 describe('ExamController error mapping', () => {

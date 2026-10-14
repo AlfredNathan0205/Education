@@ -862,8 +862,18 @@ enum assessment_mode {
 enum assessment_session_status {
   IN_PROGRESS
   SUBMITTED
-  /// The resume window passed with no answer locked. There is no result.
+  /// The resume window passed with no answer locked. There is no result. (Spec state EXPIRED_INCOMPLETE.)
   VOID
+  /// Every question in it was excluded (technical failure or governed invalidation). It does not count. (Step 11)
+  INVALIDATED
+}
+
+/// Why an item no longer counts (Step 11). Technical/item failure never counts as learner error (invariant 12).
+enum assessment_item_exclusion {
+  /// The system could not present or score the question properly.
+  TECHNICAL_FAILURE
+  /// An approver invalidated the question version after tests used it (InvalidateAssessmentItem).
+  INVALIDATED
 }
 
 enum student_response_state {
@@ -909,10 +919,16 @@ model assessment_instance_question {
   difficulty           question_difficulty
   /// Permutation of the stored option positions (1..4): displayed slot i shows option_order[i].
   option_order         Int[]
+  /// Set when the item stops counting: it is skipped in the flow and left out of the score.
+  excluded             assessment_item_exclusion?
+  excluded_at          DateTime?
+  /// The governed invalidation that excluded it, when excluded = INVALIDATED.
+  invalidation_id      String?             @db.Uuid
 
-  instance assessment_instance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
-  revision question_revision   @relation(fields: [question_revision_id], references: [id])
-  response student_response?
+  instance     assessment_instance           @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+  revision     question_revision             @relation(fields: [question_revision_id], references: [id])
+  response     student_response?
+  invalidation assessment_item_invalidation? @relation(fields: [invalidation_id], references: [id])
 
   @@unique([instance_id, position])
   @@unique([instance_id, question_revision_id])
@@ -942,6 +958,7 @@ model assessment_session {
   result      assessment_result?
 
   @@index([student_id, status])
+  @@index([status, expires_at])
 }
 
 model student_response {
@@ -962,6 +979,8 @@ model student_response {
   active_ms           Int?
   server_elapsed_ms   Int?
   idempotency_key     String?                @db.VarChar(64)
+  /// Request key of the latest skip, so a retried skip returns the same answer (Step 11).
+  skip_idempotency_key String?               @db.VarChar(64)
 
   session  assessment_session          @relation(fields: [session_id], references: [id], onDelete: Cascade)
   question assessment_instance_question @relation(fields: [instance_question_id], references: [id], onDelete: Cascade)
@@ -1009,8 +1028,12 @@ model assessment_result {
   /// A TEST whose first answer was locked. Competitive points are a later block.
   competitive_eligible Boolean
   scored_at            DateTime @default(now())
+  /// Set when an invalidation rescored this result; the history is in assessment_result_correction.
+  corrected_at         DateTime?
+  correction_count     Int      @default(0)
 
-  session assessment_session @relation(fields: [session_id], references: [id])
+  session     assessment_session             @relation(fields: [session_id], references: [id])
+  corrections assessment_result_correction[]
 
   @@index([student_id, scored_at])
 }
@@ -1594,4 +1617,44 @@ model assessment_assembly_decision {
   run assessment_assembly_run @relation(fields: [run_id], references: [id], onDelete: Cascade)
 
   @@unique([run_id, position])
+}
+
+// ---------------------------------------------------------------------------
+// Step 11 — Assessment execution: governed invalidation of items already used in tests.
+// ---------------------------------------------------------------------------
+
+/// One InvalidateAssessmentItem decision: a question version stops counting in every test that used it.
+model assessment_item_invalidation {
+  id                   String   @id @default(uuid()) @db.Uuid
+  /// One decision per version; repeating it changes nothing.
+  question_revision_id String   @unique @db.Uuid
+  reason_code          String   @db.VarChar(40)
+  note                 String   @db.VarChar(1000)
+  invalidated_by       String   @db.Uuid
+  created_at           DateTime @default(now())
+  items_affected       Int
+  results_rescored     Int
+  sessions_invalidated Int
+
+  items       assessment_instance_question[]
+  corrections assessment_result_correction[]
+}
+
+/// Append-only history of every change to a result after it was first scored. The result row holds the current value.
+model assessment_result_correction {
+  id              String   @id @default(uuid()) @db.Uuid
+  result_id       String   @db.Uuid
+  session_id      String   @db.Uuid
+  invalidation_id String?  @db.Uuid
+  /// INVALIDATION today.
+  reason          String   @db.VarChar(32)
+  /// total / correct / unanswered / by_difficulty / competitive_eligible before and after.
+  before          Json
+  after           Json
+  created_at      DateTime @default(now())
+
+  result       assessment_result             @relation(fields: [result_id], references: [id], onDelete: Cascade)
+  invalidation assessment_item_invalidation? @relation(fields: [invalidation_id], references: [id])
+
+  @@index([session_id, created_at])
 }
