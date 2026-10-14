@@ -141,8 +141,10 @@ export interface ExamUnit {
   curriculumCode: string;
   versionLabel: string;
   gradeCode: string;
+  subjectCode: string;
   subjectName: string;
   usableQuestions: number;
+  chosenChapters: number;
   /** Quick 10 can be built now. */
   ready: boolean;
   /** Every test this subject offers (Step 10). The student screen shows only Quick 10 until Step 12. */
@@ -153,9 +155,12 @@ export interface MyAssessment {
   assessmentId: string;
   mode: 'TEST' | 'PRACTICE';
   status: ExamStatus;
+  subjectCode: string;
   subjectName: string;
   gradeCode: string;
+  blueprint: string;
   startedAt: string;
+  submittedAt: string | null;
   expiresAt: string;
   correct: number | null;
   total: number | null;
@@ -372,4 +377,40 @@ export interface InvalidationSummary {
   resultsRescored: number;
   sessionsInvalidated: number;
   repeated: boolean;
+}
+
+// ── Home (Step 12) ───────────────────────────────────────────────────────
+
+export type NextAction =
+  | { kind: 'RESUME'; assessmentId: string; subjectName: string; mode: 'TEST' | 'PRACTICE'; reason: string }
+  | { kind: 'FINISH_PROFILE'; reason: string }
+  | { kind: 'COMING_SOON'; reason: string }
+  | { kind: 'NOT_READY'; reason: string }
+  | { kind: 'FIRST_TEST' | 'TAKE_TEST'; subjectVersionId: string; subjectName: string; blueprint: string; mode: 'TEST'; reason: string };
+
+export interface HomeSubject {
+  subjectVersionId: string;
+  subjectCode: string;
+  subjectName: string;
+  ready: boolean;
+  chosenChapters: number;
+  tests: Array<{ code: string; name: string; total: number; ready: boolean }>;
+  lastResult: { assessmentId: string; correct: number; total: number; mode: 'TEST' | 'PRACTICE'; at: string } | null;
+  completed: number;
+}
+
+export interface HomeView {
+  displayName: string | null;
+  cohort: { curriculumCode: string; gradeCode: string } | null;
+  supported: boolean;
+  nextAction: NextAction;
+  firstExperience: boolean;
+  firstExperienceMessage: string;
+  subjects: HomeSubject[];
+  inProgress: MyAssessment[];
+}
+
+/** "GRADE_8" -> "Grade 8". */
+export function gradeLabel(code: string): string {
+  return code.replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
 }

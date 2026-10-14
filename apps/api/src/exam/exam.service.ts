@@ -67,8 +67,11 @@ export interface ExamUnitView {
   curriculumCode: string;
   versionLabel: string;
   gradeCode: string;
+  subjectCode: string;
   subjectName: string;
   usableQuestions: number;
+  /** How many chapters the student chose to focus on in this subject (Step 5). */
+  chosenChapters: number;
   /** The default test (Quick 10) can be built now. */
   ready: boolean;
   /** Every test a student may be given for this subject: switched on, published, and for this subject (or any). */
@@ -130,9 +133,12 @@ export interface AssessmentSummaryRow {
   assessmentId: string;
   mode: AssessmentMode;
   status: SessionStatus;
+  subjectCode: string;
   subjectName: string;
   gradeCode: string;
+  blueprint: string;
   startedAt: string;
+  submittedAt: string | null;
   expiresAt: string;
   correct: number | null;
   total: number | null;
@@ -159,11 +165,22 @@ export class ExamService {
 
   // ── discovery ────────────────────────────────────────────────────────────
 
+  /**
+   * The subjects this student may be tested on: only those of their own curriculum and grade (spec STUDENT_WEB:
+   * unsupported cohorts are Coming Soon, never silently substituted). None until the student has chosen a grade.
+   */
   async listUnits(accountId: string): Promise<ExamUnitView[]> {
     const studentId = await this.gate(accountId);
     const db = this.db.client as unknown as Tx;
+    const cohort = await this.cohortOf(db, studentId);
+    if (!cohort) return [];
+    const chosen = await db.student_chapter_selection.findMany({ where: { student_id: studentId }, select: { subject_code: true } });
     const rows = await db.curriculum_subject_version.findMany({
-      where: { state: { in: this.servedStates() } },
+      where: {
+        state: { in: this.servedStates() },
+        curriculum_version: { curriculum: { code: cohort.curriculumCode } },
+        grade: { code: cohort.gradeCode },
+      },
       orderBy: { revision: 'desc' },
       include: { curriculum_version: { include: { curriculum: true } }, grade: true, subject: true },
     });
@@ -174,6 +191,8 @@ export class ExamService {
       const key = `${r.curriculum_version_id}|${r.grade_id}|${r.subject_id}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      // Belt and braces: the query already filters by cohort.
+      if (r.curriculum_version.curriculum.code !== cohort.curriculumCode || r.grade.code !== cohort.gradeCode) continue;
       const pool = await loadServablePool(db, r, studentId);
       const codes = { curriculumCode: r.curriculum_version.curriculum.code, gradeCode: r.grade.code, subjectCode: r.subject.code };
       const tests = blueprints
@@ -184,8 +203,10 @@ export class ExamService {
         curriculumCode: codes.curriculumCode,
         versionLabel: r.curriculum_version.label,
         gradeCode: r.grade.code,
+        subjectCode: r.subject.code,
         subjectName: r.subject.name,
         usableQuestions: pool.items.length,
+        chosenChapters: chosen.filter((c: { subject_code: string }) => c.subject_code === r.subject.code).length,
         ready: tests.find((t) => t.code === DEFAULT_BLUEPRINT_CODE)?.ready ?? false,
         tests,
       });
@@ -214,9 +235,12 @@ export class ExamService {
       assessmentId: s.id,
       mode: s.mode,
       status: s.status,
+      subjectCode: subjects.find((x) => x.id === s.instance.subject_id)?.code ?? '',
       subjectName: subjects.find((x) => x.id === s.instance.subject_id)?.name ?? '',
       gradeCode: grades.find((x) => x.id === s.instance.grade_id)?.code ?? '',
+      blueprint: s.instance.blueprint_code,
       startedAt: s.started_at.toISOString(),
+      submittedAt: s.submitted_at ? s.submitted_at.toISOString() : null,
       expiresAt: s.expires_at.toISOString(),
       correct: s.result?.correct ?? null,
       total: s.result?.total ?? null,
@@ -249,6 +273,11 @@ export class ExamService {
       });
       if (!unit) throw new ExamNotFoundError('Subject not found');
       if (!this.servedStates().includes(unit.state)) throw new ExamUnavailableError('This subject is not open for tests yet');
+      const cohort = await this.cohortOf(tx, studentId);
+      if (!cohort) throw new ExamUnavailableError('Choose your curriculum and grade in your profile first');
+      if (unit.curriculum_version.curriculum.code !== cohort.curriculumCode || unit.grade.code !== cohort.gradeCode) {
+        throw new ExamUnavailableError('This subject is not part of your curriculum and grade');
+      }
       const newest = await tx.curriculum_subject_version.findFirst({
         where: {
           curriculum_version_id: unit.curriculum_version_id,
@@ -611,6 +640,17 @@ export class ExamService {
   }
 
   /** The account's own student, who must be age-classified and not awaiting guardian consent. Fails closed. */
+  /** The student behind this account, after the same checks as every test call (profile, age, consent). */
+  async studentFor(accountId: string): Promise<string> {
+    return this.gate(accountId);
+  }
+
+  /** The curriculum and grade the student said they study (Step 5), or null before they choose. */
+  private async cohortOf(db: Tx, studentId: string): Promise<{ curriculumCode: string; gradeCode: string } | null> {
+    const ctx = await db.student_academic_context.findUnique({ where: { student_id: studentId } });
+    return ctx ? { curriculumCode: ctx.curriculum_code, gradeCode: ctx.grade_code } : null;
+  }
+
   private async gate(accountId: string): Promise<string> {
     const db = this.db.client as unknown as Tx;
     const access = await db.account_student_access.findFirst({
@@ -625,7 +665,6 @@ export class ExamService {
     return studentId;
   }
 
-  /** Approved and published questions of the unit whose objective still exists in this curriculum revision. */
   /** The published, switched-on blueprint for this code, if it applies to this subject. */
   private async blueprintFor(
     tx: Tx,

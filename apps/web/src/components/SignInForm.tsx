@@ -36,9 +36,9 @@ export function SignInForm() {
     setBusy(true);
     setError(null);
     try {
-      await bff('POST', 'identity/otp/verify', { kind, identifier, code });
-      // A guardian who came from an approval email goes back to it; everyone else goes to their profile.
-      router.push(recalledGuardianToken() ? '/guardian/approve' : '/profile');
+      const r = await bff<{ isNewAccount: boolean }>('POST', 'identity/otp/verify', { kind, identifier, code });
+      // A guardian who came from an approval email goes back to it; a new account sets up its profile; everyone else goes Home.
+      router.push(recalledGuardianToken() ? '/guardian/approve' : r?.isNewAccount ? '/profile' : '/home');
       router.refresh();
     } catch (err) {
       setError(
