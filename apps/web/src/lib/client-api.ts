@@ -269,7 +269,7 @@ export interface SchoolHit {
 // ── Test designs (Step 10) ─────────────────────────────────────────────────
 
 export type BlueprintDifficulty = 'EASY' | 'MEDIUM' | 'HARD';
-export type BlueprintScopeMode = 'WHOLE_SUBJECT' | 'CHAPTERS' | 'STUDENT_FOCUS';
+export type BlueprintScopeMode = 'WHOLE_SUBJECT' | 'CHAPTERS' | 'STUDENT_FOCUS' | 'OBJECTIVES';
 
 export interface BlueprintDesign {
   totalQuestions: number;
@@ -386,7 +386,8 @@ export type NextAction =
   | { kind: 'FINISH_PROFILE'; reason: string }
   | { kind: 'COMING_SOON'; reason: string }
   | { kind: 'NOT_READY'; reason: string }
-  | { kind: 'FIRST_TEST' | 'TAKE_TEST'; subjectVersionId: string; subjectName: string; blueprint: string; mode: 'TEST'; reason: string };
+  | { kind: 'FIRST_TEST' | 'TAKE_TEST'; subjectVersionId: string; subjectName: string; blueprint: string; mode: 'TEST'; reason: string }
+  | { kind: 'RETEST' | 'PRACTICE'; recommendationId: string; subjectName: string; objectives: number; reason: string };
 
 export interface HomeSubject {
   subjectVersionId: string;
@@ -408,6 +409,35 @@ export interface HomeView {
   firstExperienceMessage: string;
   subjects: HomeSubject[];
   inProgress: MyAssessment[];
+  /** Step 14: open practice and retest recommendations ("Focus next"). */
+  focus: RecommendationView[];
+}
+
+// ── Recommendations (Step 14) ────────────────────────────────────────────
+
+export type RecommendationReason = 'NEEDS_ATTENTION' | 'DEVELOPING' | 'MISSED_MORE_THAN_RIGHT' | 'MISSED_IN_TEST' | 'PRACTISED';
+
+/** Why an objective was chosen, in the student's terms. Factual: never "weak", never a number from the model. */
+export const REASON_TEXT: Record<RecommendationReason, string> = {
+  NEEDS_ATTENTION: 'Marked Needs attention in your progress',
+  DEVELOPING: 'Still developing',
+  MISSED_MORE_THAN_RIGHT: 'You have missed more of these than you got right so far',
+  MISSED_IN_TEST: 'You missed these in a test',
+  PRACTISED: 'You practised these',
+};
+
+export interface RecommendationView {
+  id: string;
+  kind: 'PRACTICE' | 'RETEST';
+  status: 'OPEN' | 'STARTED';
+  source: 'MASTERY' | 'RESULT' | 'PRACTICE_DONE';
+  subjectVersionId: string;
+  subjectCode: string;
+  subjectName: string;
+  objectives: Array<{ path: string; statement: string; chapterTitle: string }>;
+  reasons: Array<{ path: string; code: RecommendationReason; missed?: number }>;
+  inProgressAssessmentId: string | null;
+  createdAt: string;
 }
 
 /** "GRADE_8" -> "Grade 8". */

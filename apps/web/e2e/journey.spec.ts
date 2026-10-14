@@ -114,3 +114,75 @@ test('signed out, Home sends you to sign in; signed in, the welcome page sends y
   await page.goto('/');
   await expect(page).toHaveURL(/\/home$/);
 });
+
+// ── Step 14: practise what you missed, then retest ─────────────────────────
+
+async function finishTest(page: Page, answerSlot = 1) {
+  for (let q = 1; q <= 10; q++) {
+    await expect(page.getByText(`Question ${q} of 10`)).toBeVisible();
+    await page.getByRole('radio').nth(answerSlot).check();
+    await page.getByRole('button', { name: 'Lock answer' }).click();
+  }
+  await page.getByRole('button', { name: 'Submit' }).click();
+}
+
+test('after a test: practise what you missed, then Home offers a retest', async ({ page }) => {
+  await signIn(page, 'student@example.com');
+  await page.getByRole('button', { name: 'Start Quick 10' }).click();
+  await finishTest(page);
+  await expect(page.getByRole('heading', { level: 1, name: /of 10/ })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Practise what you missed' }).click();
+  await expect(page).toHaveURL(/\/tests\/[0-9a-f-]{36}$/);
+  await expect(page.getByText('Practice · Question 1 of 10')).toBeVisible();
+  // Practice shows the answer after each question.
+  for (let q = 1; q <= 10; q++) {
+    await expect(page.getByText(`Question ${q} of 10`)).toBeVisible();
+    await page.getByRole('radio').first().check();
+    await page.getByRole('button', { name: 'Lock answer' }).click();
+    await expect(page.getByText(/^(Correct\.|Not quite\.)/)).toBeVisible();
+    await page.getByRole('button', { name: 'Next' }).click();
+  }
+  await page.getByRole('button', { name: 'Submit' }).click();
+  await expect(page.getByText('Home will offer a short retest')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Practise what you missed' })).toHaveCount(0);
+
+  await page.getByRole('link', { name: 'Back to Home' }).click();
+  await expect(page.getByRole('heading', { name: 'Retest in Chemistry' })).toBeVisible();
+  await expect(page.getByText('A short retest shows what has stuck')).toBeVisible();
+  // Shown once, as the next best action: not repeated under Focus next.
+  await expect(page.getByRole('button', { name: 'Start retest' })).toHaveCount(1);
+  await expect(page.getByRole('listitem', { name: 'Retest in Chemistry' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Start retest' }).click();
+  await expect(page.getByText('Test · Question 1 of 10')).toBeVisible();
+});
+
+test('Focus next: an open practice cannot be put off; a reopened one can, with "Not now"', async ({ page }) => {
+  await signIn(page, 'student@example.com');
+  await page.getByRole('button', { name: 'Start Quick 10' }).click();
+  await finishTest(page);
+  await page.getByRole('button', { name: 'Practise what you missed' }).click();
+  await expect(page.getByText('Practice · Question 1 of 10')).toBeVisible();
+
+  // Left open: Home resumes it first, and it cannot be put off while it is open.
+  await page.goto('/home');
+  await expect(page.getByRole('heading', { name: 'Continue your Chemistry practice' })).toBeVisible();
+  const item = page.getByRole('listitem', { name: 'Practice in Chemistry' });
+  await expect(item).toContainText('You missed these in a test');
+  await expect(item.getByRole('button', { name: 'Continue' })).toBeVisible();
+  await expect(item.getByRole('button', { name: 'Not now' })).toHaveCount(0);
+
+  // Skipping everything is not practice: no retest, and the recommendation is open again.
+  await item.getByRole('button', { name: 'Continue' }).click();
+  for (let q = 1; q <= 10; q++) {
+    await expect(page.getByText(`Question ${q} of 10`)).toBeVisible();
+    await page.getByRole('button', { name: 'Skip' }).click();
+  }
+  await page.getByRole('button', { name: 'Submit anyway' }).click();
+  await page.getByRole('link', { name: 'Back to Home' }).click();
+  await expect(page.getByRole('heading', { name: 'Practise in Chemistry' })).toBeVisible();
+  await page.getByRole('button', { name: 'Not now' }).click();
+  await expect(page.getByRole('heading', { name: 'Take a Physics test' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Practise in Chemistry' })).toHaveCount(0);
+  await expect(page.locator('main')).not.toContainText('%');
+});

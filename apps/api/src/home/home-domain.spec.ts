@@ -76,6 +76,17 @@ describe('nextBestAction (fixed, explainable order)', () => {
     expect(both.reason).toMatch(/longest ago/);
   });
 
+  it('Step 14: a retest beats practice, practice beats another test; resume and the first test still come first', () => {
+    const rec = (id: string, kind: 'PRACTICE' | 'RETEST', createdAt: string, n = 2) => ({ id, kind, subjectName: 'Physics', objectives: Array.from({ length: n }), createdAt });
+    const tested = [attempt('PHY'), attempt('CHEM')];
+    const recs = [rec('p2', 'PRACTICE', '2026-10-04'), rec('p1', 'PRACTICE', '2026-10-02'), rec('r1', 'RETEST', '2026-10-05', 1)];
+    expect(nextBestAction({ hasCohort: true, units: [PHY, CHEM], attempts: tested, recommendations: recs })).toMatchObject({ kind: 'RETEST', recommendationId: 'r1', objectives: 1 });
+    expect(nextBestAction({ hasCohort: true, units: [PHY, CHEM], attempts: tested, recommendations: recs.slice(0, 2) })).toMatchObject({ kind: 'PRACTICE', recommendationId: 'p1', objectives: 2 });
+    expect(nextBestAction({ hasCohort: true, units: [PHY, CHEM], attempts: tested, recommendations: [] }).kind).toBe('TAKE_TEST');
+    expect(nextBestAction({ hasCohort: true, units: [PHY], attempts: [attempt('PHY', { status: 'IN_PROGRESS' })], recommendations: recs }).kind).toBe('RESUME');
+    expect(nextBestAction({ hasCohort: true, units: [PHY], attempts: [], recommendations: recs }).kind).toBe('FIRST_TEST');
+  });
+
   it('practice alone does not count as having tested a subject', () => {
     const a = nextBestAction({ hasCohort: true, units: [PHY, CHEM], attempts: [attempt('CHEM'), attempt('PHY', { mode: 'PRACTICE' })] });
     expect(a).toMatchObject({ kind: 'TAKE_TEST', subjectName: 'Physics' });

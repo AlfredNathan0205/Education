@@ -36,6 +36,7 @@ import { ItemInvalidationService } from '../exam/item-invalidation.service';
 import { HomeService } from '../home/home.service';
 import { MasteryService } from '../mastery/mastery.service';
 import { MasteryViewService } from '../mastery/mastery-view.service';
+import { RecommendationService } from '../recommendation/recommendation.service';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
@@ -81,6 +82,9 @@ async function cleanAll() {
   await prisma.ai_call_log.deleteMany();
   await prisma.generation_attempt.deleteMany();
   await prisma.generation_batch.deleteMany();
+  await prisma.recommendation_refresh.deleteMany();
+  await prisma.recommendation_event.deleteMany();
+  await prisma.recommendation_reason.deleteMany();
   await prisma.mastery_state_change.deleteMany();
   await prisma.mastery_update_run.deleteMany();
   await prisma.mastery_evidence_event.deleteMany();
@@ -89,7 +93,7 @@ async function cleanAll() {
   await prisma.student_cognitive_state.deleteMany();
   await prisma.assessment_assembly_decision.deleteMany();
   await prisma.assessment_assembly_run.deleteMany();
-  // Designs made by tests. The ones the migration seeds (QUICK10, SUBJECT20, SUBJECT25) stay.
+  // Designs made by tests. The ones the migrations seed (QUICK10, SUBJECT20, SUBJECT25, FOCUS10, PRACTICE10, RETEST10) stay.
   await prisma.assessment_blueprint_version.deleteMany({ where: { blueprint: { code: { startsWith: 'IT_' } } } });
   await prisma.assessment_blueprint.deleteMany({ where: { code: { startsWith: 'IT_' } } });
   await prisma.student_response_event.deleteMany();
@@ -100,6 +104,7 @@ async function cleanAll() {
   await prisma.assessment_session.deleteMany();
   await prisma.assessment_instance_question.deleteMany();
   await prisma.assessment_instance.deleteMany();
+  await prisma.recommendation.deleteMany();
   await prisma.assessment_item_invalidation.deleteMany();
   await prisma.student_question_exposure.deleteMany();
   await prisma.question_event.deleteMany();
@@ -1425,7 +1430,8 @@ describe('ExamService (real DB)', () => {
 
   // ---- Step 12: student web journey ----
 
-  const homes = new HomeService(dbService, exam);
+  const recommendations = new RecommendationService(dbService, exam, outbox);
+  const homes = new HomeService(dbService, exam, recommendations);
 
   it('a student is offered only their own curriculum and grade; another cohort is Coming soon, never substituted', async () => {
     const unitId = await activeUnit();
@@ -1528,6 +1534,104 @@ describe('ExamService (real DB)', () => {
     expect(await prisma.mastery_evidence_event.count({ where: { student_id: studentId, invalidation_reason: 'ITEM_INVALIDATED' } })).toBe(1);
     expect(await prisma.student_mastery_state.findFirstOrThrow({ where: { student_id: studentId, objective_path: LO } })).toMatchObject({ evidence_count: 9 });
     expect(await prisma.mastery_update_run.findMany({ where: { session_id: t1 }, orderBy: { result_revision: 'asc' }, select: { result_revision: true } })).toEqual([{ result_revision: 0 }, { result_revision: 1 }]);
+  });
+
+  // ---- Step 14: recommendations, practice and retest ----
+
+  /** Answers whatever is current until the summary; `right(n)` decides whether the n-th answer (0-based) is correct. */
+  async function answerWith(accountId: string, assessmentId: string, right: (n: number) => boolean): Promise<void> {
+    for (let n = 0; ; n++) {
+      const v = await exam.present(accountId, assessmentId);
+      if (v.phase !== 'QUESTION') return;
+      const p = v.question!.position;
+      const c = await correctSlot(assessmentId, p);
+      await exam.lock(accountId, assessmentId, p, { slot: right(n) ? c : (c + 1) % 4, activeMs: 1000, idempotencyKey: key() });
+    }
+  }
+  const instanceOf = async (assessmentId: string) => (await prisma.assessment_session.findUniqueOrThrow({ where: { id: assessmentId }, include: { instance: true } })).instance;
+
+  it('recommendations: the seeded policy and designs; practise what you missed, then a retest, each recorded', async () => {
+    expect(await prisma.recommendation_policy_version.findMany({ where: { status: 'ACTIVE' }, select: { code: true } })).toEqual([{ code: 'RECO_V1' }]);
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const { accountId, studentId } = await adult();
+    // Practice and retest designs are never offered as ordinary tests.
+    expect((await exam.listUnits(accountId))[0].tests.map((t) => t.code)).not.toEqual(expect.arrayContaining(['PRACTICE10']));
+    await expect(exam.create(accountId, { subjectVersionId: unitId, mode: 'PRACTICE', blueprint: 'PRACTICE10' })).rejects.toThrow(/recommendation/);
+
+    const { assessmentId: t1 } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    await answerWith(accountId, t1, (n) => n < 6);
+    await exam.submit(accountId, t1);
+
+    const p = await recommendations.practiseMissed(accountId, t1);
+    expect(p.resumed).toBe(false);
+    expect(await recommendations.practiseMissed(accountId, t1)).toEqual({ ...p, resumed: true });
+    const practice = await prisma.recommendation.findUniqueOrThrow({ where: { id: p.recommendationId }, include: { reasons: true } });
+    expect(practice).toMatchObject({ kind: 'PRACTICE', source: 'RESULT', status: 'STARTED', source_assessment_id: t1, objective_paths: [LO] });
+    expect(practice.reasons).toEqual([expect.objectContaining({ objective_path: LO, code: 'MISSED_IN_TEST', facts: { assessmentId: t1, missed: 4 } })]);
+    const pi = await instanceOf(p.assessmentId);
+    expect(pi).toMatchObject({ mode: 'PRACTICE', blueprint_code: 'PRACTICE10', recommendation_id: practice.id, target_objectives: [LO] });
+    expect((pi.assembly_report as any).scope).toMatchObject({ mode: 'OBJECTIVES', objectives: [LO] });
+
+    await answerWith(accountId, p.assessmentId, () => true);
+    await exam.submit(accountId, p.assessmentId);
+    expect(await mastery.reconcile()).toHaveLength(2);
+    const refreshed = await recommendations.reconcile();
+    expect(refreshed).toHaveLength(2);
+    expect(await recommendations.reconcile()).toEqual([]);
+    expect(await prisma.recommendation.findUniqueOrThrow({ where: { id: practice.id } })).toMatchObject({ status: 'COMPLETED' });
+    const retest = await prisma.recommendation.findFirstOrThrow({ where: { student_id: studentId, kind: 'RETEST' }, include: { reasons: true } });
+    expect(retest).toMatchObject({ status: 'OPEN', source: 'PRACTICE_DONE', parent_id: practice.id, objective_paths: [LO] });
+    expect(retest.reasons[0]).toMatchObject({ code: 'PRACTISED', facts: { practiceAnswers: 10 } });
+
+    expect((await homes.home(accountId)).nextAction).toMatchObject({ kind: 'RETEST', recommendationId: retest.id, objectives: 1 });
+    const r = await recommendations.start(accountId, retest.id);
+    expect(await instanceOf(r.assessmentId)).toMatchObject({ mode: 'TEST', blueprint_code: 'RETEST10', recommendation_id: retest.id });
+    await answerWith(accountId, r.assessmentId, () => true);
+    await exam.submit(accountId, r.assessmentId);
+    await mastery.reconcile();
+    await recommendations.reconcile();
+    expect(await prisma.recommendation.findUniqueOrThrow({ where: { id: retest.id } })).toMatchObject({ status: 'COMPLETED' });
+    // The retest is ordinary test evidence (Quick-size context), not practice.
+    expect(await prisma.mastery_evidence_event.findFirstOrThrow({ where: { session_id: r.assessmentId } })).toMatchObject({ mode: 'TEST', w_context: 0.9, blueprint_code: 'RETEST10' });
+
+    // CREATED and STARTED can share a millisecond, so compare as a set.
+    const types = (await prisma.recommendation_event.findMany({ where: { recommendation_id: practice.id } })).map((e) => e.type).sort();
+    expect(types).toEqual(['COMPLETED', 'CREATED', 'STARTED']);
+    const published = (await prisma.outbox_event.findMany({ where: { aggregate_id: practice.id } })).map((e) => e.event_type);
+    expect(published).toEqual(expect.arrayContaining(['recommendation.created.v1', 'recommendation.started.v1', 'recommendation.completed.v1']));
+  });
+
+  it('recommendations: chosen from mastery after a weak start, shown without numbers, and "not now" is respected', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const { accountId, studentId } = await adult();
+    for (let i = 0; i < 2; i++) {
+      const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+      await answerWith(accountId, assessmentId, () => false);
+      await exam.submit(accountId, assessmentId);
+    }
+    await mastery.reconcile();
+    expect(await prisma.student_mastery_state.findFirstOrThrow({ where: { student_id: studentId, objective_path: LO } })).toMatchObject({ label: 'NEEDS_ATTENTION', reportable: true });
+    await recommendations.reconcile();
+    const recs = await prisma.recommendation.findMany({ where: { student_id: studentId }, include: { reasons: true } });
+    expect(recs).toEqual([expect.objectContaining({ kind: 'PRACTICE', source: 'MASTERY', status: 'OPEN', objective_paths: [LO] })]);
+    expect(recs[0].reasons[0]).toMatchObject({ code: 'NEEDS_ATTENTION' });
+
+    const home = await homes.home(accountId);
+    expect(home.nextAction).toMatchObject({ kind: 'PRACTICE', recommendationId: recs[0].id });
+    expect(home.focus).toEqual([expect.objectContaining({ id: recs[0].id, objectives: [{ path: LO, statement: 'Student can do X', chapterTitle: 'Chapter' }], reasons: [{ path: LO, code: 'NEEDS_ATTENTION' }] })]);
+    expect(JSON.stringify(await recommendations.mine(accountId))).not.toMatch(/confidence|"mastery"/);
+
+    expect(await recommendations.dismiss(accountId, recs[0].id)).toEqual({ dismissed: true });
+    const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    await answerWith(accountId, assessmentId, () => false);
+    await exam.submit(accountId, assessmentId);
+    await mastery.reconcile();
+    await recommendations.reconcile();
+    // Still Needs attention, but put off: nothing new for the quiet period.
+    expect(await prisma.recommendation.count({ where: { student_id: studentId, status: { in: ['OPEN', 'STARTED'] } } })).toBe(0);
+    expect((await homes.home(accountId)).nextAction.kind).toBe('TAKE_TEST');
   });
 });
 

@@ -141,3 +141,7 @@ a.btn.secondary { color: var(--text); }
 .chapter-title { font-weight: 600; }
 .objectives { margin: 8px 0 0 4px; }
 .objectives li { padding: 6px 0; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+
+/* Step 14: practice and retest. */
+.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.subject .eyebrow { text-transform: uppercase; letter-spacing: .08em; font-size: .78rem; font-weight: 700; color: var(--accent); margin: 0 0 6px; }
