@@ -917,7 +917,7 @@ model assessment_instance_question {
   question_id          String              @db.Uuid
   objective_path       String              @db.VarChar(300)
   difficulty           question_difficulty
-  /// Permutation of the stored option positions (1..4): displayed slot i shows option_order[i].
+  /// Permutation of the stored option positions (0..3, OPTION_POSITIONS): displayed slot i shows option_order[i].
   option_order         Int[]
   /// Set when the item stops counting: it is skipped in the flow and left out of the score.
   excluded             assessment_item_exclusion?

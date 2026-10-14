@@ -1,3 +1,4 @@
+import { OPTION_POSITIONS } from '../question/question-domain';
 import { makeRng, shuffle } from './seeded-random';
 
 /**
@@ -96,7 +97,7 @@ export interface AssemblyDecision {
 
 export interface AssembledItem extends Candidate {
   position: number;
-  /** Displayed slot i shows the stored option at position optionOrder[i] (1..4). */
+  /** Displayed slot i shows the stored option at position optionOrder[i] (one of OPTION_POSITIONS, 0..3). */
   optionOrder: number[];
 }
 
@@ -328,7 +329,7 @@ export function assemble(pool: Candidate[], design: AssemblyDesign, seed: string
     if (first > 0) [shuffled[0], shuffled[first]] = [shuffled[first], shuffled[0]];
   }
 
-  const items: AssembledItem[] = shuffled.map((p, i) => ({ ...p.item, position: i + 1, optionOrder: shuffle([1, 2, 3, 4], rng) }));
+  const items: AssembledItem[] = shuffled.map((p, i) => ({ ...p.item, position: i + 1, optionOrder: shuffle([...OPTION_POSITIONS], rng) }));
   const decisions: AssemblyDecision[] = shuffled.map((p, i) => ({ ...(p.decision as AssemblyDecision), position: i + 1 }));
 
   const delivered = { EASY: 0, MEDIUM: 0, HARD: 0 } as Record<Difficulty, number>;

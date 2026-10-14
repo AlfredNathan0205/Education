@@ -18,6 +18,16 @@ export const COGNITIVE_LEVELS: readonly QuestionCognitive[] = ['C1', 'C2', 'C3',
 
 export const OPTION_COUNT = 4;
 export const OPTION_LABELS = ['A', 'B', 'C', 'D'] as const;
+/**
+ * The stored position of each option (question_option.position). The bank, the exam engine and the database CHECK all
+ * use this one list: option i of a draft is stored at position i and labelled OPTION_LABELS[i].
+ */
+export const OPTION_POSITIONS: readonly number[] = [0, 1, 2, 3];
+
+/** The option rows a draft is stored as. The single place that decides positions. */
+export function optionRows(options: readonly string[], correctIndex: number): Array<{ position: number; text: string; is_correct: boolean }> {
+  return options.map((text, i) => ({ position: OPTION_POSITIONS[i], text, is_correct: i === correctIndex }));
+}
 export const LIMITS = { code: 64, stem: 2000, option: 500, explanation: 2000, note: 1000 };
 export const MIN_STEM = 10;
 export const CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
