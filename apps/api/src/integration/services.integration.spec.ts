@@ -37,6 +37,7 @@ import { HomeService } from '../home/home.service';
 import { MasteryService } from '../mastery/mastery.service';
 import { MasteryViewService } from '../mastery/mastery-view.service';
 import { RecommendationService } from '../recommendation/recommendation.service';
+import { CompetitionService } from '../competition/competition.service';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
@@ -82,6 +83,11 @@ async function cleanAll() {
   await prisma.ai_call_log.deleteMany();
   await prisma.generation_attempt.deleteMany();
   await prisma.generation_batch.deleteMany();
+  // The CP ledger refuses DELETE (append-only trigger); TRUNCATE is not a row operation, so tests can still reset it.
+  await prisma.$executeRawUnsafe('TRUNCATE "cp_event"');
+  await prisma.xp_event.deleteMany();
+  await prisma.competitive_qualification.deleteMany();
+  await prisma.public_profile.deleteMany();
   await prisma.recommendation_refresh.deleteMany();
   await prisma.recommendation_event.deleteMany();
   await prisma.recommendation_reason.deleteMany();
@@ -1600,6 +1606,117 @@ describe('ExamService (real DB)', () => {
     expect(types).toEqual(['COMPLETED', 'CREATED', 'STARTED']);
     const published = (await prisma.outbox_event.findMany({ where: { aggregate_id: practice.id } })).map((e) => e.event_type);
     expect(published).toEqual(expect.arrayContaining(['recommendation.created.v1', 'recommendation.started.v1', 'recommendation.completed.v1']));
+  });
+
+  // ---- Step 15: competitive points, XP and weekly leaderboards ----
+
+  const competition = new CompetitionService(dbService, exam, outbox);
+
+  /** Another adult in the same cohort (the jurisdiction policy is already active from adult()). */
+  async function anotherAdult() {
+    const account = await prisma.account.create({ data: {} });
+    const student = await prisma.student.create({ data: {} });
+    await prisma.account_student_access.create({ data: { account_id: account.id, student_id: student.id, access_kind: 'SELF' } });
+    await privacyService.recordAgeClassification({ studentId: student.id, dateOfBirth: new Date('2000-05-01'), jurisdictionCode: DEFAULT_JURISDICTION, dobEvidenceMethod: 'SELF_DECLARED', actorAccountId: account.id });
+    await prisma.student_academic_context.create({ data: { student_id: student.id, curriculum_code: 'EXAMCUR', grade_code: 'G8' } });
+    return { accountId: account.id, studentId: student.id };
+  }
+  async function tookTest(accountId: string, unitId: string, right: (n: number) => boolean, mode: 'TEST' | 'PRACTICE' = 'TEST'): Promise<string> {
+    const { assessmentId } = await exam.create(accountId, { subjectVersionId: unitId, mode });
+    await answerWith(accountId, assessmentId, right);
+    await exam.submit(accountId, assessmentId);
+    return assessmentId;
+  }
+
+  it('competition: the seeded policy; a test earns CP once; a rescore adds a compensating entry; the ledger refuses edits', async () => {
+    expect(await prisma.competitive_scoring_policy.findMany({ where: { status: 'ACTIVE' }, select: { code: true } })).toEqual([{ code: 'CP_V1' }]);
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const { accountId, studentId } = await adult();
+    const approver = await roleAccount('CURRICULUM_APPROVER');
+
+    const t1 = await tookTest(accountId, unitId, (n) => n < 7);
+    const [first] = await competition.reconcile();
+    expect(first).toMatchObject({ sessionId: t1, qualified: true, ledger: { kind: 'AWARD' }, xp: 15 });
+    expect(first.cp).toBeGreaterThan(0);
+    expect(first.cp).toBeLessThanOrEqual(90);
+    expect(await competition.reconcile()).toEqual([]);
+    expect(await prisma.public_profile.findUniqueOrThrow({ where: { student_id: studentId } })).toMatchObject({ handle: expect.stringMatching(/^Learner-/) });
+
+    // Append-only, enforced by the database.
+    await expect(prisma.cp_event.updateMany({ where: { session_id: t1 }, data: { amount: 1 } })).rejects.toThrow(/append-only/);
+    await expect(prisma.cp_event.deleteMany({ where: { session_id: t1 } })).rejects.toThrow(/append-only/);
+
+    // Remove a question the student got right: accuracy on what is left drops, so CP is corrected by a new entry.
+    const items = await itemsOf(t1);
+    const responses = await prisma.student_response.findMany({ where: { session_id: t1, is_correct: true } });
+    const target = items.find((i) => responses.some((r) => r.instance_question_id === i.id))!.question_revision_id;
+    await prisma.question_revision.update({ where: { id: target }, data: { state: 'QUARANTINED' } });
+    await invalidations.invalidate(approver, target, { reasonCode: 'ANSWER_WRONG', note: 'The marked answer is wrong.' });
+    const [second] = await competition.reconcile();
+    expect(second).toMatchObject({ sessionId: t1, qualified: true, xp: 0 });
+    expect(second.ledger).toMatchObject({ kind: 'ADJUSTMENT' });
+    expect(second.ledger!.amount).toBeLessThan(0);
+    const events = await prisma.cp_event.findMany({ where: { session_id: t1 }, orderBy: { created_at: 'asc' } });
+    expect(events.map((e) => e.kind)).toEqual(['AWARD', 'ADJUSTMENT']);
+    expect(events.reduce((a, e) => a + e.amount, 0)).toBe(second.cp);
+    expect(new Set(events.map((e) => e.earned_at.toISOString())).size).toBe(1);
+    expect(await prisma.competitive_qualification.findMany({ where: { session_id: t1 }, orderBy: { result_revision: 'asc' }, select: { result_revision: true } })).toEqual([{ result_revision: 0 }, { result_revision: 1 }]);
+    expect(await prisma.xp_event.count({ where: { session_id: t1 } })).toBe(1);
+    expect((await prisma.outbox_event.findMany({ where: { aggregate_id: studentId, event_type: 'competition.cp_recorded.v1' } })).length).toBe(2);
+  });
+
+  it('competition: the weekly board needs 2 tests and 20 questions, lists handles and CP only, never shows a minor to others; practice earns XP only', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const me = await adult();
+    const rival = await anotherAdult();
+    const kid = await anotherAdult();
+
+    await tookTest(me.accountId, unitId, (n) => n < 7);
+    await tookTest(rival.accountId, unitId, () => true);
+    await tookTest(rival.accountId, unitId, () => true);
+    await tookTest(kid.accountId, unitId, () => true);
+    await tookTest(kid.accountId, unitId, () => true);
+    const practice = await tookTest(me.accountId, unitId, () => true, 'PRACTICE');
+    await competition.reconcile();
+    // Release 1 rule under test: a minor is never listed to other students (here the classification says minor).
+    await prisma.age_classification.updateMany({ where: { student_id: kid.studentId }, data: { is_minor: true } });
+
+    expect(await prisma.competitive_qualification.findFirstOrThrow({ where: { session_id: practice } })).toMatchObject({ qualified: false, reasons: ['NOT_A_TEST'], cp: 0 });
+    expect(await prisma.cp_event.count({ where: { session_id: practice } })).toBe(0);
+    expect(await prisma.xp_event.findUniqueOrThrow({ where: { session_id: practice } })).toMatchObject({ mode: 'PRACTICE', amount: 15 });
+
+    let view = await competition.view(me.accountId);
+    let board = view.boards.find((b) => b.scope === 'COHORT')!;
+    expect(view).toMatchObject({ policy: 'CP_V1', shownToOthers: true, canChangeVisibility: true, xp: { week: 30, total: 30 } });
+    expect(board.you).toMatchObject({ qualified: 1, eligibleQuestions: 10, rank: null, needs: { tests: 1, questions: 10 } });
+    expect(board.entries).toHaveLength(1);
+    expect(board.entries[0]).toMatchObject({ rank: 1, you: false, handle: expect.stringMatching(/^Learner-/) });
+
+    await tookTest(me.accountId, unitId, (n) => n < 7);
+    await competition.reconcile();
+    view = await competition.view(me.accountId);
+    board = view.boards.find((b) => b.scope === 'COHORT')!;
+    expect(board.entries.map((e) => [e.rank, e.you])).toEqual([
+      [1, false],
+      [2, true],
+    ]);
+    expect(board.rankedCount).toBe(2);
+    expect(view.boards.find((b) => b.scope === 'SUBJECT')!.entries).toHaveLength(2);
+    const json = JSON.stringify(view);
+    expect(json).not.toMatch(/accuracy|studentId/);
+    expect(json).not.toContain(kid.studentId);
+
+    // The minor sees the board and their own rank, but cannot be shown to others.
+    const kidView = await competition.view(kid.accountId);
+    expect(kidView).toMatchObject({ shownToOthers: false, canChangeVisibility: false });
+    expect(kidView.boards[0].you.rank).not.toBeNull();
+    await expect(competition.setShown(kid.accountId, true)).rejects.toThrow(/minors are not shown/);
+
+    // An adult may hide; then others no longer see them.
+    await competition.setShown(rival.accountId, false);
+    expect((await competition.view(me.accountId)).boards[0].entries.map((e) => e.you)).toEqual([true]);
   });
 
   it('recommendations: chosen from mastery after a weak start, shown without numbers, and "not now" is respected', async () => {

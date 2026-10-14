@@ -145,3 +145,12 @@ a.btn.secondary { color: var(--text); }
 /* Step 14: practice and retest. */
 .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .subject .eyebrow { text-transform: uppercase; letter-spacing: .08em; font-size: .78rem; font-weight: 700; color: var(--accent); margin: 0 0 6px; }
+
+/* Step 15: leaderboards. */
+.board { list-style: none; margin: 0; padding: 0; }
+.board li { display: grid; grid-template-columns: 2.5rem 1fr auto; gap: 8px; align-items: center; padding: 8px 10px; border-top: 1px solid var(--border); }
+.board li:first-child { border-top: 0; }
+.board li.you { background: var(--surface-2); border-radius: 8px; font-weight: 700; }
+.board .rank { font-weight: 800; color: var(--accent); }
+.board .cp { font-variant-numeric: tabular-nums; }
+.card .eyebrow { text-transform: uppercase; letter-spacing: .08em; font-size: .78rem; font-weight: 700; color: var(--accent); margin: 0 0 6px; }
