@@ -388,6 +388,64 @@ export class ExamService {
     }
   }
 
+  /**
+   * Step 16: a TEST built from a question set fixed elsewhere (a ranked challenge, where both players answer exactly the
+   * same questions in the same order). The caller has gated the student and holds their row lock; nothing is assembled
+   * here, and the instance keeps the challenge's assembly report.
+   */
+  async createFixed(
+    tx: Tx,
+    studentId: string,
+    input: {
+      unit: { subjectVersionId: string; curriculumVersionId: string; gradeId: string; subjectId: string };
+      blueprint: string;
+      seed: string;
+      assemblyReport: unknown;
+      items: Array<{ position: number; revisionId: string; questionId: string; objectivePath: string; difficulty: string; optionOrder: number[] }>;
+    },
+  ): Promise<{ assessmentId: string }> {
+    const now = new Date();
+    const instance = await tx.assessment_instance.create({
+      data: {
+        student_id: studentId,
+        mode: 'TEST',
+        blueprint_code: input.blueprint,
+        blueprint_version: 1,
+        curriculum_version_id: input.unit.curriculumVersionId,
+        grade_id: input.unit.gradeId,
+        subject_id: input.unit.subjectId,
+        subject_version_id: input.unit.subjectVersionId,
+        seed: input.seed,
+        assembly_report: input.assemblyReport as Prisma.InputJsonValue,
+        items: {
+          create: input.items.map((i) => ({
+            position: i.position,
+            question_revision_id: i.revisionId,
+            question_id: i.questionId,
+            objective_path: i.objectivePath,
+            difficulty: i.difficulty as any,
+            option_order: i.optionOrder,
+          })),
+        },
+      },
+      select: { id: true },
+    });
+    const session = await tx.assessment_session.create({
+      data: { instance_id: instance.id, student_id: studentId, mode: 'TEST', expires_at: new Date(now.getTime() + this.config.resumeHours * 3600_000) },
+      select: { id: true },
+    });
+    for (const eventType of ['assessment.created.v1', 'assessment.started.v1']) {
+      await this.outbox.publish(tx, {
+        aggregateType: 'assessment',
+        aggregateId: session.id,
+        eventType,
+        payload: { assessmentId: session.id, studentId, mode: 'TEST', blueprint: input.blueprint, blueprintVersion: 1 },
+        idempotencyKey: `${eventType}:${session.id}`,
+      });
+    }
+    return { assessmentId: session.id };
+  }
+
   /** The newest served revision of a subject (what a new test must be built from), or null when none is served. */
   async servedUnitId(tx: Tx, unit: { curriculumVersionId: string; gradeId: string; subjectId: string }): Promise<string | null> {
     const row = await tx.curriculum_subject_version.findFirst({

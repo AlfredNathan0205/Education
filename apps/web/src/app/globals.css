@@ -154,3 +154,13 @@ a.btn.secondary { color: var(--text); }
 .board .rank { font-weight: 800; color: var(--accent); }
 .board .cp { font-variant-numeric: tabular-nums; }
 .card .eyebrow { text-transform: uppercase; letter-spacing: .08em; font-size: .78rem; font-weight: 700; color: var(--accent); margin: 0 0 6px; }
+
+/* Step 16: friends and challenges. */
+.friend { padding: 10px 0; border-top: 1px solid var(--border); }
+.friend:first-child { border-top: 0; }
+.code { font-size: 1.4rem; letter-spacing: .2em; font-variant-numeric: tabular-nums; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; }
+/* Remove, Block and Report sit quieter than Challenge. */
+.actions.quiet { gap: 8px; }
+.btn.small { width: auto; padding: 0 14px; font-size: .95rem; min-height: 44px; }
+.actions.quiet select { width: auto; flex: 1 1 10rem; min-height: 44px; }

@@ -435,6 +435,46 @@ export interface CompeteView {
   pending: number;
 }
 
+// ── Friends and challenges (Step 16; off unless switched on) ─────────────
+
+export type ReportReason = 'UNWANTED_CONTACT' | 'CHALLENGE_SPAM' | 'SUSPECTED_CHEATING' | 'MADE_ME_UNCOMFORTABLE' | 'OTHER';
+export const REPORT_REASON_TEXT: Record<ReportReason, string> = {
+  UNWANTED_CONTACT: 'Unwanted contact',
+  CHALLENGE_SPAM: 'Too many challenges',
+  SUSPECTED_CHEATING: 'I think they cheated',
+  MADE_ME_UNCOMFORTABLE: 'They made me uncomfortable',
+  OTHER: 'Something else',
+};
+
+export interface SocialFriend {
+  friendshipId: string;
+  handle: string;
+  status: 'PENDING_GUARDIAN' | 'ACTIVE';
+  waitingFor: Array<'YOUR_GUARDIAN' | 'THEIR_GUARDIAN'>;
+}
+
+export interface SocialChallenge {
+  id: string;
+  role: 'CHALLENGER' | 'OPPONENT';
+  status: 'PENDING' | 'ACTIVE' | 'DECLINED' | 'EXPIRED' | 'COMPLETED' | 'CANCELLED';
+  subjectName: string;
+  opponentHandle: string;
+  expiresAt: string;
+  myAssessmentId: string | null;
+  myState: 'NOT_STARTED' | 'IN_PROGRESS' | 'FINISHED';
+  result: { mine: { correct: number; total: number }; theirs: { correct: number; total: number }; outcome: 'WIN' | 'LOSS' | 'DRAW' } | null;
+}
+
+export interface SocialView {
+  enabled: boolean;
+  restricted?: boolean;
+  handle?: string;
+  code?: { code: string; expiresAt: string } | null;
+  friends?: SocialFriend[];
+  challenges?: SocialChallenge[];
+  subjects?: Array<{ subjectVersionId: string; subjectName: string }>;
+}
+
 // ── Recommendations (Step 14) ────────────────────────────────────────────
 
 export type RecommendationReason = 'NEEDS_ATTENTION' | 'DEVELOPING' | 'MISSED_MORE_THAN_RIGHT' | 'MISSED_IN_TEST' | 'PRACTISED';

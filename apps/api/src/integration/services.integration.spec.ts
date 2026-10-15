@@ -38,6 +38,7 @@ import { MasteryService } from '../mastery/mastery.service';
 import { MasteryViewService } from '../mastery/mastery-view.service';
 import { RecommendationService } from '../recommendation/recommendation.service';
 import { CompetitionService } from '../competition/competition.service';
+import { SocialService } from '../social/social.service';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
@@ -83,6 +84,15 @@ async function cleanAll() {
   await prisma.ai_call_log.deleteMany();
   await prisma.generation_attempt.deleteMany();
   await prisma.generation_batch.deleteMany();
+  await prisma.challenge_participant.deleteMany();
+  await prisma.challenge.deleteMany();
+  await prisma.friendship_guardian_approval.deleteMany();
+  await prisma.friendship.deleteMany();
+  await prisma.friend_code_attempt.deleteMany();
+  await prisma.friend_code.deleteMany();
+  await prisma.student_block.deleteMany();
+  await prisma.social_restriction.deleteMany();
+  await prisma.safety_report.deleteMany();
   // The CP ledger refuses DELETE (append-only trigger); TRUNCATE is not a row operation, so tests can still reset it.
   await prisma.$executeRawUnsafe('TRUNCATE "cp_event"');
   await prisma.xp_event.deleteMany();
@@ -1629,7 +1639,11 @@ describe('ExamService (real DB)', () => {
   }
 
   it('competition: the seeded policy; a test earns CP once; a rescore adds a compensating entry; the ledger refuses edits', async () => {
-    expect(await prisma.competitive_scoring_policy.findMany({ where: { status: 'ACTIVE' }, select: { code: true } })).toEqual([{ code: 'CP_V1' }]);
+    // Step 16 retired CP_V1 for CP_V2 (CP_V1 plus ranked challenges); everything below is the same under both.
+    expect(await prisma.competitive_scoring_policy.findMany({ orderBy: { code: 'asc' }, select: { code: true, status: true } })).toEqual([
+      { code: 'CP_V1', status: 'RETIRED' },
+      { code: 'CP_V2', status: 'ACTIVE' },
+    ]);
     const unitId = await activeUnit();
     await bank(unitId, 12);
     const { accountId, studentId } = await adult();
@@ -1689,7 +1703,7 @@ describe('ExamService (real DB)', () => {
 
     let view = await competition.view(me.accountId);
     let board = view.boards.find((b) => b.scope === 'COHORT')!;
-    expect(view).toMatchObject({ policy: 'CP_V1', shownToOthers: true, canChangeVisibility: true, xp: { week: 30, total: 30 } });
+    expect(view).toMatchObject({ policy: 'CP_V2', shownToOthers: true, canChangeVisibility: true, xp: { week: 30, total: 30 } });
     expect(board.you).toMatchObject({ qualified: 1, eligibleQuestions: 10, rank: null, needs: { tests: 1, questions: 10 } });
     expect(board.entries).toHaveLength(1);
     expect(board.entries[0]).toMatchObject({ rank: 1, you: false, handle: expect.stringMatching(/^Learner-/) });
@@ -1717,6 +1731,88 @@ describe('ExamService (real DB)', () => {
     // An adult may hide; then others no longer see them.
     await competition.setShown(rival.accountId, false);
     expect((await competition.view(me.accountId)).boards[0].entries.map((e) => e.you)).toEqual([true]);
+  });
+
+  // ---- Step 16: friends and ranked challenges (switched on here; off by default) ----
+
+  const social = new SocialService(dbService, exam, privacyService, authzService, outbox, { enabled: true });
+
+  it('social: friends by an in-person code, a ranked challenge on the same ten unseen questions, results only when both finish, CP_V2', async () => {
+    expect(await prisma.competitive_scoring_policy.findMany({ where: { status: 'ACTIVE' }, select: { code: true } })).toEqual([{ code: 'CP_V2' }]);
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const alice = await adult();
+    const bob = await anotherAdult();
+
+    const { code } = await social.createCode(alice.accountId);
+    const f = await social.redeem(bob.accountId, code);
+    expect(f.status).toBe('ACTIVE');
+    await expect(social.redeem(bob.accountId, code)).rejects.toThrow(/not valid/);
+    expect(await prisma.friend_code_attempt.count({ where: { student_id: bob.studentId, ok: false } })).toBe(1);
+
+    const { challengeId } = await social.createChallenge(alice.accountId, { friendshipId: f.friendshipId, subjectVersionId: unitId });
+    const a = await social.start(alice.accountId, challengeId);
+    const b = await social.respond(bob.accountId, challengeId, true);
+    const [ia, ib] = await Promise.all([itemsOf(a.assessmentId), itemsOf(b.assessmentId!)]);
+    expect(ia.map((i) => [i.position, i.question_revision_id, i.option_order.join()])).toEqual(ib.map((i) => [i.position, i.question_revision_id, i.option_order.join()]));
+    expect(new Set(ia.map((i) => i.question_id)).size).toBe(10);
+
+    await answerWith(alice.accountId, a.assessmentId, (n) => n < 8);
+    await exam.submit(alice.accountId, a.assessmentId);
+    // Bob cannot see how Alice did until he has finished too.
+    let bobView = (await social.overview(bob.accountId)).challenges![0];
+    expect(bobView).toMatchObject({ status: 'ACTIVE', myState: 'IN_PROGRESS', result: null });
+    await answerWith(bob.accountId, b.assessmentId!, (n) => n < 6);
+    await exam.submit(bob.accountId, b.assessmentId!);
+    bobView = (await social.overview(bob.accountId)).challenges![0];
+    expect(bobView).toMatchObject({ status: 'COMPLETED', result: { mine: { correct: 6, total: 10 }, theirs: { correct: 8, total: 10 }, outcome: 'LOSS' } });
+    expect((await social.overview(alice.accountId)).challenges![0].result!.outcome).toBe('WIN');
+
+    // A challenge test earns CP like a Quick 10 (CP_V2); losing costs nothing.
+    await competition.reconcile();
+    const quals = await prisma.competitive_qualification.findMany({ where: { session_id: { in: [a.assessmentId, b.assessmentId!] } } });
+    expect(quals.map((q) => [q.blueprint_code, q.qualified, q.fresh_questions])).toEqual([
+      ['CHALLENGE10', true, 10],
+      ['CHALLENGE10', true, 10],
+    ]);
+    expect(await prisma.cp_event.count({ where: { session_id: { in: [a.assessmentId, b.assessmentId!] }, amount: { lt: 0 } } })).toBe(0);
+  });
+
+  it('social: a minor\'s friendship waits for the guardian; a report ends it and queues it; a restriction stops social use; the database refuses free text', async () => {
+    await activeUnit();
+    const alice = await adult();
+    const kid = await anotherAdult();
+    await prisma.age_classification.updateMany({ where: { student_id: kid.studentId }, data: { is_minor: true } });
+    const parent = await prisma.account.create({ data: {} });
+    // The guardian-consent machinery is tested elsewhere; here the parent holds a live approval for the kid.
+    const spy = jest.spyOn(privacyService, 'listGuardianApprovals').mockImplementation(async (acct: string) =>
+      acct === parent.id ? [{ consentRecordId: 'c', studentId: kid.studentId, displayName: 'Kiran', grantedAt: new Date() }] : [],
+    );
+    try {
+      const { code } = await social.createCode(kid.accountId);
+      const f = await social.redeem(alice.accountId, code);
+      expect(f.status).toBe('PENDING_GUARDIAN');
+      await expect(social.createChallenge(alice.accountId, { friendshipId: f.friendshipId, subjectVersionId: (await exam.listUnits(alice.accountId))[0].subjectVersionId })).rejects.toThrow(/active/);
+      const [pending] = await social.guardianPending(parent.id);
+      expect(pending).toMatchObject({ studentName: 'Kiran', otherHandle: expect.stringMatching(/^Learner-/) });
+      expect(await social.guardianDecide(parent.id, pending.approvalId, true)).toEqual({ friendshipStatus: 'ACTIVE' });
+      expect(await prisma.audit_event.count({ where: { action: 'social.friendship_approved_by_guardian', subject_id: kid.studentId } })).toBe(1);
+
+      await social.report(alice.accountId, { friendshipId: f.friendshipId, reason: 'UNWANTED_CONTACT' });
+      expect(await prisma.friendship.findUniqueOrThrow({ where: { id: f.friendshipId } })).toMatchObject({ status: 'ENDED', ended_reason: 'REPORTED' });
+      const admin = await roleAccount('SUPER_ADMIN');
+      await expect(social.reports(alice.accountId)).rejects.toThrow(/safety administrator/);
+      const [report] = await social.reports(admin);
+      expect(report).toMatchObject({ reason: 'UNWANTED_CONTACT', reported: { studentId: kid.studentId, openReports: 1 } });
+      await social.resolve(admin, report.id, 'RESTRICTED');
+      await expect(social.createCode(kid.accountId)).rejects.toThrow(/not available on your account/);
+
+      // No free text: the database itself refuses a reason outside the list, and a friendship with oneself.
+      await expect(prisma.safety_report.create({ data: { reporter_student_id: alice.studentId, reported_student_id: kid.studentId, reason: 'he said rude things', status: 'OPEN' } })).rejects.toThrow();
+      await expect(prisma.friendship.create({ data: { student_low: alice.studentId, student_high: alice.studentId, status: 'ACTIVE' } })).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('recommendations: chosen from mastery after a weak start, shown without numbers, and "not now" is respected', async () => {
