@@ -50,7 +50,7 @@ test('a returning student lands Home, takes a first test, sees the result and th
   await expect(page.getByText('3/10')).toBeVisible();
 });
 
-test('Progress shows gated labels by chapter and objective, never a percentage; Compete is Coming soon', async ({ page }) => {
+test('Progress shows gated labels by chapter and objective, never a percentage; Compete has this week\'s boards', async ({ page }) => {
   await signIn(page, 'student@example.com');
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Progress' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Progress' })).toBeVisible();
@@ -61,7 +61,8 @@ test('Progress shows gated labels by chapter and objective, never a percentage; 
   await expect(chem.getByText('Not started').first()).toBeVisible();
   await expect(page.locator('main')).not.toContainText('%');
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Compete' }).click();
-  await expect(page.getByRole('heading', { name: 'Coming soon' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Compete' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'All subjects · ICSE Grade 8' })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Compete' })).toHaveAttribute('aria-current', 'page');
 });
 
@@ -185,4 +186,45 @@ test('Focus next: an open practice cannot be put off; a reopened one can, with "
   await expect(page.getByRole('heading', { name: 'Take a Physics test' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Practise in Chemistry' })).toHaveCount(0);
   await expect(page.locator('main')).not.toContainText('%');
+});
+
+// ── Step 15: competitive points and weekly leaderboards ────────────────────
+
+test('Compete: two tests to be ranked; the board shows handles and CP only; an adult can hide', async ({ page }) => {
+  await signIn(page, 'student@example.com');
+  await expect(page).toHaveURL(/\/home$/);
+  await page.goto('/compete');
+  await expect(page.getByRole('heading', { name: 'You are Learner-AB3XYZ' })).toBeVisible();
+  const all = page.getByRole('region', { name: 'All subjects · ICSE Grade 8' });
+  await expect(all).toContainText('To be ranked this week, take 2 more tests with 20 more counted questions.');
+
+  for (let t = 0; t < 2; t++) {
+    await page.goto('/home');
+    await page.getByRole('button', { name: /^Start Quick 10$/ }).click();
+    await finishTest(page);
+    await expect(page.getByRole('heading', { level: 1, name: /of 10/ })).toBeVisible();
+  }
+  await page.goto('/compete');
+  await expect(all).toContainText(/You are ranked 2 of 2 with \d+ CP\./);
+  const list = all.getByRole('list', { name: 'All subjects · ICSE Grade 8 leaderboard' });
+  await expect(list.getByRole('listitem')).toHaveCount(2);
+  await expect(list.getByRole('listitem').nth(1)).toContainText('Learner-AB3XYZ (you)');
+  await expect(page.getByText('XP this week')).toBeVisible();
+  // Nothing on the page names anyone or shows accuracy.
+  await expect(page.locator('main')).not.toContainText('Asha');
+  await expect(page.locator('main')).not.toContainText('%');
+
+  await page.getByRole('button', { name: 'Hide me from other students' }).click();
+  await expect(page.getByText('You are hidden: other students do not see you on the boards.')).toBeVisible();
+  await page.getByRole('button', { name: 'Show me on the boards' }).click();
+  await expect(page.getByText('Other students see your handle and CP')).toBeVisible();
+});
+
+test('Compete: a minor is never shown to others and has no switch to change that', async ({ page }) => {
+  await signIn(page, 'kid@example.com');
+  await expect(page).toHaveURL(/\/home$/);
+  await page.goto('/compete');
+  await expect(page.getByText('Other students do not see you on the boards. You still see the boards and your own rank.')).toBeVisible();
+  await expect(page.getByRole('button', { name: /Hide me|Show me/ })).toHaveCount(0);
+  await expect(page.locator('main')).not.toContainText('Kiran');
 });

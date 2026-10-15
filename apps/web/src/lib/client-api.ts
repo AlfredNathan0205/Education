@@ -413,6 +413,28 @@ export interface HomeView {
   focus: RecommendationView[];
 }
 
+// ── Competition (Step 15) ────────────────────────────────────────────────
+
+export interface CompeteBoard {
+  scope: 'COHORT' | 'SUBJECT';
+  title: string;
+  subjectCode: string | null;
+  entries: Array<{ rank: number; handle: string; cp: number; you: boolean }>;
+  rankedCount: number;
+  you: { cp: number; qualified: number; eligibleQuestions: number; rank: number | null; needs: { tests: number; questions: number } };
+}
+
+export interface CompeteView {
+  policy: string;
+  week: { start: string; end: string };
+  handle: string;
+  shownToOthers: boolean;
+  canChangeVisibility: boolean;
+  xp: { week: number; total: number };
+  boards: CompeteBoard[];
+  pending: number;
+}
+
 // ── Recommendations (Step 14) ────────────────────────────────────────────
 
 export type RecommendationReason = 'NEEDS_ATTENTION' | 'DEVELOPING' | 'MISSED_MORE_THAN_RIGHT' | 'MISSED_IN_TEST' | 'PRACTISED';
