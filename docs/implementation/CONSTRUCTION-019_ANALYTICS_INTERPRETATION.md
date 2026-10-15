@@ -104,7 +104,7 @@ The extra SQL adds:
 - **The consent purpose `PRODUCT_ANALYTICS`,** with draft wording v1.
 
 ## Checks done here
-- **Unit tests: 68 suites, 1064 tests** (Step 18 had 1045). They cover:
+- **Unit tests: 68 suites, 1065 tests** (Step 18 had 1045). They cover:
   - **the rules:**
     - pseudonyms;
     - the property allow-list;

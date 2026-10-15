@@ -136,6 +136,17 @@ describe('recording', () => {
   });
 });
 
+describe('writing rows', () => {
+  it('never writes props as JSON null (the database CHECK refuses it): the column is left out instead', async () => {
+    const b = build();
+    await b.service.record('ann', 'QUALIFIED_TEST', null, NOW);
+    await b.service.recordClient('acct-ann', 'RESULTS_OPENED', NOW);
+    await b.service.record('ann', 'ASSESSMENT_COMPLETED', { mode: 'TEST' }, NOW);
+    const calls = (b.client.analytics_event.create as jest.Mock).mock.calls.map((c: any[]) => c[0].data);
+    expect(calls.map((d: Row) => ('props' in d ? d.props : 'absent'))).toEqual(['absent', 'absent', { mode: 'TEST' }]);
+  });
+});
+
 describe('projecting the outbox', () => {
   it('maps events for consenting students once, in order, after a settling delay; withdrawing consent deletes', async () => {
     const b = build({ consenting: ['ann', 'kid'] });

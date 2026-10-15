@@ -83,7 +83,9 @@ export class AnalyticsService {
     const db = client ?? (this.db.client as any);
     try {
       await db.analytics_event.create({
-        data: { subject_key: this.keyOf(studentId), name, source: 'SERVER', occurred_at: at, cohort: await this.cohortOf(db, studentId), props: props as any, source_ref: sourceRef },
+        // No props: leave the column out so it is SQL NULL. Prisma writes a plain `null` to a Json column as JSON null,
+        // which the CHECK (props IS NULL OR an object) rightly refuses.
+        data: { subject_key: this.keyOf(studentId), name, source: 'SERVER', occurred_at: at, cohort: await this.cohortOf(db, studentId), ...(props ? { props: props as any } : {}), source_ref: sourceRef },
       });
       return true;
     } catch (e) {
@@ -102,7 +104,7 @@ export class AnalyticsService {
     const key = this.keyOf(studentId);
     const today = await db.analytics_event.count({ where: { subject_key: key, source: 'CLIENT', occurred_at: { gte: new Date(now.getTime() - DAY) } } });
     if (today >= MAX_CLIENT_EVENTS_PER_DAY) return;
-    await db.analytics_event.create({ data: { subject_key: key, name, source: 'CLIENT', occurred_at: now, cohort: await this.cohortOf(db, studentId), props: null } });
+    await db.analytics_event.create({ data: { subject_key: key, name, source: 'CLIENT', occurred_at: now, cohort: await this.cohortOf(db, studentId) } });
   }
 
   /** Deletes everything analytics holds about a student (their consent was withdrawn). */
