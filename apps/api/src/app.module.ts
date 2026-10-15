@@ -21,6 +21,7 @@ import { CompetitionModule } from './competition/competition.module';
 import { SocialModule } from './social/social.module';
 import { ParentModule } from './parent/parent.module';
 import { EntitlementModule } from './entitlement/entitlement.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 import { GuardianModule } from './guardian/guardian.module';
 import { SchoolModule } from './school/school.module';
 
@@ -50,6 +51,7 @@ import { SchoolModule } from './school/school.module';
     SocialModule,
     ParentModule,
     EntitlementModule,
+    AnalyticsModule,
     GuardianModule,
     StudentModule,
     SchoolModule,

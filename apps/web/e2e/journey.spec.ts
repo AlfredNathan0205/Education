@@ -390,3 +390,51 @@ test('Plans: during the beta, everything is offered and there is no daily limit'
   await expect(page.getByText(/left to start today/)).toHaveCount(0);
   await expect(page.locator('#CHEMISTRY').getByRole('button', { name: 'Subject 20 test' })).toBeEnabled();
 });
+
+// ── Step 19: analytics (stub: off for everyone until agreed; mum@ decides for Kiran) ──
+
+const keptEvents = async (request: import('@playwright/test').APIRequestContext) =>
+  (await (await request.get(`http://127.0.0.1:${process.env.STUB_API_PORT ?? 4010}/__analytics`)).json()).events as Array<{ email: string; name: string }>;
+
+test('Analytics: off until an adult agrees after reading what is collected; nothing is kept before; turning it off deletes', async ({ page, request }) => {
+  await signedIn(page, 'student@example.com');
+  await page.goto('/progress');
+  const box = page.getByRole('region', { name: 'Help improve Exam App' });
+  await expect(box).toContainText('Anonymous usage statistics are off');
+  expect(await keptEvents(request)).toEqual([]);
+
+  await box.getByRole('button', { name: 'Read more' }).click();
+  await expect(box.getByText('Draft wording for testing')).toBeVisible();
+  await box.getByRole('button', { name: 'Allow anonymous statistics' }).click();
+  await expect(box).toContainText('You allow anonymous usage statistics');
+
+  await page.goto('/compete');
+  await expect.poll(async () => (await keptEvents(request)).map((e) => e.name)).toContain('COMPETE_OPENED');
+
+  await page.goto('/progress');
+  await page.getByRole('region', { name: 'Help improve Exam App' }).getByRole('button', { name: 'Turn off and delete' }).click();
+  await expect(page.getByRole('region', { name: 'Help improve Exam App' })).toContainText('are off');
+  expect(await keptEvents(request)).toEqual([]);
+});
+
+test("Analytics: a minor's guardian decides on the guardian page; the minor is told which way it is set", async ({ page }) => {
+  await signedIn(page, 'kid@example.com');
+  await page.goto('/progress');
+  await expect(page.getByRole('region', { name: 'Help improve Exam App' })).toContainText('Your parent or guardian decides');
+  await expect(page.getByRole('button', { name: /Allow anonymous/ })).toHaveCount(0);
+
+  const ctx = await page.context().browser()!.newContext({ baseURL: test.info().project.use.baseURL });
+  const mum = await ctx.newPage();
+  await signedIn(mum, 'mum@example.com');
+  await mum.goto('/guardian');
+  const stats = mum.getByRole('region', { name: 'Anonymous usage statistics' });
+  await expect(stats).toContainText('Kiran: off');
+  await expect(stats.getByRole('button', { name: 'Allow' })).toBeDisabled();
+  await stats.getByRole('button', { name: 'What is collected' }).click();
+  await stats.getByRole('button', { name: 'Allow' }).click();
+  await expect(stats).toContainText('Kiran: allowed');
+  await ctx.close();
+
+  await page.reload();
+  await expect(page.getByRole('region', { name: 'Help improve Exam App' })).toContainText('Right now they do.');
+});

@@ -170,3 +170,8 @@ a.btn.secondary { color: var(--text); }
 button.chip { font: inherit; font-size: .9rem; color: var(--text); cursor: pointer; min-height: 40px; }
 button.chip[aria-pressed='true'] { border-color: var(--accent); border-width: 2px; font-weight: 700; }
 .preview-banner { border: 2px dashed var(--accent); border-radius: var(--radius); padding: 12px 16px; margin: 12px 0; }
+
+/* Step 19: admin metrics table */
+table.metrics { border-collapse: collapse; font-size: .9rem; min-width: 100%; }
+table.metrics th, table.metrics td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+table.metrics th[scope='row'] { text-align: left; white-space: normal; min-width: 180px; font-weight: 400; }

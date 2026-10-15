@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError, bff, type ExamLockResult, type ExamResult, type ExamView } from '@/lib/client-api';
+import { ApiError, bff, type ExamLockResult, type ExamResult, type ExamView, track } from '@/lib/client-api';
 import { practiseMissed } from '@/lib/start-test';
 
 function newKey(): string {
@@ -246,7 +246,10 @@ function ResultView({ result, headingRef }: { result: ExamResult; headingRef: Re
   const [error, setError] = useState<string | null>(null);
   // Step 14: after a test, practise what was missed (wrong or unanswered; removed questions never count).
   const missed = result.items.filter((i) => i.outcome === 'INCORRECT' || i.outcome === 'UNANSWERED').length;
+  // Step 19: consented, pseudonymous analytics only (the API decides whether it is kept).
+  useEffect(() => track('RESULTS_OPENED'), []);
   async function practise() {
+    track('PRACTISE_MISSED_CLICKED');
     setBusy(true);
     setError(null);
     try {

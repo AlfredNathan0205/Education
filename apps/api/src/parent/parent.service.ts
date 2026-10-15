@@ -1,6 +1,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Prisma } from '@exam-app/database';
 import { DatabaseService } from '../database/database.service';
+import { AnalyticsService } from '../analytics/analytics.service';
 import { EntitlementService } from '../entitlement/entitlement.service';
 import { ExamConflictError, ExamInputError, ExamNotFoundError, ExamNotPermittedError } from '../exam/exam.errors';
 import { ExamService } from '../exam/exam.service';
@@ -133,6 +134,8 @@ export class ParentService {
     @Inject(PARENT_WEB_BASE) private readonly webBase: string,
     // Step 18: how many weeks of reports the student's plan opens (absent = all).
     @Optional() private readonly entitlements?: EntitlementService,
+    // Step 19: a parent's view is recorded (pseudonymously, with the student's analytics consent only).
+    @Optional() private readonly analytics?: AnalyticsService,
   ) {}
 
   // ── viewer side ────────────────────────────────────────────────────────────
@@ -156,6 +159,7 @@ export class ParentService {
     const access = await this.access(accountId, studentId, now);
     const view = await this.liveSummary(studentId, now);
     await this.audit(accountId, 'parent.summary_viewed', studentId, { basis: access.basis });
+    if (this.analytics) await this.analytics.record(studentId, 'PARENT_VIEWED', { basis: access.basis }, now).catch(() => false);
     const labels = await this.privacy.studentLabels([studentId]);
     return { ...view, child: { studentId, label: labels.get(studentId) ?? 'Student' }, basis: access.basis };
   }

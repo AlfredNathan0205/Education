@@ -22,6 +22,10 @@ const PEOPLE = {
   'beta@example.com': { name: 'Bea', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_8' }, chapters: {}, longTest: true },
 };
 const SUBJECT20 = { code: 'SUBJECT20', name: 'Subject 20', total: 20, ready: true };
+// Step 19: analytics choices (off unless agreed) and the UI events the API would keep (consenting students only).
+const analyticsOn = new Set();
+const keptEvents = [];
+const ANALYTICS_WORDING = { version: 1, title: 'Help improve Exam App', draft: true, paragraphs: ['DRAFT. This wording has not been reviewed by a lawyer and must not be used with real families.', 'If you agree, we count how the app is used so we can make it better.'] };
 const FREE = { SELF_TESTS_PER_DAY: 3, LONG_TESTS: false, PARENT_REPORT_WEEKS: 4 };
 const ALL = { SELF_TESTS_PER_DAY: null, LONG_TESTS: true, PARENT_REPORT_WEEKS: null };
 function planOf(p) {
@@ -308,10 +312,13 @@ const server = createServer(async (req, res) => {
     social.clear();
     shares.clear();
     lastShareToken = null;
+    analyticsOn.clear();
+    keptEvents.length = 0;
     return json(res, 200, { reset: true });
   }
   // Test-only: the token of the last sharing email (the real API emails it). Not reachable through the web proxy.
   if (key === 'GET __share-token') return json(res, 200, { token: lastShareToken });
+  if (key === 'GET __analytics') return json(res, 200, { events: keptEvents });
   if (key === 'POST identity/otp/request') return json(res, 202, { sent: true });
   if (key === 'POST identity/otp/verify') {
     if (body.code !== '123456' || !PEOPLE[body.identifier]) return json(res, 401, { message: 'Invalid code' });
@@ -355,6 +362,40 @@ const server = createServer(async (req, res) => {
   }
   if (key === 'GET compete') return json(res, 200, competeFor(p));
   if (key === 'GET entitlements') return json(res, 200, planOf(p));
+  // Step 19.
+  if (key === 'GET analytics/consent') {
+    return json(res, 200, p.minor ? { decidedBy: 'GUARDIAN', granted: analyticsOn.has(p.email), consent: null } : { decidedBy: 'SELF', granted: analyticsOn.has(p.email), consent: ANALYTICS_WORDING });
+  }
+  if (key === 'PUT analytics/consent') {
+    if (p.minor) return json(res, 409, { message: 'Your parent or guardian decides this' });
+    if (body.granted === true && body.consentVersion !== 1) return json(res, 409, { message: 'The wording has changed. Please read it again.' });
+    if (body.granted) analyticsOn.add(p.email);
+    else {
+      analyticsOn.delete(p.email);
+      for (let i = keptEvents.length - 1; i >= 0; i--) if (keptEvents[i].email === p.email) keptEvents.splice(i, 1);
+    }
+    return json(res, 200, { granted: analyticsOn.has(p.email) });
+  }
+  if (key === 'POST analytics/events') {
+    if (analyticsOn.has(p.email)) keptEvents.push({ email: p.email, name: body.name });
+    res.writeHead(204);
+    return res.end();
+  }
+  if (key === 'GET guardian/approvals') {
+    return json(res, 200, (p.guardianOf ?? []).map((e) => ({ consentRecordId: randomUUID(), studentId: STUDENT_IDS[e], displayName: PEOPLE[e].name, label: PEOPLE[e].name, grantedAt: new Date().toISOString() })));
+  }
+  if (key === 'GET guardian/analytics-consent') {
+    const children = (p.guardianOf ?? []).map((e) => ({ studentId: STUDENT_IDS[e], label: PEOPLE[e].name, granted: analyticsOn.has(e) }));
+    return json(res, 200, { children, consent: children.length ? ANALYTICS_WORDING : null });
+  }
+  const ga = path.match(/^guardian\/analytics-consent\/([0-9a-f-]{36})$/);
+  if (ga && req.method === 'PUT') {
+    const email = (p.guardianOf ?? []).find((e) => STUDENT_IDS[e] === ga[1]);
+    if (!email) return json(res, 404, { message: 'Not found' });
+    if (body.granted) analyticsOn.add(email);
+    else analyticsOn.delete(email);
+    return json(res, 200, { granted: analyticsOn.has(email) });
+  }
   // Step 17: the parent view and sharing.
   if (key === 'GET parent/children') return json(res, 200, childrenOf(p).map(({ email, ...c }) => c));
   const pc = path.match(/^parent\/children\/([0-9a-f-]{36})(?:\/(leave)|\/reports\/([0-9a-f-]{36}))?$/);
