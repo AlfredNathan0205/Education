@@ -736,6 +736,34 @@ export class ExamService {
     return this.gate(accountId);
   }
 
+  /**
+   * Step 17: the subjects of a student's cohort that are open for tests (latest served revision of each), without the
+   * account gate. Callers must already have authorised access to this student (the parent view does).
+   */
+  async subjectsFor(studentId: string): Promise<Array<{ subjectVersionId: string; subjectCode: string; subjectName: string }>> {
+    const db = this.db.client as unknown as Tx;
+    const cohort = await this.cohortOf(db, studentId);
+    if (!cohort) return [];
+    const rows = await db.curriculum_subject_version.findMany({
+      where: {
+        state: { in: this.servedStates() },
+        curriculum_version: { curriculum: { code: cohort.curriculumCode } },
+        grade: { code: cohort.gradeCode },
+      },
+      orderBy: { revision: 'desc' },
+      include: { subject: true },
+    });
+    const seen = new Set<string>();
+    const out: Array<{ subjectVersionId: string; subjectCode: string; subjectName: string }> = [];
+    for (const r of rows) {
+      const key = `${r.curriculum_version_id}|${r.grade_id}|${r.subject_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ subjectVersionId: r.id, subjectCode: r.subject.code, subjectName: r.subject.name });
+    }
+    return out.sort((a, b) => a.subjectName.localeCompare(b.subjectName));
+  }
+
   /** The curriculum and grade the student said they study (Step 5), or null before they choose. */
   private async cohortOf(db: Tx, studentId: string): Promise<{ curriculumCode: string; gradeCode: string } | null> {
     const ctx = await db.student_academic_context.findUnique({ where: { student_id: studentId } });

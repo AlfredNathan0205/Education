@@ -164,3 +164,9 @@ a.btn.secondary { color: var(--text); }
 .actions.quiet { gap: 8px; }
 .btn.small { width: auto; padding: 0 14px; font-size: .95rem; min-height: 44px; }
 .actions.quiet select { width: auto; flex: 1 1 10rem; min-height: 44px; }
+
+/* Step 17: parent view */
+.linklike { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); text-decoration: underline; cursor: pointer; min-height: 32px; }
+button.chip { font: inherit; font-size: .9rem; color: var(--text); cursor: pointer; min-height: 40px; }
+button.chip[aria-pressed='true'] { border-color: var(--accent); border-width: 2px; font-weight: 700; }
+.preview-banner { border: 2px dashed var(--accent); border-radius: var(--radius); padding: 12px 16px; margin: 12px 0; }

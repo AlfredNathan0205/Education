@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError, bff, type GuardianApproval } from '@/lib/client-api';
 import { GuardianFriendships } from './GuardianFriendships';
@@ -45,7 +46,8 @@ export function GuardianApprovals() {
       ) : (
         items.map((a) => (
           <section className="card" key={a.consentRecordId}>
-            <h2>{a.displayName ?? 'Student'}</h2>
+            <h2>{a.label ?? a.displayName ?? 'Student'}</h2>
+            <p><Link href={`/parent?child=${a.studentId}`}>See their progress summary</Link></p>
             <p className="muted">Approved on {new Date(a.grantedAt).toLocaleDateString()}</p>
             <button className="btn secondary" type="button" disabled={busyId === a.consentRecordId} onClick={() => void withdraw(a.consentRecordId)}>
               Withdraw approval

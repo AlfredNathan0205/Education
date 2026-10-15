@@ -2,7 +2,7 @@
 
 import { useRef, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { ApiError, bff, recalledGuardianToken } from '@/lib/client-api';
+import { ApiError, bff, recalledGuardianToken, recalledShareToken } from '@/lib/client-api';
 
 type Kind = 'EMAIL' | 'PHONE';
 
@@ -37,8 +37,9 @@ export function SignInForm() {
     setError(null);
     try {
       const r = await bff<{ isNewAccount: boolean }>('POST', 'identity/otp/verify', { kind, identifier, code });
-      // A guardian who came from an approval email goes back to it; a new account sets up its profile; everyone else goes Home.
-      router.push(recalledGuardianToken() ? '/guardian/approve' : r?.isNewAccount ? '/profile' : '/home');
+      // A guardian who came from an approval email goes back to it, and a parent from a sharing email (Step 17); a new
+      // account sets up its profile; everyone else goes Home.
+      router.push(recalledGuardianToken() ? '/guardian/approve' : recalledShareToken() ? '/parent/accept' : r?.isNewAccount ? '/profile' : '/home');
       router.refresh();
     } catch (err) {
       setError(

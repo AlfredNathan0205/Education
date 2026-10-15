@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@exam-app/database';
 import { DatabaseService } from '../database/database.service';
 import { OutboxService } from '../outbox/outbox.service';
+import { maskIdentifier } from '../identity/identifier';
 import { classifyAge, type AgeClassificationResult } from './age-classification';
 import {
   evaluateProcessing,
@@ -695,7 +696,7 @@ export class PrivacyService {
   async listGuardianApprovals(
     guardianAccountId: string,
     now: Date = new Date(),
-  ): Promise<Array<{ consentRecordId: string; studentId: string; displayName: string | null; grantedAt: Date }>> {
+  ): Promise<Array<{ consentRecordId: string; studentId: string; displayName: string | null; label: string; grantedAt: Date }>> {
     const records = await this.db.client.consent_record.findMany({
       where: {
         granted_by_account_id: guardianAccountId,
@@ -709,7 +710,7 @@ export class PrivacyService {
         authority: { include: { guardian_verification: true } },
       },
     });
-    return records
+    const live = records
       .filter((r: (typeof records)[number]) =>
         r.authority
           ? isAuthorityValid(
@@ -729,6 +730,48 @@ export class PrivacyService {
         displayName: (r.student.display_name ?? null) as string | null,
         grantedAt: r.granted_at as Date,
       }));
+    const labels = await this.studentLabels(live.map((r: { studentId: string }) => r.studentId));
+    return live.map((r: { consentRecordId: string; studentId: string; displayName: string | null; grantedAt: Date }) => ({
+      ...r,
+      label: labels.get(r.studentId) ?? 'Student',
+    }));
+  }
+
+  /**
+   * How a student is named to their own parent or guardian: the display name they chose, else their own sign-in
+   * address or number, masked. Never shown to anyone else (other students only ever see a generated handle).
+   */
+  async studentLabels(studentIds: string[]): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    if (!studentIds.length) return out;
+    const db = this.db.client as any;
+    const students: Array<{ id: string; display_name: string | null }> = await db.student.findMany({
+      where: { id: { in: studentIds } },
+      select: { id: true, display_name: true },
+    });
+    const access: Array<{ student_id: string; account_id: string }> = await db.account_student_access.findMany({
+      where: { student_id: { in: studentIds }, access_kind: 'SELF', revoked_at: null },
+      select: { student_id: true, account_id: true },
+    });
+    const identities: Array<{ account_id: string; kind: 'EMAIL' | 'PHONE'; identifier_normalized: string }> = access.length
+      ? await db.authentication_identity.findMany({
+          where: { account_id: { in: access.map((a) => a.account_id) } },
+          orderBy: { created_at: 'asc' },
+          select: { account_id: true, kind: true, identifier_normalized: true },
+        })
+      : [];
+    for (const s of students) {
+      const name = s.display_name?.trim();
+      if (name) {
+        out.set(s.id, name);
+        continue;
+      }
+      const acct = access.find((a) => a.student_id === s.id)?.account_id;
+      const ids = identities.filter((i) => i.account_id === acct);
+      const id = ids.find((i) => i.kind === 'EMAIL') ?? ids[0];
+      out.set(s.id, id ? maskIdentifier(id.kind, id.identifier_normalized) : 'Student');
+    }
+    return out;
   }
 
   /**
@@ -790,9 +833,11 @@ export class PrivacyService {
   async withdrawConsent(
     input: { consentRecordId: string; actorAccountId: string; reasonCode?: string },
     now: Date = new Date(),
+    outerTx?: Prisma.TransactionClient,
   ): Promise<void> {
     try {
-      await this.db.client.$transaction(async (tx: Prisma.TransactionClient) => {
+      // Step 17: pass `outerTx` to make the withdrawal part of a larger transaction (stopping a parent's access).
+      const run = async (tx: Prisma.TransactionClient) => {
         const record = await tx.consent_record.findUnique({
           where: { id: input.consentRecordId },
           include: { withdrawal: { select: { id: true } }, purpose: { select: { code: true } } },
@@ -840,7 +885,9 @@ export class PrivacyService {
             reason_code: input.reasonCode ?? null,
           },
         });
-      });
+      };
+      if (outerTx) await run(outerTx);
+      else await this.db.client.$transaction(run);
     } catch (error) {
       // A concurrent withdrawal hit the unique constraint on consent_record_id: already done.
       if ((error as { code?: string }).code === 'P2002') return;

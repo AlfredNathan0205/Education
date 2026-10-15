@@ -279,3 +279,83 @@ test('Friends: switched off, there is no Friends section at all', async ({ page 
   await expect(page.getByRole('heading', { name: 'You are Learner-AB3XYZ' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Friends' })).toHaveCount(0);
 });
+
+// ── Step 17: the parent view (stub: mum@ is Kiran's approving guardian; Asha, student@, is an adult who can share) ──
+
+async function signedIn(page: Page, email: string) {
+  await signIn(page, email);
+  await page.waitForURL((u) => !u.pathname.startsWith('/sign-in'));
+}
+
+test('Parent: a guardian sees gated labels and fixed sentences (no scores), and a frozen weekly report', async ({ page }) => {
+  await signedIn(page, 'mum@example.com');
+  await page.goto('/parent');
+  await expect(page.getByRole('heading', { name: 'Progress summary' })).toBeVisible();
+  await expect(page.getByText('Kiran', { exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Strengths shown' })).toContainText('Shows strong understanding: Balance a chemical equation');
+  await expect(page.getByRole('region', { name: 'Focus next' })).toContainText('Worth more practice: Name the products of a reaction');
+  await expect(page.getByRole('region', { name: 'Improved' })).toContainText('Moved from needs attention to developing: Use word equations');
+  await expect(page.getByRole('region', { name: 'Chemistry' })).toContainText('Building evidence');
+  await expect(page.locator('main')).not.toContainText('%');
+  // A guardian sees it through their approval: there is no "stop seeing" here (they withdraw the approval instead).
+  await expect(page.getByRole('button', { name: 'Stop seeing this summary' })).toHaveCount(0);
+  await expect(page.getByText('You see this because you approved this student')).toBeVisible();
+
+  await page.getByRole('region', { name: 'Weekly reports' }).getByRole('button').first().click();
+  await expect(page.getByRole('heading', { name: 'Weekly report' })).toBeVisible();
+  await expect(page.getByText('Frozen at the end of that week')).toBeVisible();
+  await page.getByRole('button', { name: 'Back to this week' }).click();
+  await expect(page.getByRole('heading', { name: 'Progress summary' })).toBeVisible();
+});
+
+test('Sharing: an adult agrees and invites a parent, the parent accepts from the link, and the student stops sharing', async ({ page, browser, request }) => {
+  await signedIn(page, 'student@example.com');
+  await page.goto('/progress');
+  const share = page.getByRole('region', { name: 'Share with a parent' });
+  await share.getByRole('button', { name: 'Invite a parent' }).click();
+  await expect(share.getByText('Draft wording for testing')).toBeVisible();
+  await share.getByLabel('Their email address').fill('parent@example.com');
+  const send = share.getByRole('button', { name: 'Send invitation' });
+  await expect(send).toBeDisabled();
+  await share.getByLabel(/I agree to share my progress summary/).check();
+  await send.click();
+  await expect(share.getByText('Invitation sent to p***@example.com')).toBeVisible();
+
+  // The parent opens the link from the email in their own browser, signs in, and comes straight back to accept.
+  const { token } = await (await request.get(`http://127.0.0.1:${process.env.STUB_API_PORT ?? 4010}/__share-token`)).json();
+  const parent = await browser.newContext({ baseURL: test.info().project.use.baseURL });
+  const pp = await parent.newPage();
+  await pp.goto(`/parent/accept#t=${token}`);
+  await pp.waitForURL(/\/sign-in/);
+  await signIn(pp, 'parent@example.com');
+  await pp.waitForURL(/\/parent\/accept/);
+  await expect(pp.getByText('You will not see their answers, scores, points')).toBeVisible();
+  await pp.getByRole('button', { name: 'Accept' }).click();
+  await pp.getByRole('link', { name: 'See the summary' }).click();
+  await expect(pp.getByText('Asha', { exact: true })).toBeVisible();
+  await expect(pp.getByRole('region', { name: 'Strengths shown' })).toContainText('Shows strong understanding');
+  await expect(pp.getByRole('button', { name: 'Stop seeing this summary' })).toBeVisible();
+
+  // The student sees who can see their summary, and stops sharing.
+  await page.reload();
+  const viewer = page.getByRole('region', { name: 'Share with a parent' }).getByRole('listitem');
+  await expect(viewer).toContainText('p***@example.com');
+  page.once('dialog', (d) => void d.accept());
+  await viewer.getByRole('button', { name: 'Stop sharing' }).click();
+  await expect(page.getByText('Stopped. They can no longer see your summary.')).toBeVisible();
+  await pp.reload();
+  await expect(pp.getByText("You cannot see any student's progress yet.")).toBeVisible();
+  await parent.close();
+});
+
+test('Progress tells a minor their guardian sees a summary, and shows exactly what they see', async ({ page }) => {
+  await signedIn(page, 'kid@example.com');
+  await page.goto('/progress');
+  const box = page.getByRole('region', { name: 'Your parent or guardian' });
+  await expect(box).toContainText('can see a summary of your progress');
+  await expect(box.getByRole('button', { name: 'Invite a parent' })).toHaveCount(0);
+  await box.getByRole('link', { name: 'See what they see' }).click();
+  await expect(page.getByRole('heading', { name: 'What your parent sees' })).toBeVisible();
+  await expect(page.getByRole('note')).toContainText('exactly the summary');
+  await expect(page.getByRole('region', { name: 'Strengths shown' })).toBeVisible();
+});

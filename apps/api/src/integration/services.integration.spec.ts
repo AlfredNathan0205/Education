@@ -26,7 +26,7 @@ import { ExamService } from '../exam/exam.service';
 import { ExamConflictError, ExamNotPermittedError } from '../exam/exam.errors';
 import { DEFAULT_JURISDICTION } from '../student/student.service';
 import { GuardianService } from '../guardian/guardian.service';
-import { DEV_DRAFT_WORDING_REFERENCE } from '../guardian/consent-texts';
+import { DEV_DRAFT_WORDING_REFERENCE, SHARING_DRAFT_WORDING_REFERENCE } from '../guardian/consent-texts';
 import { GuardianConflictError, GuardianNotPermittedError, GuardianUnavailableError } from '../guardian/guardian.errors';
 import { QuestionService } from '../question/question.service';
 import { optionRows } from '../question/question-domain';
@@ -39,6 +39,7 @@ import { MasteryViewService } from '../mastery/mastery-view.service';
 import { RecommendationService } from '../recommendation/recommendation.service';
 import { CompetitionService } from '../competition/competition.service';
 import { SocialService } from '../social/social.service';
+import { ParentService } from '../parent/parent.service';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
@@ -78,6 +79,12 @@ async function cleanAll() {
   capturedCodes = [];
   (sender.send as jest.Mock).mockClear();
 
+  await prisma.report_claim.deleteMany();
+  await prisma.suppressed_claim.deleteMany();
+  await prisma.student_report_version.deleteMany();
+  await prisma.student_report.deleteMany();
+  await prisma.parent_view_grant.deleteMany();
+  await prisma.parent_share_invitation.deleteMany();
   await prisma.question_publication_event.deleteMany();
   await prisma.question_publication.deleteMany();
   await prisma.question_bank_state.deleteMany();
@@ -1737,6 +1744,37 @@ describe('ExamService (real DB)', () => {
 
   const social = new SocialService(dbService, exam, privacyService, authzService, outbox, { enabled: true });
 
+  /**
+   * A minor in the cohort whose guardian approved them through the REAL guardian flow (invitation, signed-in guardian,
+   * consent wording, verification, authority, consent record): no part of the guardian lookup is faked.
+   * Call after adult(): it activates a policy that accepts the email-link method.
+   */
+  let guardianLink = '';
+  const guardianFlow = new GuardianService(dbService, privacyService, outbox, { sendInvitation: async (_to: string, link: string) => { guardianLink = link; } }, 'https://app.example.com');
+  async function guardedMinor(guardianEmail = 'mum@example.com') {
+    const { id: policyId } = await privacyService.createJurisdictionPolicyDraft(
+      { jurisdictionCode: DEFAULT_JURISDICTION, config: { minorAgeThreshold: 18, guardianConsentAgeThreshold: 18, acceptedDobEvidenceMethods: ['SELF_DECLARED'], acceptedGuardianVerificationMethods: ['EMAIL_LINK_ATTESTATION'] } },
+      null,
+    );
+    await privacyService.markPolicyCounselReviewed(policyId, 'LEGAL-OPINION-001', null);
+    await privacyService.activateJurisdictionPolicy(policyId, null);
+    await privacyService.publishConsentWording({ purposeCode: 'CORE_SERVICE', textReference: DEV_DRAFT_WORDING_REFERENCE, description: 'Core service' });
+    const account = await prisma.account.create({ data: {} });
+    await prisma.authentication_identity.create({ data: { account_id: account.id, kind: 'EMAIL', identifier_normalized: `maya${++uniq}@example.com`, verified_at: new Date() } });
+    const student = await prisma.student.create({ data: {} });
+    await prisma.account_student_access.create({ data: { account_id: account.id, student_id: student.id, access_kind: 'SELF' } });
+    await privacyService.recordAgeClassification({ studentId: student.id, dateOfBirth: new Date('2013-05-01'), jurisdictionCode: DEFAULT_JURISDICTION, dobEvidenceMethod: 'SELF_DECLARED', actorAccountId: account.id });
+    await prisma.student_academic_context.create({ data: { student_id: student.id, curriculum_code: 'EXAMCUR', grade_code: 'G8' } });
+    await guardianFlow.createInvitation(account.id, { email: guardianEmail, relationshipType: 'MOTHER' });
+    const guardian = await prisma.account.create({ data: {} });
+    await prisma.authentication_identity.create({ data: { account_id: guardian.id, kind: 'EMAIL', identifier_normalized: guardianEmail, verified_at: new Date() } });
+    const token = guardianLink.split('#t=')[1];
+    const preview = await guardianFlow.preview(guardian.id, token);
+    await guardianFlow.accept(guardian.id, { token, consentVersion: preview.consent.version, attested: true });
+    expect((await privacyService.getClassificationSummary(student.id)).consentSatisfied).toBe(true);
+    return { accountId: account.id, studentId: student.id, guardianId: guardian.id };
+  }
+
   it('social: friends by an in-person code, a ranked challenge on the same ten unseen questions, results only when both finish, CP_V2', async () => {
     expect(await prisma.competitive_scoring_policy.findMany({ where: { status: 'ACTIVE' }, select: { code: true } })).toEqual([{ code: 'CP_V2' }]);
     const unitId = await activeUnit();
@@ -1781,14 +1819,11 @@ describe('ExamService (real DB)', () => {
   it('social: a minor\'s friendship waits for the guardian; a report ends it and queues it; a restriction stops social use; the database refuses free text', async () => {
     await activeUnit();
     const alice = await adult();
-    const kid = await anotherAdult();
-    await prisma.age_classification.updateMany({ where: { student_id: kid.studentId }, data: { is_minor: true } });
-    const parent = await prisma.account.create({ data: {} });
-    // The guardian-consent machinery is tested elsewhere; here the parent holds a live approval for the kid.
-    const spy = jest.spyOn(privacyService, 'listGuardianApprovals').mockImplementation(async (acct: string) =>
-      acct === parent.id ? [{ consentRecordId: 'c', studentId: kid.studentId, displayName: 'Kiran', grantedAt: new Date() }] : [],
-    );
-    try {
+    // Step 17: the guardian is real (approved through the guardian flow), not a stubbed lookup.
+    const kid = await guardedMinor();
+    const parent = { id: kid.guardianId };
+    await prisma.student.update({ where: { id: kid.studentId }, data: { display_name: 'Kiran' } });
+    {
       const { code } = await social.createCode(kid.accountId);
       const f = await social.redeem(alice.accountId, code);
       expect(f.status).toBe('PENDING_GUARDIAN');
@@ -1810,8 +1845,6 @@ describe('ExamService (real DB)', () => {
       // No free text: the database itself refuses a reason outside the list, and a friendship with oneself.
       await expect(prisma.safety_report.create({ data: { reporter_student_id: alice.studentId, reported_student_id: kid.studentId, reason: 'he said rude things', status: 'OPEN' } })).rejects.toThrow();
       await expect(prisma.friendship.create({ data: { student_low: alice.studentId, student_high: alice.studentId, status: 'ACTIVE' } })).rejects.toThrow();
-    } finally {
-      spy.mockRestore();
     }
   });
 
@@ -1845,6 +1878,96 @@ describe('ExamService (real DB)', () => {
     // Still Needs attention, but put off: nothing new for the quiet period.
     expect(await prisma.recommendation.count({ where: { student_id: studentId, status: { in: ['OPEN', 'STARTED'] } } })).toBe(0);
     expect((await homes.home(accountId)).nextAction.kind).toBe('TAKE_TEST');
+  });
+
+  // ---- Step 17: the parent claim gate and the parent's view ----
+
+  const shareMail: string[] = [];
+  const parents = new ParentService(dbService, privacyService, exam, outbox, { sendShareInvitation: async (_to: string, link: string) => { shareMail.push(link); } }, 'https://app.example.com');
+  const WEEK = 7 * 86_400_000;
+
+  it('parent: a guardian approved through the real flow sees the gated summary; the weekly report freezes; a correction adds a version; withdrawing ends access', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    await adult();
+    const kid = await guardedMinor();
+    const stranger = await prisma.account.create({ data: {} });
+
+    // Before any test: building evidence, nothing claimed.
+    expect(await parents.children(kid.guardianId)).toEqual([{ studentId: kid.studentId, label: expect.stringMatching(/^m\*\*\*@example\.com$/), basis: 'GUARDIAN' }]);
+    const empty = await parents.dashboard(kid.guardianId, kid.studentId);
+    expect(empty).toMatchObject({ basis: 'GUARDIAN', strengths: [], focus: [], improvements: [], activity: { tests: 0 } });
+
+    await tookTest(kid.accountId, unitId, () => true);
+    await tookTest(kid.accountId, unitId, () => true);
+    await mastery.reconcile();
+    expect(await prisma.student_mastery_state.findFirstOrThrow({ where: { student_id: kid.studentId } })).toMatchObject({ label: 'STRONG' });
+
+    const v = await parents.dashboard(kid.guardianId, kid.studentId);
+    expect(v.strengths.map((c) => c.text)).toEqual(['Shows strong understanding: Student can do X']);
+    expect(v.subjects[0]).toMatchObject({ subjectName: 'Exam Subject', objectives: 1, reportable: 1, counts: { STRONG: 1 } });
+    expect(v.activity).toMatchObject({ tests: 2, practice: 0, questionsAnswered: 20 });
+    expect(JSON.stringify(v)).not.toMatch(/"mastery"|"confidence"|"correct"/);
+    expect(await prisma.audit_event.count({ where: { action: 'parent.summary_viewed', subject_id: kid.studentId, actor_account_id: kid.guardianId } })).toBe(2);
+    // The student sees exactly the same in "See what they see".
+    expect((await parents.preview(kid.accountId)).strengths).toEqual(v.strengths);
+    // Nobody else: 404, not 403.
+    await expect(parents.dashboard(stranger.id, kid.studentId)).rejects.toThrow(/Not found/);
+
+    // Next week: last week's report is frozen once, with the approved claim recorded.
+    const nextWeek = new Date(Date.now() + WEEK);
+    const [r1] = await parents.reconcile(nextWeek);
+    expect(r1).toMatchObject({ studentId: kid.studentId, version: 1, reason: 'WEEK_ENDED' });
+    expect(await parents.reconcile(nextWeek)).toEqual([]);
+    expect(await prisma.report_claim.findMany({ select: { kind: true, label: true, template_code: true } })).toEqual([{ kind: 'STRENGTH', label: 'STRONG', template_code: 'STRENGTH_V1' }]);
+    // A frozen version cannot be edited (database trigger).
+    await expect(prisma.student_report_version.updateMany({ data: { reason: 'EVIDENCE_CHANGED' } })).rejects.toThrow(/frozen/);
+
+    // A question the kid answered is invalidated: mastery recomputes, and the report gets version 2.
+    const approver = await roleAccount('CURRICULUM_APPROVER');
+    const target = (await prisma.assessment_instance_question.findFirstOrThrow({ where: { instance: { student_id: kid.studentId } } })).question_revision_id;
+    await prisma.question_revision.update({ where: { id: target }, data: { state: 'QUARANTINED' } });
+    await invalidations.invalidate(approver, target, { reasonCode: 'ANSWER_WRONG', note: 'The marked answer is wrong.' });
+    await mastery.reconcile();
+    const [r2] = await parents.reconcile(nextWeek);
+    expect(r2).toMatchObject({ reportId: r1.reportId, version: 2, reason: 'EVIDENCE_CHANGED' });
+    expect(await parents.report(kid.guardianId, kid.studentId, r1.reportId)).toMatchObject({ version: 2, reason: 'EVIDENCE_CHANGED' });
+    expect(await prisma.student_report_version.count({ where: { report_id: r1.reportId } })).toBe(2);
+    expect((await prisma.outbox_event.findMany({ where: { aggregate_id: kid.studentId, event_type: 'parent.report_generated.v1' } })).length).toBe(2);
+
+    // The guardian withdraws their approval: the summary is gone at once.
+    const [approval] = await guardianFlow.listApprovals(kid.guardianId);
+    await guardianFlow.withdraw(kid.guardianId, approval.consentRecordId);
+    await expect(parents.dashboard(kid.guardianId, kid.studentId)).rejects.toThrow(/Not found/);
+    expect(await parents.children(kid.guardianId)).toEqual([]);
+  });
+
+  it('parent: an adult student shares with a parent under their own consent, and stopping ends access at once; the database keeps one open grant per pair', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const ann = await adult();
+    await privacyService.publishConsentWording({ purposeCode: 'PARENT_REPORT_SHARING', textReference: SHARING_DRAFT_WORDING_REFERENCE, description: 'Sharing a progress summary with a parent' });
+    const mum = await prisma.account.create({ data: {} });
+    await prisma.authentication_identity.create({ data: { account_id: mum.id, kind: 'EMAIL', identifier_normalized: 'ann-mum@example.com', verified_at: new Date() } });
+
+    const status = await parents.sharing(ann.accountId);
+    expect(status).toMatchObject({ canShare: true, isMinor: false, consent: { version: 1, draft: true } });
+    await parents.invite(ann.accountId, { email: 'ann-mum@example.com', consentVersion: status.consent!.version, agreed: true });
+    expect(await prisma.consent_record.findFirstOrThrow({ where: { student_id: ann.studentId, purpose: { code: 'PARENT_REPORT_SHARING' } } })).toMatchObject({ capacity: 'SELF', granted_by_account_id: ann.accountId });
+    const token = shareMail[shareMail.length - 1].split('#t=')[1];
+    expect(await prisma.parent_share_invitation.count({ where: { token_hash: { not: token } } })).toBe(1);
+    await parents.acceptInvitation(mum.id, token);
+
+    await tookTest(ann.accountId, unitId, () => true);
+    expect((await parents.dashboard(mum.id, ann.studentId)).basis).toBe('STUDENT_SHARE');
+    // A second open grant for the same pair is refused by the database itself.
+    const grant = await prisma.parent_view_grant.findFirstOrThrow({ where: { student_id: ann.studentId } });
+    await expect(prisma.parent_view_grant.create({ data: { student_id: ann.studentId, viewer_account_id: mum.id, invitation_id: ann.studentId, consent_record_id: mum.id } })).rejects.toThrow();
+
+    await parents.stopSharing(ann.accountId, grant.id);
+    expect(await prisma.consent_withdrawal.count({ where: { consent_record_id: grant.consent_record_id } })).toBe(1);
+    await expect(parents.dashboard(mum.id, ann.studentId)).rejects.toThrow(/Not found/);
+    expect(await prisma.audit_event.count({ where: { action: 'parent.sharing_ended', subject_id: ann.studentId } })).toBe(1);
   });
 });
 

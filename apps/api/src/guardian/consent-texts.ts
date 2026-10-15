@@ -32,6 +32,20 @@ const REGISTRY: ConsentWording[] = [
       '[Name of the organisation responsible for the data, and how to contact it, to be confirmed.]',
     ],
   },
+  {
+    // Step 17: an adult student agrees to let a parent see their progress summary.
+    reference: 'consent-text:PARENT_REPORT_SHARING:v1-draft',
+    title: 'Share your progress summary with a parent',
+    counselReviewed: false,
+    paragraphs: [
+      'DRAFT. This wording has not been reviewed by a lawyer and must not be used with real families.',
+      'The person you invite will be able to see a summary of your progress: how many tests and practice sets you did each week, your progress labels by subject and chapter, the objectives you have shown you are strong in, the ones worth more practice, and what has improved.',
+      'They will not see your answers, your scores, your points or rank, your friends or challenges, or anything about other students.',
+      'They see a summary only once the evidence is strong enough. Until then it says "Building evidence".',
+      'You can stop sharing at any time from your Progress page. They will lose access straight away. [Retention of past weekly summaries to be confirmed.]',
+      '[Name of the organisation responsible for the data, and how to contact it, to be confirmed.]',
+    ],
+  },
 ];
 
 export function findConsentWording(reference: string, env: Record<string, string | undefined> = process.env): ConsentWording | null {
@@ -42,3 +56,4 @@ export function findConsentWording(reference: string, env: Record<string, string
 }
 
 export const DEV_DRAFT_WORDING_REFERENCE = 'consent-text:CORE_SERVICE:v1-draft';
+export const SHARING_DRAFT_WORDING_REFERENCE = 'consent-text:PARENT_REPORT_SHARING:v1-draft';

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { AppNav } from './AppNav';
+import { ParentSharing } from './ParentSharing';
 import { ApiError, MASTERY_LABEL, bff, type MasteryLabel, type MasteryView, type MyAssessment } from '@/lib/client-api';
 
 /**
@@ -85,6 +86,7 @@ export function Progress() {
           </section>
         );
       })}
+      {mastery && <ParentSharing />}
     </div>
   );
 }
