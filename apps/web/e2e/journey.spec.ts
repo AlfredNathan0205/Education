@@ -228,3 +228,54 @@ test('Compete: a minor is never shown to others and has no switch to change that
   await expect(page.getByRole('button', { name: /Hide me|Show me/ })).toHaveCount(0);
   await expect(page.locator('main')).not.toContainText('Kiran');
 });
+
+// ── Step 16: friends and challenges (stub: on for these students, off for solo@) ──
+
+test('Friends: add a friend with their code, challenge them, and start the challenge test', async ({ page }) => {
+  await signIn(page, 'student@example.com');
+  await expect(page).toHaveURL(/\/home$/);
+  await page.goto('/compete');
+  const friends = page.getByRole('region', { name: 'Friends' });
+  await friends.getByRole('button', { name: 'Show my code' }).click();
+  await expect(friends.getByText('XYZ789')).toBeVisible();
+
+  await friends.getByLabel('Friend’s code').fill('zzz-999');
+  await friends.getByRole('button', { name: 'Add friend' }).click();
+  await expect(page.getByText('That code is not valid')).toBeVisible();
+  await friends.getByLabel('Friend’s code').fill('abc-234');
+  await friends.getByRole('button', { name: 'Add friend' }).click();
+  const friend = friends.getByRole('listitem', { name: 'Friend Learner-R1V4LS' });
+  await expect(friend).toContainText('friends');
+
+  await friend.getByLabel('Subject').selectOption({ label: 'Physics' });
+  await friend.getByRole('button', { name: 'Challenge' }).click();
+  const challenge = page.getByRole('listitem', { name: 'Challenge in Physics with Learner-R1V4LS' });
+  await expect(challenge).toContainText('Waiting for Learner-R1V4LS to accept');
+  await challenge.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Test · Question 1 of 10')).toBeVisible();
+  await expect(page.getByText('Physics question 1?')).toBeVisible();
+});
+
+test('Friends: a minor waits for a parent or guardian, cannot challenge yet, and can report (from a list, no free text)', async ({ page }) => {
+  await signIn(page, 'kid@example.com');
+  await expect(page).toHaveURL(/\/home$/);
+  await page.goto('/compete');
+  const friends = page.getByRole('region', { name: 'Friends' });
+  await friends.getByLabel('Friend’s code').fill('ABC234');
+  await friends.getByRole('button', { name: 'Add friend' }).click();
+  const friend = friends.getByRole('listitem', { name: 'Friend Learner-R1V4LS' });
+  await expect(friend).toContainText('waiting for your parent or guardian to approve');
+  await expect(friend.getByRole('button', { name: /Challenge/ })).toHaveCount(0);
+  await expect(page.locator('main textarea')).toHaveCount(0);
+  await friend.getByLabel('Report Learner-R1V4LS').selectOption('MADE_ME_UNCOMFORTABLE');
+  await friend.getByRole('button', { name: 'Send report' }).click();
+  await expect(friends.getByRole('listitem', { name: 'Friend Learner-R1V4LS' })).toHaveCount(0);
+});
+
+test('Friends: switched off, there is no Friends section at all', async ({ page }) => {
+  await signIn(page, 'solo@example.com');
+  await expect(page).toHaveURL(/\/home$/);
+  await page.goto('/compete');
+  await expect(page.getByRole('heading', { name: 'You are Learner-AB3XYZ' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Friends' })).toHaveCount(0);
+});

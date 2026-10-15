@@ -172,3 +172,18 @@ describe('the seeded policy', () => {
     expect(parseCompetitionPolicy(JSON.parse(json))).toEqual(P);
   });
 });
+
+describe('CP_V2 (Step 16)', () => {
+  it('is CP_V1 plus ranked challenges at up to 100, and the Step 16 migration seeds exactly that', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { CP_V2 } = require('./competition-domain');
+    expect(CP_V2.base).toEqual({ ...P.base, CHALLENGE10: 100 });
+    expect({ ...CP_V2, base: P.base }).toEqual(P);
+    const { readFileSync } = require('node:fs');
+    const { join } = require('node:path');
+    const sql: string = readFileSync(join(__dirname, '../../../../docs/implementation/CONSTRUCTION-016_SOCIAL_MIGRATION_EXTRA.sql'), 'utf8');
+    const json = sql.match(/'(\{.*\})'::jsonb/)![1];
+    expect(parseCompetitionPolicy(JSON.parse(json))).toEqual(CP_V2);
+    expect(qualify({ mode: 'TEST', blueprint: 'CHALLENGE10', competitiveEligible: true, invalidated: false, items: quick(() => true), previousAccuracy: null }, CP_V2).cp).toBe(90);
+  });
+});

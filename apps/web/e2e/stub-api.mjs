@@ -13,6 +13,7 @@ const PEOPLE = {
   'soon@example.com': { name: 'Mei', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_9' }, chapters: {} },
   'new@example.com': { name: null, cohort: null, chapters: {}, isNew: true },
   'kid@example.com': { name: 'Kiran', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_8' }, chapters: {}, minor: true },
+  'solo@example.com': { name: 'Sol', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_8' }, chapters: {}, socialOff: true },
 };
 
 const SUBJECTS = [
@@ -28,6 +29,30 @@ const sessions = new Map(); // token -> email
 const assessments = new Map(); // id -> assessment
 const recs = new Map(); // id -> recommendation (Step 14)
 const hidden = new Set(); // emails of adults who chose to be hidden (Step 15)
+const social = new Map(); // email -> { code, friends, challenges } (Step 16)
+/** The stub knows one other student, whose code is ABC234. */
+const RIVAL = { code: 'ABC234', handle: 'Learner-R1V4LS' };
+
+function socialOf(p) {
+  if (!social.has(p.email)) social.set(p.email, { code: null, friends: [], challenges: [] });
+  return social.get(p.email);
+}
+function socialView(p) {
+  if (p.socialOff) return { enabled: false };
+  const s = socialOf(p);
+  return {
+    enabled: true,
+    restricted: false,
+    handle: p.minor ? 'Learner-KQ7M2D' : 'Learner-AB3XYZ',
+    code: s.code,
+    friends: s.friends,
+    challenges: s.challenges.map((c) => {
+      const a = c.myAssessmentId ? assessments.get(c.myAssessmentId) : null;
+      return { ...c, myState: !a ? 'NOT_STARTED' : a.status === 'IN_PROGRESS' ? 'IN_PROGRESS' : 'FINISHED' };
+    }),
+    subjects: unitsFor(p).map((u) => ({ subjectVersionId: u.subjectVersionId, subjectName: u.subjectName })),
+  };
+}
 
 /** Step 15. The real API scores tests about 30 seconds after submit; the stub scores at once: 90 x correct / total. */
 function competeFor(p) {
@@ -223,6 +248,7 @@ const server = createServer(async (req, res) => {
     assessments.clear();
     recs.clear();
     hidden.clear();
+    social.clear();
     return json(res, 200, { reset: true });
   }
   if (key === 'POST identity/otp/request') return json(res, 202, { sent: true });
@@ -267,6 +293,49 @@ const server = createServer(async (req, res) => {
     });
   }
   if (key === 'GET compete') return json(res, 200, competeFor(p));
+  // Step 16. Off for solo@example.com, as when SOCIAL_FEATURES_ENABLED is false.
+  if (key === 'GET social') return json(res, 200, socialView(p));
+  if (path.startsWith('social') && p.socialOff) return json(res, 404, { message: 'Not found' });
+  if (key === 'POST social/code') {
+    const s = socialOf(p);
+    s.code = { code: 'XYZ789', expiresAt: new Date(Date.now() + 15 * 60_000).toISOString() };
+    return json(res, 200, s.code);
+  }
+  if (key === 'POST social/friends') {
+    const typed = String(body.code ?? '').replace(/[\s-]/g, '').toUpperCase();
+    if (typed !== RIVAL.code) return json(res, 404, { message: 'That code is not valid, has been used, or has expired. Ask your friend to show you a new one.' });
+    const s = socialOf(p);
+    if (s.friends.length) return json(res, 409, { message: 'You are already friends (or waiting for approval)' });
+    const f = { friendshipId: randomUUID(), handle: RIVAL.handle, status: p.minor ? 'PENDING_GUARDIAN' : 'ACTIVE', waitingFor: p.minor ? ['YOUR_GUARDIAN'] : [] };
+    s.friends.push(f);
+    return json(res, 200, { friendshipId: f.friendshipId, status: f.status });
+  }
+  const sf = path.match(/^social\/friends\/([0-9a-f-]{36})\/(unfriend|block|report)$/);
+  if (req.method === 'POST' && sf) {
+    const s = socialOf(p);
+    if (!s.friends.some((f) => f.friendshipId === sf[1])) return json(res, 404, { message: 'Friend not found' });
+    if (sf[2] === 'report' && !['UNWANTED_CONTACT', 'CHALLENGE_SPAM', 'SUSPECTED_CHEATING', 'MADE_ME_UNCOMFORTABLE', 'OTHER'].includes(body.reason)) return json(res, 400, { message: 'Choose one of the reasons' });
+    s.friends = s.friends.filter((f) => f.friendshipId !== sf[1]);
+    for (const c of s.challenges) if (c.status === 'PENDING' || c.status === 'ACTIVE') c.status = 'CANCELLED';
+    return json(res, 200, { [sf[2] === 'unfriend' ? 'ended' : sf[2] === 'block' ? 'blocked' : 'reported']: true });
+  }
+  if (key === 'POST social/challenges') {
+    const s = socialOf(p);
+    const f = s.friends.find((x) => x.friendshipId === body.friendshipId);
+    if (!f || f.status !== 'ACTIVE') return json(res, 409, { message: 'You can only challenge a friend whose friendship is active' });
+    const u = unitsFor(p).find((x) => x.subjectVersionId === body.subjectVersionId);
+    if (s.challenges.some((c) => c.subjectName === u.subjectName && (c.status === 'PENDING' || c.status === 'ACTIVE'))) return json(res, 409, { message: 'You already have an open challenge with this friend' });
+    const c = { id: randomUUID(), role: 'CHALLENGER', status: 'PENDING', subjectName: u.subjectName, subject: u, opponentHandle: f.handle, expiresAt: new Date(Date.now() + 48 * 3600_000).toISOString(), myAssessmentId: null, result: null };
+    s.challenges.push(c);
+    return json(res, 200, { challengeId: c.id });
+  }
+  const sc = path.match(/^social\/challenges\/([0-9a-f-]{36})\/start$/);
+  if (req.method === 'POST' && sc) {
+    const c = socialOf(p).challenges.find((x) => x.id === sc[1]);
+    if (!c) return json(res, 404, { message: 'Challenge not found' });
+    if (!c.myAssessmentId) c.myAssessmentId = newAssessment(p, c.subject, 'TEST', 'CHALLENGE10');
+    return json(res, 200, { assessmentId: c.myAssessmentId });
+  }
   if (key === 'PUT compete/visibility') {
     if (p.minor) return json(res, 409, { message: 'Students who are minors are not shown to other students on leaderboards yet, so there is nothing to change' });
     if (body.shown) hidden.delete(p.email);

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { AppNav } from './AppNav';
+import { Social } from './Social';
 import { ApiError, bff, type CompeteBoard, type CompeteView } from '@/lib/client-api';
 
 const DAY = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' });
@@ -81,6 +82,7 @@ export function Compete() {
           )}
         </>
       )}
+      <Social />
     </div>
   );
 }
