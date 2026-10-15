@@ -52,6 +52,9 @@ const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
   { method: 'POST', path: 'parent-sharing/invitations' },
   { method: 'POST', path: 'parent-sharing/invitations/cancel' },
   { method: 'GET', path: 'parent-sharing/preview' },
+  // Plans (Step 18): the student's own; and administration (SUPER_ADMIN, enforced by the API).
+  { method: 'GET', path: 'entitlements' },
+  { method: 'POST', path: 'admin/entitlements/lookup' },
 ];
 
 /** Admin curriculum routes carry a unit id, so they are matched by an exact pattern, never a prefix. */
@@ -102,6 +105,10 @@ const ALLOWED_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: 'POST', pattern: new RegExp(`^parent/children/${UUID}/leave$`) },
   { method: 'POST', pattern: new RegExp(`^parent-sharing/viewers/${UUID}/stop$`) },
   { method: 'GET', pattern: new RegExp(`^parent-sharing/preview/reports/${UUID}$`) },
+  // Plans administration (Step 18).
+  { method: 'GET', pattern: new RegExp(`^admin/entitlements/students/${UUID}$`) },
+  { method: 'POST', pattern: new RegExp(`^admin/entitlements/students/${UUID}/(subscriptions|grants)$`) },
+  { method: 'POST', pattern: new RegExp(`^admin/entitlements/(subscriptions|grants)/${UUID}/(end|revoke)$`) },
 ];
 
 export function isAllowed(method: string, path: string): boolean {

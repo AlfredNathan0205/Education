@@ -1,6 +1,7 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Prisma } from '@exam-app/database';
 import { DatabaseService } from '../database/database.service';
+import { EntitlementService } from '../entitlement/entitlement.service';
 import { ExamConflictError, ExamInputError, ExamNotFoundError, ExamNotPermittedError } from '../exam/exam.errors';
 import { ExamService } from '../exam/exam.service';
 import { findConsentWording } from '../guardian/consent-texts';
@@ -130,6 +131,8 @@ export class ParentService {
     private readonly outbox: OutboxService,
     @Inject(PARENT_SHARE_MAILER) private readonly mailer: ParentShareMailer,
     @Inject(PARENT_WEB_BASE) private readonly webBase: string,
+    // Step 18: how many weeks of reports the student's plan opens (absent = all).
+    @Optional() private readonly entitlements?: EntitlementService,
   ) {}
 
   // ── viewer side ────────────────────────────────────────────────────────────
@@ -473,10 +476,11 @@ export class ParentService {
         AND NOT EXISTS (SELECT 1 FROM mastery_update_run m WHERE m.session_id = s.id
           AND m.result_revision = CASE WHEN s.status = 'INVALIDATED' THEN -1 ELSE r.correction_count END)`;
     const lastSession = await db.assessment_session.findFirst({ where: { student_id: studentId, status: 'SUBMITTED' }, orderBy: { submitted_at: 'desc' }, select: { submitted_at: true } });
+    const weeks = this.entitlements ? await this.entitlements.reportWeeks(studentId, now) : null;
     const reports: any[] = await db.student_report.findMany({
       where: { student_id: studentId },
       orderBy: { week_start: 'desc' },
-      take: 12,
+      take: weeks === null ? 12 : Math.min(12, weeks),
       include: { versions: { orderBy: { version: 'desc' }, take: 1, select: { version: true } } },
     });
     return {
@@ -493,6 +497,11 @@ export class ParentService {
     const db = this.db.client as any;
     const report = await db.student_report.findUnique({ where: { id: reportId }, include: { versions: { orderBy: { version: 'desc' }, take: 1 } } });
     if (!report || report.student_id !== studentId || !report.versions.length) throw new ExamNotFoundError('Report not found');
+    const weeks = this.entitlements ? await this.entitlements.reportWeeks(studentId) : null;
+    if (weeks !== null) {
+      const newer = await db.student_report.count({ where: { student_id: studentId, week_start: { gt: report.week_start } } });
+      if (newer >= weeks) throw new ExamNotPermittedError(`Weekly reports older than ${weeks} weeks are not included in this plan`);
+    }
     const v = report.versions[0];
     return { ...(v.content as SummaryContent), id: report.id, version: v.version, reason: v.reason, generatedAt: v.generated_at.toISOString() };
   }

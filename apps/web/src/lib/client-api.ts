@@ -625,3 +625,31 @@ export function recalledShareToken(): string | null {
     return null;
   }
 }
+
+// ── Step 18: plans and entitlements ─────────────────────────────────────────
+
+export interface EntitlementValues {
+  SELF_TESTS_PER_DAY: number | null;
+  LONG_TESTS: boolean;
+  PARENT_REPORT_WEEKS: number | null;
+}
+
+export interface MyPlan {
+  planName: string;
+  sources: Array<{ planName: string; source: string; endsAt: string | null }>;
+  values: EntitlementValues;
+  startedToday: number;
+  leftToday: number | null;
+}
+
+export interface StaffPlanView {
+  studentId: string;
+  label: string;
+  effective: EntitlementValues;
+  subscriptions: Array<{ id: string; planCode: string; source: string; status: string; startsAt: string; endsAt: string | null; holder: string | null; events: Array<{ type: string; at: string; reason: string | null }> }>;
+  grants: Array<{ id: string; key: string; value: unknown; endsAt: string; reason: string; revoked: boolean }>;
+  plans: Array<{ code: string; name: string; isDefault: boolean }>;
+}
+
+/** Tests of this many questions or more are "long" (mirrors the API's LONG_TEST_QUESTIONS). */
+export const LONG_TEST_QUESTIONS = 20;

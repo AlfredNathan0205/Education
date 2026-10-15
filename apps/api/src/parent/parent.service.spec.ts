@@ -82,6 +82,7 @@ function fakeDb() {
       t(table).push(row);
       return { ...row };
     }),
+    count: jest.fn(async (a: any = {}) => t(table).filter((r) => matches(table, r, a.where)).length),
     update: jest.fn(async ({ where, data }: any) => Object.assign(t(table).find((r) => matches(table, r, where))!, data)),
     updateMany: jest.fn(async ({ where, data }: any) => {
       const rows = t(table).filter((r) => matches(table, r, where));
@@ -294,6 +295,20 @@ describe('weekly reports', () => {
     expect(seen).toMatchObject({ version: 2, reason: 'EVIDENCE_CHANGED' });
     await expect(b.service.report('acct-other', 'kid', report.id, NOW)).rejects.toBeInstanceOf(ExamNotFoundError);
     expect((await b.service.dashboard('acct-mum', 'kid', NOW)).reports).toEqual([{ id: report.id, weekStart: '2026-10-04T18:30:00.000Z', weekEnd: '2026-10-11T18:30:00.000Z', version: 2 }]);
+  });
+
+  it('Step 18: only the plan\'s weeks of reports are listed or opened', async () => {
+    const b = build({ guardianOf: { 'acct-mum': ['kid'] } });
+    const entitlements: any = { reportWeeks: jest.fn(async () => 1) };
+    const svc = new ParentService({ client: b.client } as any, b.privacy, { subjectsFor: async () => [] } as any, b.outbox, b.mailer, 'https://app.example.com', entitlements);
+    b.T.student_report = [
+      { id: 'r-old', student_id: 'kid', week_start: new Date('2026-09-27T18:30:00Z'), week_end: new Date('2026-10-04T18:30:00Z') },
+      { id: 'r-new', student_id: 'kid', week_start: new Date('2026-10-04T18:30:00Z'), week_end: new Date('2026-10-11T18:30:00Z') },
+    ];
+    b.T.student_report_version = ['r-old', 'r-new'].map((id) => ({ id: `${id}-v1`, report_id: id, version: 1, reason: 'WEEK_ENDED', content: { period: {} }, generated_at: NOW }));
+    expect((await svc.dashboard('acct-mum', 'kid', NOW)).reports.map((r) => r.id)).toEqual(['r-new']);
+    await expect(svc.report('acct-mum', 'kid', 'r-old', NOW)).rejects.toThrow(/older than 1 weeks are not included/);
+    await expect(svc.report('acct-mum', 'kid', 'r-new', NOW)).resolves.toMatchObject({ id: 'r-new' });
   });
 
   it('the switch: REPORTS_ENABLED', () => {

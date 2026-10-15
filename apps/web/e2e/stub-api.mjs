@@ -17,7 +17,24 @@ const PEOPLE = {
   // Step 17: Kiran's approving guardian, and a parent an adult student (Asha) can invite.
   'mum@example.com': { name: null, cohort: null, chapters: {}, guardianOf: ['kid@example.com'] },
   'parent@example.com': { name: null, cohort: null, chapters: {} },
+  // Step 18: everyone above has the Beta plan (as during the private beta); these two see a long test offered.
+  'free@example.com': { name: 'Farah', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_8' }, chapters: {}, plan: 'FREE', longTest: true },
+  'beta@example.com': { name: 'Bea', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_8' }, chapters: {}, longTest: true },
 };
+const SUBJECT20 = { code: 'SUBJECT20', name: 'Subject 20', total: 20, ready: true };
+const FREE = { SELF_TESTS_PER_DAY: 3, LONG_TESTS: false, PARENT_REPORT_WEEKS: 4 };
+const ALL = { SELF_TESTS_PER_DAY: null, LONG_TESTS: true, PARENT_REPORT_WEEKS: null };
+function planOf(p) {
+  const values = p.plan === 'FREE' ? FREE : ALL;
+  const startedToday = [...assessments.values()].filter((a) => a.email === p.email && !a.recommendationId && a.blueprint !== 'CHALLENGE10').length;
+  return {
+    planName: p.plan === 'FREE' ? 'Free' : 'Beta',
+    sources: p.plan === 'FREE' ? [] : [{ planName: 'Beta', source: 'BETA', endsAt: '2027-03-31T18:30:00.000Z' }],
+    values,
+    startedToday,
+    leftToday: values.SELF_TESTS_PER_DAY === null ? null : Math.max(0, values.SELF_TESTS_PER_DAY - startedToday),
+  };
+}
 
 const SUBJECTS = [
   { subjectVersionId: '11111111-1111-4111-8111-111111111111', subjectCode: 'CHEMISTRY', subjectName: 'Chemistry' },
@@ -147,7 +164,7 @@ function unitsFor(p) {
     usableQuestions: 40,
     ready: true,
     chosenChapters: (p.chapters[s.subjectCode] ?? []).length,
-    tests: TESTS,
+    tests: p.longTest ? [...TESTS, SUBJECT20] : TESTS,
   }));
 }
 
@@ -337,6 +354,7 @@ const server = createServer(async (req, res) => {
     });
   }
   if (key === 'GET compete') return json(res, 200, competeFor(p));
+  if (key === 'GET entitlements') return json(res, 200, planOf(p));
   // Step 17: the parent view and sharing.
   if (key === 'GET parent/children') return json(res, 200, childrenOf(p).map(({ email, ...c }) => c));
   const pc = path.match(/^parent\/children\/([0-9a-f-]{36})(?:\/(leave)|\/reports\/([0-9a-f-]{36}))?$/);
@@ -471,6 +489,10 @@ const server = createServer(async (req, res) => {
     const blueprint = body.blueprint ?? 'QUICK10';
     const open = mine(p.email).find((a) => a.status === 'IN_PROGRESS' && a.mode === body.mode && a.blueprint === blueprint && a.subject.subjectCode === subject.subjectCode);
     if (open) return json(res, 200, { assessmentId: open.id, resumed: true });
+    // Step 18: the plan limits only NEW tests the student chose themselves.
+    const plan = planOf(p);
+    if (blueprint === 'SUBJECT20' && !plan.values.LONG_TESTS) return json(res, 403, { message: 'Longer tests are not included in your plan.' });
+    if (plan.leftToday === 0) return json(res, 403, { message: "You've started all the tests your plan includes today. Your recommended practice and retests are still open, and you can start more tests tomorrow." });
     return json(res, 200, { assessmentId: newAssessment(p, subject, body.mode, blueprint), resumed: false });
   }
 

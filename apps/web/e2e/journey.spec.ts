@@ -359,3 +359,34 @@ test('Progress tells a minor their guardian sees a summary, and shows exactly wh
   await expect(page.getByRole('note')).toContainText('exactly the summary');
   await expect(page.getByRole('region', { name: 'Strengths shown' })).toBeVisible();
 });
+
+// ── Step 18: plans (stub: free@ is on the Free plan; everyone else has the beta plan) ──
+
+test('Plans: on Free, a long test is not offered and three self-chosen starts use up the day', async ({ page }) => {
+  await signedIn(page, 'free@example.com');
+  await page.goto('/tests');
+  await expect(page.getByText('Your plan: Free · 3 tests or practice sets left to start today')).toBeVisible();
+  const chemistry = page.locator('#CHEMISTRY');
+  await expect(chemistry.getByRole('button', { name: 'Subject 20 test' })).toBeDisabled();
+  await expect(chemistry.getByText('Longer tests are not included in your plan.')).toBeVisible();
+
+  for (const [subject, kind] of [['#CHEMISTRY', 'Test'], ['#PHYSICS', 'Test'], ['#CHEMISTRY', 'Practice']] as const) {
+    await page.goto('/tests');
+    await page.getByRole('button', { name: kind, exact: true }).click();
+    await page.locator(subject).getByRole('button', { name: `Quick 10 ${kind.toLowerCase()}` }).click();
+    await page.waitForURL(/\/tests\/[0-9a-f-]{36}$/);
+  }
+  await page.goto('/tests');
+  await expect(page.getByText("You've started all the tests your plan includes today")).toBeVisible();
+  await expect(page.locator('#PHYSICS').getByRole('button', { name: 'Quick 10 test' })).toBeDisabled();
+  // What was started can still be finished.
+  await expect(page.getByRole('link', { name: /Continue Chemistry test/ })).toBeVisible();
+});
+
+test('Plans: during the beta, everything is offered and there is no daily limit', async ({ page }) => {
+  await signedIn(page, 'beta@example.com');
+  await page.goto('/tests');
+  await expect(page.getByText(/Your plan: Beta \(until /)).toBeVisible();
+  await expect(page.getByText(/left to start today/)).toHaveCount(0);
+  await expect(page.locator('#CHEMISTRY').getByRole('button', { name: 'Subject 20 test' })).toBeEnabled();
+});

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthzModule } from '../authz/authz.module';
+import { EntitlementModule } from '../entitlement/entitlement.module';
 import { IdentityModule } from '../identity/identity.module';
 import { OutboxModule } from '../outbox/outbox.module';
 import { PrivacyModule } from '../privacy/privacy.module';
@@ -12,7 +13,7 @@ import { ItemInvalidationController } from './item-invalidation.controller';
 import { ItemInvalidationService } from './item-invalidation.service';
 
 @Module({
-  imports: [AuthzModule, IdentityModule, PrivacyModule, OutboxModule],
+  imports: [AuthzModule, IdentityModule, PrivacyModule, OutboxModule, EntitlementModule],
   controllers: [ExamController, ItemInvalidationController],
   providers: [
     ExamService,
