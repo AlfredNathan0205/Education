@@ -14,6 +14,9 @@ const PEOPLE = {
   'new@example.com': { name: null, cohort: null, chapters: {}, isNew: true },
   'kid@example.com': { name: 'Kiran', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_8' }, chapters: {}, minor: true },
   'solo@example.com': { name: 'Sol', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_8' }, chapters: {}, socialOff: true },
+  // Step 17: Kiran's approving guardian, and a parent an adult student (Asha) can invite.
+  'mum@example.com': { name: null, cohort: null, chapters: {}, guardianOf: ['kid@example.com'] },
+  'parent@example.com': { name: null, cohort: null, chapters: {} },
 };
 
 const SUBJECTS = [
@@ -30,6 +33,43 @@ const assessments = new Map(); // id -> assessment
 const recs = new Map(); // id -> recommendation (Step 14)
 const hidden = new Set(); // emails of adults who chose to be hidden (Step 15)
 const social = new Map(); // email -> { code, friends, challenges } (Step 16)
+const shares = new Map(); // student email -> { viewers: [{ grantId, viewerEmail, maskedEmail, since }], pending } (Step 17)
+let lastShareToken = null;
+const STUDENT_IDS = { 'kid@example.com': '33333333-3333-4333-8333-333333333333', 'student@example.com': '44444444-4444-4444-8444-444444444444' };
+const REPORT_ID = '55555555-5555-4555-8555-555555555555';
+const SHARING_WORDING = {
+  version: 1,
+  title: 'Share your progress summary with a parent',
+  draft: true,
+  paragraphs: ['DRAFT. This wording has not been reviewed by a lawyer and must not be used with real families.', 'The person you invite will be able to see a summary of your progress.'],
+};
+const mask = (e) => `${e[0]}***@${e.split('@')[1]}`;
+function sharesOf(email) {
+  if (!shares.has(email)) shares.set(email, { viewers: [], pending: null });
+  return shares.get(email);
+}
+/** What a parent sees (Step 17): labels and fixed sentences only; activity from this student's finished tests. */
+function parentSummary(email) {
+  const done = mine(email).filter((a) => a.status === 'SUBMITTED');
+  const claim = (kind, text, statement) => ({ kind, subjectName: 'Chemistry', chapterTitle: 'Chemical reactions', statement, label: kind === 'FOCUS' ? 'NEEDS_ATTENTION' : kind === 'STRENGTH' ? 'STRONG' : 'DEVELOPING', fromLabel: kind === 'IMPROVEMENT' ? 'NEEDS_ATTENTION' : null, text });
+  const now = new Date();
+  return {
+    period: { start: new Date(now.getTime() - 3 * 86400_000).toISOString(), end: now.toISOString() },
+    activity: { tests: done.filter((a) => a.mode === 'TEST').length, practice: done.filter((a) => a.mode === 'PRACTICE').length, questionsAnswered: done.length * 10, activeDays: done.length ? 1 : 0 },
+    subjects: [
+      { subjectName: 'Chemistry', objectives: 6, reportable: 3, counts: { NOT_STARTED: 2, BUILDING_EVIDENCE: 1, NEEDS_ATTENTION: 1, DEVELOPING: 1, SECURE: 0, STRONG: 1 }, chapters: [{ title: 'Chemical reactions', label: 'DEVELOPING' }, { title: 'Acids and bases', label: 'BUILDING_EVIDENCE' }] },
+    ],
+    strengths: [claim('STRENGTH', 'Shows strong understanding: Balance a chemical equation', 'Balance a chemical equation')],
+    focus: [claim('FOCUS', 'Worth more practice: Name the products of a reaction', 'Name the products of a reaction')],
+    improvements: [claim('IMPROVEMENT', 'Moved from needs attention to developing: Use word equations', 'Use word equations')],
+    claimPolicy: 'CLAIM_V1',
+  };
+}
+function childrenOf(p) {
+  const out = (p.guardianOf ?? []).map((e) => ({ studentId: STUDENT_IDS[e], label: PEOPLE[e].name, basis: 'GUARDIAN', email: e }));
+  for (const [email, s] of shares) if (s.viewers.some((v) => v.viewerEmail === p.email)) out.push({ studentId: STUDENT_IDS[email], label: PEOPLE[email].name, basis: 'STUDENT_SHARE', email });
+  return out;
+}
 /** The stub knows one other student, whose code is ABC234. */
 const RIVAL = { code: 'ABC234', handle: 'Learner-R1V4LS' };
 
@@ -249,8 +289,12 @@ const server = createServer(async (req, res) => {
     recs.clear();
     hidden.clear();
     social.clear();
+    shares.clear();
+    lastShareToken = null;
     return json(res, 200, { reset: true });
   }
+  // Test-only: the token of the last sharing email (the real API emails it). Not reachable through the web proxy.
+  if (key === 'GET __share-token') return json(res, 200, { token: lastShareToken });
   if (key === 'POST identity/otp/request') return json(res, 202, { sent: true });
   if (key === 'POST identity/otp/verify') {
     if (body.code !== '123456' || !PEOPLE[body.identifier]) return json(res, 401, { message: 'Invalid code' });
@@ -293,6 +337,83 @@ const server = createServer(async (req, res) => {
     });
   }
   if (key === 'GET compete') return json(res, 200, competeFor(p));
+  // Step 17: the parent view and sharing.
+  if (key === 'GET parent/children') return json(res, 200, childrenOf(p).map(({ email, ...c }) => c));
+  const pc = path.match(/^parent\/children\/([0-9a-f-]{36})(?:\/(leave)|\/reports\/([0-9a-f-]{36}))?$/);
+  if (pc) {
+    const child = childrenOf(p).find((c) => c.studentId === pc[1]);
+    if (!child) return json(res, 404, { message: 'Not found' });
+    if (pc[2] === 'leave') {
+      if (child.basis === 'GUARDIAN') return json(res, 409, { message: 'You see this summary through your approval.' });
+      const s = sharesOf(child.email);
+      s.viewers = s.viewers.filter((v) => v.viewerEmail !== p.email);
+      return json(res, 200, { left: true });
+    }
+    if (pc[3]) {
+      if (pc[3] !== REPORT_ID) return json(res, 404, { message: 'Report not found' });
+      const now = new Date();
+      return json(res, 200, { ...parentSummary(child.email), period: { start: new Date(now.getTime() - 10 * 86400_000).toISOString(), end: new Date(now.getTime() - 3 * 86400_000).toISOString() }, id: REPORT_ID, version: 1, reason: 'WEEK_ENDED', generatedAt: now.toISOString() });
+    }
+    const now = new Date();
+    return json(res, 200, {
+      ...parentSummary(child.email),
+      child: { studentId: child.studentId, label: child.label },
+      basis: child.basis,
+      pending: false,
+      lastActiveAt: null,
+      reports: [{ id: REPORT_ID, weekStart: new Date(now.getTime() - 10 * 86400_000).toISOString(), weekEnd: new Date(now.getTime() - 3 * 86400_000).toISOString(), version: 1 }],
+    });
+  }
+  const pi = path.match(/^parent\/invitations\/(preview|accept|decline)$/);
+  if (pi && req.method === 'POST') {
+    const owner = [...shares.entries()].find(([, s]) => s.pending?.token === body.token);
+    if (!owner) return json(res, 404, { message: 'This link is not valid' });
+    const [studentEmail, s] = owner;
+    if (s.pending.email !== p.email) return json(res, 403, { message: 'Sign in with the email address this invitation was sent to' });
+    if (pi[1] === 'preview') return json(res, 200, { expiresAt: s.pending.expiresAt });
+    if (pi[1] === 'accept') s.viewers.push({ grantId: randomUUID(), viewerEmail: p.email, maskedEmail: mask(p.email), since: new Date().toISOString() });
+    s.pending = null;
+    return json(res, 200, pi[1] === 'accept' ? { studentId: STUDENT_IDS[studentEmail] } : { declined: true });
+  }
+  if (key === 'GET parent-sharing') {
+    const s = sharesOf(p.email);
+    if (p.minor) return json(res, 200, { canShare: false, refusal: 'Your parent or guardian already sees your progress summary through their approval', isMinor: true, guardianViewers: 1, viewers: [], pending: null, consent: null });
+    const full = s.viewers.length + (s.pending ? 1 : 0) >= 2;
+    return json(res, 200, {
+      canShare: !full,
+      refusal: full ? 'You can share with up to 2 people at a time. Stop sharing with someone first.' : null,
+      isMinor: false,
+      guardianViewers: 0,
+      viewers: s.viewers.map(({ viewerEmail, ...v }) => v),
+      pending: s.pending ? { maskedEmail: mask(s.pending.email), expiresAt: s.pending.expiresAt } : null,
+      consent: SHARING_WORDING,
+    });
+  }
+  if (key === 'POST parent-sharing/invitations') {
+    if (p.minor) return json(res, 409, { message: 'Your parent or guardian already sees your progress summary through their approval' });
+    if (body.agreed !== true) return json(res, 400, { message: 'Tick the box to agree before sending' });
+    if (body.consentVersion !== SHARING_WORDING.version) return json(res, 409, { message: 'The wording has changed. Please read it again before agreeing.' });
+    const email = String(body.email ?? '').trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json(res, 400, { message: 'Enter a valid email address' });
+    if (email === p.email) return json(res, 400, { message: "Enter a parent's own email address, not yours" });
+    lastShareToken = randomUUID().replace(/-/g, '') + 'abcdefghijk';
+    sharesOf(p.email).pending = { email, token: lastShareToken, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString() };
+    return json(res, 200, { maskedEmail: mask(email), expiresAt: sharesOf(p.email).pending.expiresAt });
+  }
+  if (key === 'POST parent-sharing/invitations/cancel') {
+    sharesOf(p.email).pending = null;
+    return json(res, 200, { cancelled: true });
+  }
+  const ps = path.match(/^parent-sharing\/viewers\/([0-9a-f-]{36})\/stop$/);
+  if (ps && req.method === 'POST') {
+    const s = sharesOf(p.email);
+    if (!s.viewers.some((v) => v.grantId === ps[1])) return json(res, 404, { message: 'Not found' });
+    s.viewers = s.viewers.filter((v) => v.grantId !== ps[1]);
+    return json(res, 200, { stopped: true });
+  }
+  if (key === 'GET parent-sharing/preview') {
+    return json(res, 200, { ...parentSummary(p.email), child: { studentId: STUDENT_IDS[p.email] ?? 'stub', label: p.name ?? 'Student' }, basis: 'SELF_PREVIEW', pending: false, lastActiveAt: null, reports: [] });
+  }
   // Step 16. Off for solo@example.com, as when SOCIAL_FEATURES_ENABLED is false.
   if (key === 'GET social') return json(res, 200, socialView(p));
   if (path.startsWith('social') && p.socialOff) return json(res, 404, { message: 'Not found' });

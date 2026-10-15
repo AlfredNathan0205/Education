@@ -423,7 +423,7 @@ export class SocialService {
     const out = [];
     for (const r of rows) {
       const other = r.friendship.student_low === r.student_id ? r.friendship.student_high : r.friendship.student_low;
-      out.push({ approvalId: r.id, studentName: mine.find((m) => m.studentId === r.student_id)?.displayName ?? null, otherHandle: await this.handleFor(db, other), requestedAt: r.created_at.toISOString() });
+      out.push({ approvalId: r.id, studentName: ((m) => m?.label ?? m?.displayName ?? null)(mine.find((m) => m.studentId === r.student_id) as { label?: string; displayName: string | null } | undefined), otherHandle: await this.handleFor(db, other), requestedAt: r.created_at.toISOString() });
     }
     return out;
   }

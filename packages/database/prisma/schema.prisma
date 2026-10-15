@@ -2230,3 +2230,126 @@ model challenge_participant {
 
   @@unique([challenge_id, student_id])
 }
+
+// ── Step 17: parent claim gate and parent web ──────────────────────────────────
+
+/// Versioned rules for what may be said to a parent (claim kinds, limits, the trend gate, wording templates).
+/// Exactly one ACTIVE (partial unique index in the migration).
+model claim_policy_version {
+  id         String   @id @default(uuid()) @db.Uuid
+  code       String   @unique @db.VarChar(32)
+  /// ACTIVE or RETIRED.
+  status     String   @db.VarChar(16)
+  /// See parent-domain.ts for the shape.
+  params     Json
+  notes      String?  @db.VarChar(1000)
+  created_at DateTime @default(now())
+
+  report_versions student_report_version[]
+}
+
+/// One weekly report per student and week (weeks run Monday to Monday, India time, as the leaderboards).
+model student_report {
+  id         String   @id @default(uuid()) @db.Uuid
+  student_id String   @db.Uuid
+  week_start DateTime
+  week_end   DateTime
+  created_at DateTime @default(now())
+
+  versions student_report_version[]
+
+  @@unique([student_id, week_start])
+  @@index([student_id, week_start])
+}
+
+/// A frozen version of a weekly report. A later invalidation of that week's evidence adds a new version; versions
+/// are never edited.
+model student_report_version {
+  id                        String   @id @default(uuid()) @db.Uuid
+  report_id                 String   @db.Uuid
+  version                   Int
+  claim_policy_version_id   String   @db.Uuid
+  mastery_policy_version_id String   @db.Uuid
+  /// WEEK_ENDED or EVIDENCE_CHANGED.
+  reason                    String   @db.VarChar(24)
+  /// Activity, subject picture and the approved claims, exactly as shown. Labels and counts only, never numbers.
+  content                   Json
+  generated_at              DateTime @default(now())
+
+  report     student_report         @relation(fields: [report_id], references: [id], onDelete: Cascade)
+  policy     claim_policy_version   @relation(fields: [claim_policy_version_id], references: [id])
+  claims     report_claim[]
+  suppressed suppressed_claim[]
+
+  @@unique([report_id, version])
+}
+
+/// An approved claim in a report version (STRENGTH, FOCUS or IMPROVEMENT).
+model report_claim {
+  id                String   @id @default(uuid()) @db.Uuid
+  report_version_id String   @db.Uuid
+  kind              String   @db.VarChar(16)
+  subject_id        String   @db.Uuid
+  objective_path    String   @db.VarChar(300)
+  label             String   @db.VarChar(24)
+  from_label        String?  @db.VarChar(24)
+  template_code     String   @db.VarChar(32)
+  created_at        DateTime @default(now())
+
+  report_version student_report_version @relation(fields: [report_version_id], references: [id], onDelete: Cascade)
+
+  @@index([report_version_id])
+}
+
+/// A candidate claim the gate refused, and why. Kept so it is visible what was NOT said, and why.
+model suppressed_claim {
+  id                String   @id @default(uuid()) @db.Uuid
+  report_version_id String   @db.Uuid
+  kind              String   @db.VarChar(16)
+  subject_id        String   @db.Uuid
+  objective_path    String   @db.VarChar(300)
+  reason            String   @db.VarChar(32)
+  created_at        DateTime @default(now())
+
+  report_version student_report_version @relation(fields: [report_version_id], references: [id], onDelete: Cascade)
+
+  @@index([report_version_id])
+}
+
+/// An adult student's invitation to a parent to see their progress summary. Only the token hash is stored.
+model parent_share_invitation {
+  id                     String    @id @default(uuid()) @db.Uuid
+  student_id             String    @db.Uuid
+  email_normalized       String    @db.VarChar(320)
+  token_hash             String    @unique @db.VarChar(64)
+  /// The student's own consent to share (purpose PARENT_REPORT_SHARING), recorded when they sent it.
+  consent_record_id      String    @db.Uuid
+  /// PENDING, ACCEPTED, DECLINED, CANCELLED.
+  status                 String    @db.VarChar(16)
+  expires_at             DateTime
+  created_at             DateTime  @default(now())
+  resolved_at            DateTime?
+  accepted_by_account_id String?   @db.Uuid
+
+  @@index([student_id, created_at])
+  @@index([email_normalized, created_at])
+}
+
+/// A parent's access to an adult student's summary, granted by the student's invitation. Ends when either side
+/// stops it (or the student's consent is withdrawn). Guardians of minors do not need a row: their live guardian
+/// approval is the access.
+model parent_view_grant {
+  id                  String    @id @default(uuid()) @db.Uuid
+  student_id          String    @db.Uuid
+  viewer_account_id   String    @db.Uuid
+  invitation_id       String    @unique @db.Uuid
+  consent_record_id   String    @unique @db.Uuid
+  granted_at          DateTime  @default(now())
+  ended_at            DateTime?
+  ended_by_account_id String?   @db.Uuid
+  /// STUDENT_STOPPED, VIEWER_LEFT.
+  ended_reason        String?   @db.VarChar(24)
+
+  @@index([viewer_account_id])
+  @@index([student_id])
+}

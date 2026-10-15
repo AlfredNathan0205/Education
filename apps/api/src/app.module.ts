@@ -19,6 +19,7 @@ import { MasteryModule } from './mastery/mastery.module';
 import { RecommendationModule } from './recommendation/recommendation.module';
 import { CompetitionModule } from './competition/competition.module';
 import { SocialModule } from './social/social.module';
+import { ParentModule } from './parent/parent.module';
 import { GuardianModule } from './guardian/guardian.module';
 import { SchoolModule } from './school/school.module';
 
@@ -46,6 +47,7 @@ import { SchoolModule } from './school/school.module';
     RecommendationModule,
     CompetitionModule,
     SocialModule,
+    ParentModule,
     GuardianModule,
     StudentModule,
     SchoolModule,

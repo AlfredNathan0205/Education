@@ -225,6 +225,8 @@ export interface GuardianApproval {
   consentRecordId: string;
   studentId: string;
   displayName: string | null;
+  /** Step 17: the display name, else the student's own sign-in address, masked. */
+  label?: string;
   grantedAt: string;
 }
 
@@ -540,4 +542,86 @@ export interface MasteryView {
       items: Array<{ path: string; code: string; statement: string; label: MasteryLabel; answers: number }>;
     }>;
   }>;
+}
+
+// ── Step 17: parent view and sharing ─────────────────────────────────────────
+
+export type ViewBasis = 'GUARDIAN' | 'STUDENT_SHARE' | 'SELF_PREVIEW';
+
+export interface ParentChild {
+  studentId: string;
+  label: string;
+  basis: 'GUARDIAN' | 'STUDENT_SHARE';
+}
+
+export interface ParentClaim {
+  kind: 'STRENGTH' | 'FOCUS' | 'IMPROVEMENT';
+  subjectName: string;
+  chapterTitle: string;
+  statement: string;
+  label: MasteryLabel;
+  fromLabel: MasteryLabel | null;
+  text: string;
+}
+
+export interface ParentSubjectPicture {
+  subjectName: string;
+  objectives: number;
+  reportable: number;
+  counts: Record<MasteryLabel, number>;
+  chapters: Array<{ title: string; label: MasteryLabel }>;
+}
+
+export interface ParentSummaryContent {
+  period: { start: string; end: string };
+  activity: { tests: number; practice: number; questionsAnswered: number; activeDays: number };
+  subjects: ParentSubjectPicture[];
+  strengths: ParentClaim[];
+  focus: ParentClaim[];
+  improvements: ParentClaim[];
+  claimPolicy: string;
+}
+
+export interface ParentDashboard extends ParentSummaryContent {
+  child: { studentId: string; label: string };
+  basis: ViewBasis;
+  pending: boolean;
+  lastActiveAt: string | null;
+  reports: Array<{ id: string; weekStart: string; weekEnd: string; version: number }>;
+}
+
+export interface ParentReport extends ParentSummaryContent {
+  id: string;
+  version: number;
+  reason: 'WEEK_ENDED' | 'EVIDENCE_CHANGED';
+  generatedAt: string;
+}
+
+export interface SharingStatus {
+  canShare: boolean;
+  refusal: string | null;
+  isMinor: boolean;
+  guardianViewers: number;
+  viewers: Array<{ grantId: string; maskedEmail: string; since: string }>;
+  pending: { maskedEmail: string; expiresAt: string } | null;
+  consent: { version: number; title: string; paragraphs: string[]; draft: boolean } | null;
+}
+
+export const SHARE_TOKEN_KEY = 'parent_share_token';
+
+/** The sharing link's token lives only in this tab's sessionStorage (never in a URL or cookie). */
+export function rememberShareToken(token: string | null): void {
+  try {
+    if (token) sessionStorage.setItem(SHARE_TOKEN_KEY, token);
+    else sessionStorage.removeItem(SHARE_TOKEN_KEY);
+  } catch {
+    /* storage unavailable: the link still works from the address bar fragment */
+  }
+}
+export function recalledShareToken(): string | null {
+  try {
+    return sessionStorage.getItem(SHARE_TOKEN_KEY);
+  } catch {
+    return null;
+  }
 }

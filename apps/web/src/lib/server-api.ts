@@ -43,6 +43,15 @@ const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
   { method: 'POST', path: 'social/challenges' },
   { method: 'GET', path: 'guardian/friendships' },
   { method: 'GET', path: 'admin/safety/reports' },
+  // Parent view and sharing (Step 17). Invitation tokens travel in the request body, never in the path.
+  { method: 'GET', path: 'parent/children' },
+  { method: 'POST', path: 'parent/invitations/preview' },
+  { method: 'POST', path: 'parent/invitations/accept' },
+  { method: 'POST', path: 'parent/invitations/decline' },
+  { method: 'GET', path: 'parent-sharing' },
+  { method: 'POST', path: 'parent-sharing/invitations' },
+  { method: 'POST', path: 'parent-sharing/invitations/cancel' },
+  { method: 'GET', path: 'parent-sharing/preview' },
 ];
 
 /** Admin curriculum routes carry a unit id, so they are matched by an exact pattern, never a prefix. */
@@ -87,6 +96,12 @@ const ALLOWED_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: 'POST', pattern: new RegExp(`^social/challenges/${UUID}/(accept|decline|start|report)$`) },
   { method: 'POST', pattern: new RegExp(`^guardian/friendships/${UUID}/(approve|decline)$`) },
   { method: 'POST', pattern: new RegExp(`^admin/safety/reports/${UUID}/resolve$`) },
+  // Parent view and sharing (Step 17).
+  { method: 'GET', pattern: new RegExp(`^parent/children/${UUID}$`) },
+  { method: 'GET', pattern: new RegExp(`^parent/children/${UUID}/reports/${UUID}$`) },
+  { method: 'POST', pattern: new RegExp(`^parent/children/${UUID}/leave$`) },
+  { method: 'POST', pattern: new RegExp(`^parent-sharing/viewers/${UUID}/stop$`) },
+  { method: 'GET', pattern: new RegExp(`^parent-sharing/preview/reports/${UUID}$`) },
 ];
 
 export function isAllowed(method: string, path: string): boolean {
