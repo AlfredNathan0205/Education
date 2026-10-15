@@ -237,3 +237,10 @@ export function publicHandle(random: () => number): string {
   for (let i = 0; i < 6; i++) s += ALPHABET[Math.floor(random() * ALPHABET.length)];
   return `Learner-${s}`;
 }
+
+/**
+ * CP_V2 (Step 16): CP_V1 plus ranked challenges, which earn CP like a Quick 10 (both players answer the same ten
+ * questions, unseen by either). No win bonus and no CP loss (spec). Seeded ACTIVE by the Step 16 migration, which
+ * retires CP_V1.
+ */
+export const CP_V2: CompetitionPolicy = { ...CP_V1, base: { ...CP_V1.base, CHALLENGE10: 100 } };

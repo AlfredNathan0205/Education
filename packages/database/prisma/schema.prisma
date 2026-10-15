@@ -2064,3 +2064,169 @@ model public_profile {
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
 }
+
+// ── Step 16: friends and ranked challenges (feature-flagged, off by default) ──
+
+/// A one-time code a student shows another in person to become friends. Expires in minutes; single use.
+model friend_code {
+  id                 String    @id @default(uuid()) @db.Uuid
+  student_id         String    @db.Uuid
+  code               String    @unique @db.VarChar(12)
+  created_at         DateTime  @default(now())
+  expires_at         DateTime
+  used_at            DateTime?
+  used_by_student_id String?   @db.Uuid
+
+  @@index([student_id, created_at])
+}
+
+/// Every code entered, right or wrong: wrong ones are rate-limited against guessing.
+model friend_code_attempt {
+  id         String   @id @default(uuid()) @db.Uuid
+  student_id String   @db.Uuid
+  ok         Boolean
+  at         DateTime @default(now())
+
+  @@index([student_id, at])
+}
+
+enum friendship_status {
+  /// Waiting for the guardian of each minor in the pair.
+  PENDING_GUARDIAN
+  ACTIVE
+  ENDED
+}
+
+/// One friendship per pair (student_low < student_high). At most one not ENDED per pair (partial unique index).
+model friendship {
+  id                  String            @id @default(uuid()) @db.Uuid
+  student_low         String            @db.Uuid
+  student_high        String            @db.Uuid
+  status              friendship_status
+  code_id             String?           @db.Uuid
+  created_at          DateTime          @default(now())
+  activated_at        DateTime?
+  ended_at            DateTime?
+  /// UNFRIENDED, BLOCKED, REPORTED, GUARDIAN_DECLINED.
+  ended_reason        String?           @db.VarChar(24)
+  ended_by_student_id String?           @db.Uuid
+
+  approvals friendship_guardian_approval[]
+
+  @@index([student_low])
+  @@index([student_high])
+}
+
+/// A minor's guardian approving (or declining) one friendship. One row per minor in the pair.
+model friendship_guardian_approval {
+  id                    String    @id @default(uuid()) @db.Uuid
+  friendship_id         String    @db.Uuid
+  student_id            String    @db.Uuid
+  /// PENDING, APPROVED, DECLINED.
+  status                String    @db.VarChar(16)
+  decided_by_account_id String?   @db.Uuid
+  decided_at            DateTime?
+  created_at            DateTime  @default(now())
+
+  friendship friendship @relation(fields: [friendship_id], references: [id], onDelete: Cascade)
+
+  @@unique([friendship_id, student_id])
+  @@index([student_id, status])
+}
+
+/// A block. Takes effect both ways for friendship and challenges; only the blocker can lift it.
+model student_block {
+  id                 String   @id @default(uuid()) @db.Uuid
+  blocker_student_id String   @db.Uuid
+  blocked_student_id String   @db.Uuid
+  created_at         DateTime @default(now())
+
+  @@unique([blocker_student_id, blocked_student_id])
+  @@index([blocked_student_id])
+}
+
+/// A report about another student. A reason code only (no free text). Ends any friendship at once; an admin reviews it.
+model safety_report {
+  id                     String    @id @default(uuid()) @db.Uuid
+  reporter_student_id    String    @db.Uuid
+  reported_student_id    String    @db.Uuid
+  /// UNWANTED_CONTACT, CHALLENGE_SPAM, SUSPECTED_CHEATING, MADE_ME_UNCOMFORTABLE, OTHER.
+  reason                 String    @db.VarChar(32)
+  friendship_id          String?   @db.Uuid
+  challenge_id           String?   @db.Uuid
+  /// OPEN or RESOLVED.
+  status                 String    @db.VarChar(16)
+  /// NO_ACTION or RESTRICTED.
+  resolution             String?   @db.VarChar(16)
+  resolved_by_account_id String?   @db.Uuid
+  resolved_at            DateTime?
+  created_at             DateTime  @default(now())
+
+  @@index([status, created_at])
+  @@index([reported_student_id])
+}
+
+/// An admin's restriction: the student may not use friends or challenges until it is lifted.
+model social_restriction {
+  id                    String    @id @default(uuid()) @db.Uuid
+  student_id            String    @db.Uuid
+  report_id             String?   @db.Uuid
+  created_by_account_id String    @db.Uuid
+  created_at            DateTime  @default(now())
+  lifted_at             DateTime?
+
+  @@index([student_id])
+}
+
+enum challenge_status {
+  /// Sent; the opponent has not accepted yet.
+  PENDING
+  /// Accepted: both may take it.
+  ACTIVE
+  DECLINED
+  EXPIRED
+  /// Both finished.
+  COMPLETED
+  /// Ended by a block, report or restriction.
+  CANCELLED
+}
+
+/// A ranked challenge between two friends: the same ten questions for both, unseen by either when it was made.
+model challenge {
+  id                    String           @id @default(uuid()) @db.Uuid
+  challenger_student_id String           @db.Uuid
+  opponent_student_id   String           @db.Uuid
+  friendship_id         String           @db.Uuid
+  curriculum_version_id String           @db.Uuid
+  grade_id              String           @db.Uuid
+  subject_id            String           @db.Uuid
+  subject_version_id    String           @db.Uuid
+  status                challenge_status
+  /// The question set, exactly as both players get it (revision, question, objective, difficulty, position, option order).
+  items                 Json
+  /// How it was assembled (seed, mix, relaxations).
+  assembly_report       Json
+  created_at            DateTime         @default(now())
+  expires_at            DateTime
+  responded_at          DateTime?
+  completed_at          DateTime?
+
+  participants challenge_participant[]
+
+  @@index([challenger_student_id, created_at])
+  @@index([opponent_student_id, status])
+}
+
+/// A player in a challenge and the test they take (created when they start).
+model challenge_participant {
+  id           String  @id @default(uuid()) @db.Uuid
+  challenge_id String  @db.Uuid
+  student_id   String  @db.Uuid
+  /// CHALLENGER or OPPONENT.
+  role         String  @db.VarChar(12)
+  session_id   String? @unique @db.Uuid
+
+  challenge challenge @relation(fields: [challenge_id], references: [id], onDelete: Cascade)
+
+  @@unique([challenge_id, student_id])
+}

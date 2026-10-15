@@ -36,6 +36,13 @@ const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
   // Competition (Step 15): this week's boards and the student's own visibility.
   { method: 'GET', path: 'compete' },
   { method: 'PUT', path: 'compete/visibility' },
+  // Friends and challenges (Step 16): 404 from the API while switched off.
+  { method: 'GET', path: 'social' },
+  { method: 'POST', path: 'social/code' },
+  { method: 'POST', path: 'social/friends' },
+  { method: 'POST', path: 'social/challenges' },
+  { method: 'GET', path: 'guardian/friendships' },
+  { method: 'GET', path: 'admin/safety/reports' },
 ];
 
 /** Admin curriculum routes carry a unit id, so they are matched by an exact pattern, never a prefix. */
@@ -75,6 +82,11 @@ const ALLOWED_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   // Practice and retest (Step 14).
   { method: 'POST', pattern: new RegExp(`^recommendations/${UUID}/(start|dismiss)$`) },
   { method: 'POST', pattern: new RegExp(`^recommendations/from-result/${UUID}$`) },
+  // Friends and challenges (Step 16).
+  { method: 'POST', pattern: new RegExp(`^social/friends/${UUID}/(unfriend|block|report)$`) },
+  { method: 'POST', pattern: new RegExp(`^social/challenges/${UUID}/(accept|decline|start|report)$`) },
+  { method: 'POST', pattern: new RegExp(`^guardian/friendships/${UUID}/(approve|decline)$`) },
+  { method: 'POST', pattern: new RegExp(`^admin/safety/reports/${UUID}/resolve$`) },
 ];
 
 export function isAllowed(method: string, path: string): boolean {

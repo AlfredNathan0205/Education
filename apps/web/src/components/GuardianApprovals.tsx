@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError, bff, type GuardianApproval } from '@/lib/client-api';
+import { GuardianFriendships } from './GuardianFriendships';
 
 export function GuardianApprovals() {
   const [items, setItems] = useState<GuardianApproval[] | null>(null);
@@ -52,6 +53,7 @@ export function GuardianApprovals() {
           </section>
         ))
       )}
+      <GuardianFriendships />
       <form action="/sign-out" method="post"><button className="btn secondary" type="submit">Sign out</button></form>
     </>
   );
