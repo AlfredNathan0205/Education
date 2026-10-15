@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { AppNav } from './AppNav';
-import { ApiError, bff, gradeLabel, type HomeView, type MyAssessment } from '@/lib/client-api';
+import { ApiError, LONG_TEST_QUESTIONS, bff, gradeLabel, type HomeView, type MyAssessment, type MyPlan } from '@/lib/client-api';
 import { startTest } from '@/lib/start-test';
 
 const DESCRIPTION: Record<string, string> = {
@@ -22,6 +22,7 @@ export function TestHome() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [plan, setPlan] = useState<MyPlan | null>(null);
 
   useEffect(() => {
     Promise.all([bff<HomeView>('GET', 'home'), bff<MyAssessment[]>('GET', 'exam/assessments')])
@@ -33,6 +34,8 @@ export function TestHome() {
         if (e instanceof ApiError && e.status === 401) window.location.assign('/sign-in');
         else setLoadError(e instanceof ApiError ? e.message : 'Could not load your tests.');
       });
+    // Step 18: the plan only shapes what is offered here; the API enforces it either way.
+    bff<MyPlan>('GET', 'entitlements').then(setPlan).catch(() => setPlan(null));
   }, []);
 
   async function start(subjectVersionId: string, blueprint: string) {
@@ -99,6 +102,7 @@ export function TestHome() {
       ) : (
         <section className="card" aria-labelledby="start">
           <h2 id="start">Start a new one</h2>
+          {plan && <PlanLine plan={plan} />}
           <div className="seg" role="group" aria-label="Kind">
             <button type="button" aria-pressed={mode === 'TEST'} onClick={() => setMode('TEST')}>Test</button>
             <button type="button" aria-pressed={mode === 'PRACTICE'} onClick={() => setMode('PRACTICE')}>Practice</button>
@@ -111,14 +115,21 @@ export function TestHome() {
                 {offered.every((t) => !t.ready) && <p className="muted">Questions are still being prepared. Check back soon.</p>}
                 {offered
                   .filter((t) => t.ready)
-                  .map((t) => (
-                    <div key={t.code} style={{ marginBottom: 10 }}>
-                      <button className="btn" disabled={busy !== null} onClick={() => start(s.subjectVersionId, t.code)} aria-describedby={`d-${s.subjectCode}-${t.code}`}>
-                        {busy === `${s.subjectVersionId}:${t.code}` ? 'Preparing…' : `${t.name} ${mode === 'TEST' ? 'test' : 'practice'}`}
-                      </button>
-                      <p className="hint" id={`d-${s.subjectCode}-${t.code}`}>{DESCRIPTION[t.code] ?? `${t.total} questions.`}</p>
-                    </div>
-                  ))}
+                  .map((t) => {
+                    const notInPlan = !!plan && t.total >= LONG_TEST_QUESTIONS && !plan.values.LONG_TESTS;
+                    const noneLeft = !!plan && plan.leftToday === 0;
+                    return (
+                      <div key={t.code} style={{ marginBottom: 10 }}>
+                        <button className="btn" disabled={busy !== null || notInPlan || noneLeft} onClick={() => start(s.subjectVersionId, t.code)} aria-describedby={`d-${s.subjectCode}-${t.code}`}>
+                          {busy === `${s.subjectVersionId}:${t.code}` ? 'Preparing…' : `${t.name} ${mode === 'TEST' ? 'test' : 'practice'}`}
+                        </button>
+                        <p className="hint" id={`d-${s.subjectCode}-${t.code}`}>
+                          {DESCRIPTION[t.code] ?? `${t.total} questions.`}
+                          {notInPlan && ' Longer tests are not included in your plan.'}
+                        </p>
+                      </div>
+                    );
+                  })}
                 {s.chosenChapters === 0 && s.tests.some((t) => t.code === 'FOCUS10') && (
                   <p className="hint">
                     <Link href="/profile/chapters">Choose your chapters</Link> to get a Focus 10 on what you are studying.
@@ -153,5 +164,20 @@ export function TestHome() {
         </section>
       )}
     </div>
+  );
+}
+
+/** Step 18: the student's plan, and today's tests left when their plan has a daily limit. */
+function PlanLine({ plan }: { plan: MyPlan }) {
+  const until = plan.sources.find((x) => x.endsAt)?.endsAt;
+  return (
+    <p className="hint" role="status" style={{ marginBottom: 10 }}>
+      Your plan: {plan.planName}
+      {until ? ` (until ${new Date(until).toLocaleDateString()})` : ''}
+      {plan.leftToday !== null &&
+        (plan.leftToday > 0
+          ? ` · ${plan.leftToday} test${plan.leftToday === 1 ? '' : 's'} or practice set${plan.leftToday === 1 ? '' : 's'} left to start today`
+          : " · You've started all the tests your plan includes today. Your recommended practice and retests on Home are still open.")}
+    </p>
   );
 }

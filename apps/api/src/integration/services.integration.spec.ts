@@ -40,6 +40,7 @@ import { RecommendationService } from '../recommendation/recommendation.service'
 import { CompetitionService } from '../competition/competition.service';
 import { SocialService } from '../social/social.service';
 import { ParentService } from '../parent/parent.service';
+import { EntitlementService } from '../entitlement/entitlement.service';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
@@ -79,6 +80,9 @@ async function cleanAll() {
   capturedCodes = [];
   (sender.send as jest.Mock).mockClear();
 
+  // Step 18: the subscription history refuses DELETE (append-only trigger); TRUNCATE still resets it in tests.
+  await prisma.$executeRawUnsafe('TRUNCATE "subscription_event", "subscription"');
+  await prisma.entitlement_grant.deleteMany();
   await prisma.report_claim.deleteMany();
   await prisma.suppressed_claim.deleteMany();
   await prisma.student_report_version.deleteMany();
@@ -1968,6 +1972,69 @@ describe('ExamService (real DB)', () => {
     expect(await prisma.consent_withdrawal.count({ where: { consent_record_id: grant.consent_record_id } })).toBe(1);
     await expect(parents.dashboard(mum.id, ann.studentId)).rejects.toThrow(/Not found/);
     expect(await prisma.audit_event.count({ where: { action: 'parent.sharing_ended', subject_id: ann.studentId } })).toBe(1);
+  });
+
+  // ---- Step 18: entitlements and subscription foundation ----
+
+  const entitlements = new EntitlementService(dbService, authzService, privacyService, outbox);
+  const limitedExam = new ExamService(dbService, privacyService, outbox, { allowUnactivatedCurriculum: false, resumeHours: 24 }, entitlements);
+
+  it('entitlements: the seeded plans; FREE limits only self-chosen starts; the beta grant lifts them; history is append-only', async () => {
+    expect(await prisma.plan.findMany({ orderBy: { code: 'asc' }, select: { code: true, is_default: true } })).toEqual([
+      { code: 'BETA', is_default: false },
+      { code: 'FREE', is_default: true },
+      { code: 'PLUS', is_default: false },
+    ]);
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const { accountId, studentId } = await adult();
+    for (let i = 0; i < 3; i++) {
+      const { assessmentId } = await limitedExam.create(accountId, { subjectVersionId: unitId, mode: i === 2 ? 'PRACTICE' : 'TEST' });
+      await answerWith(accountId, assessmentId, () => true);
+      await limitedExam.submit(accountId, assessmentId);
+    }
+    expect(await entitlements.mine(accountId)).toMatchObject({ planName: 'Free', startedToday: 3, leftToday: 0 });
+    await expect(limitedExam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' })).rejects.toThrow(/started all the tests your plan includes today/);
+    // A long test is refused on FREE whatever the count.
+    await expect(entitlements.assertCanStart(prisma as any, studentId, 20)).rejects.toThrow(/Longer tests/);
+
+    // The private beta: every student gets BETA to the date, and the limits are gone.
+    const until = new Date(Date.now() + 30 * 86_400_000);
+    expect(await entitlements.reconcile(until)).toMatchObject({ granted: 1 });
+    expect(await entitlements.reconcile(until)).toMatchObject({ granted: 0 });
+    expect((await entitlements.mine(accountId)).planName).toBe('Beta');
+    const { assessmentId } = await limitedExam.create(accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    expect(assessmentId).toBeTruthy();
+    // The database keeps one active beta per student, and a beta grant has no holder.
+    const beta = await prisma.plan.findUniqueOrThrow({ where: { code: 'BETA' } });
+    await expect(prisma.subscription.create({ data: { student_id: studentId, plan_id: beta.id, source: 'BETA', status: 'ACTIVE', starts_at: new Date(), ends_at: until } })).rejects.toThrow();
+    // The history cannot be edited.
+    await expect(prisma.subscription_event.updateMany({ data: { type: 'ENDED' } })).rejects.toThrow(/append-only/);
+  });
+
+  it('entitlements: an administrator grants a plan held by the adult student, and ends it; others may not; a minor cannot hold one', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const ann = await adult();
+    await prisma.authentication_identity.create({ data: { account_id: ann.accountId, kind: 'EMAIL', identifier_normalized: 'ann-step18@example.com', verified_at: new Date() } });
+    const kid = await guardedMinor('step18-mum@example.com');
+    const admin = await roleAccount('SUPER_ADMIN');
+
+    await expect(entitlements.grantPlan(ann.accountId, { studentId: ann.studentId, planCode: 'PLUS', reason: 'Comp for a bug' })).rejects.toThrow(/administrator/);
+    expect(await entitlements.lookup(admin, 'ANN-step18@example.com')).toEqual({ studentId: ann.studentId });
+    const { subscriptionId } = await entitlements.grantPlan(admin, { studentId: ann.studentId, planCode: 'PLUS', holderEmail: 'ann-step18@example.com', reason: 'Comp for a bug', endsAt: new Date(Date.now() + 86_400_000).toISOString() });
+    expect((await entitlements.mine(ann.accountId)).values).toMatchObject({ SELF_TESTS_PER_DAY: null, LONG_TESTS: true });
+    // The guardian may hold the minor's plan; the minor may not hold one.
+    const kidEmail = (await prisma.authentication_identity.findFirstOrThrow({ where: { account_id: kid.accountId } })).identifier_normalized;
+    await expect(entitlements.grantPlan(admin, { studentId: kid.studentId, planCode: 'PLUS', holderEmail: kidEmail, reason: 'Comp for a bug' })).rejects.toThrow(/minor cannot hold/);
+    await entitlements.grantPlan(admin, { studentId: kid.studentId, planCode: 'PLUS', holderEmail: 'step18-mum@example.com', reason: 'Comp for a bug' });
+    // Holding a plan gives the holder no access: the guardian's access is their approval, nothing more.
+    expect(await parents.children(kid.guardianId)).toHaveLength(1);
+
+    await entitlements.endSubscription(admin, subscriptionId, 'Refund requested');
+    expect((await entitlements.mine(ann.accountId)).values).toMatchObject({ SELF_TESTS_PER_DAY: 3, LONG_TESTS: false });
+    expect((await prisma.subscription_event.findMany({ where: { subscription_id: subscriptionId }, orderBy: { at: 'asc' } })).map((e: { type: string }) => e.type)).toEqual(['CREATED', 'ENDED']);
+    expect(await prisma.audit_event.count({ where: { action: { in: ['entitlement.plan_granted', 'entitlement.plan_ended'] } } })).toBe(3);
   });
 });
 

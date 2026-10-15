@@ -1,6 +1,7 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Prisma } from '@exam-app/database';
 import { DatabaseService } from '../database/database.service';
+import { EntitlementService } from '../entitlement/entitlement.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrivacyService } from '../privacy/privacy.service';
 import { DEFAULT_JURISDICTION } from '../student/student.service';
@@ -161,6 +162,8 @@ export class ExamService {
     private readonly privacy: PrivacyService,
     private readonly outbox: OutboxService,
     @Inject(EXAM_CONFIG) private readonly config: ExamConfig,
+    // Step 18: limits on tests a student starts themselves. Absent (as in older tests) = no limits.
+    @Optional() private readonly entitlements?: EntitlementService,
   ) {}
 
   // ── discovery ────────────────────────────────────────────────────────────
@@ -263,7 +266,7 @@ export class ExamService {
     const blueprintCode = input.blueprint ?? DEFAULT_BLUEPRINT_CODE;
     if (!/^[A-Z][A-Z0-9_]{1,31}$/.test(blueprintCode)) throw new ExamInputError('blueprint is not valid');
     const studentId = await this.gate(accountId);
-    return this.db.client.$transaction((tx: Tx) => this.createIn(tx, studentId, { subjectVersionId: input.subjectVersionId, mode, blueprint: blueprintCode }));
+    return this.db.client.$transaction((tx: Tx) => this.createIn(tx, studentId, { subjectVersionId: input.subjectVersionId, mode, blueprint: blueprintCode, selfStarted: true }));
   }
 
   /**
@@ -274,7 +277,7 @@ export class ExamService {
   async createIn(
     tx: Tx,
     studentId: string,
-    input: { subjectVersionId: string; mode: AssessmentMode; blueprint: string; target?: { objectives: string[]; recommendationId: string } },
+    input: { subjectVersionId: string; mode: AssessmentMode; blueprint: string; target?: { objectives: string[]; recommendationId: string }; selfStarted?: boolean },
   ): Promise<{ assessmentId: string; resumed: boolean }> {
     const mode = input.mode;
     const blueprintCode = input.blueprint;
@@ -328,6 +331,8 @@ export class ExamService {
       const version = blueprint.published!;
       if (isTargeted(version.scope_mode) && !target) throw new ExamUnavailableError('This practice set is started from a recommendation');
       if (!isTargeted(version.scope_mode) && target) throw new ExamInputError('Only a practice or retest design takes target objectives');
+      // Step 18: a NEW test or practice set the student chose themselves is subject to their plan (resuming is not).
+      if (input.selfStarted && this.entitlements) await this.entitlements.assertCanStart(tx, studentId, version.total_questions, now);
       const design = designOf(blueprint.code, version);
       const focus = version.scope_mode === 'STUDENT_FOCUS' ? await this.focusChapters(tx, studentId, unit.subject.code) : null;
       const pool = await loadServablePool(tx, unit, studentId);

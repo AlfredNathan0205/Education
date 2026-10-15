@@ -2353,3 +2353,91 @@ model parent_view_grant {
   @@index([viewer_account_id])
   @@index([student_id])
 }
+
+// ── Step 18: entitlements and subscription foundation (no payment provider yet) ─────────────────────
+
+/// The catalogue of things a plan can include. Entitlements control access only: never scores, labels, CP or
+/// privacy authority.
+model entitlement {
+  key         String   @id @db.VarChar(32)
+  /// LIMIT (a whole number, or null for unlimited) or BOOLEAN.
+  kind        String   @db.VarChar(8)
+  description String   @db.VarChar(300)
+  created_at  DateTime @default(now())
+}
+
+/// A plan: the value of each entitlement. Exactly one is the default (FREE) that every student has without a
+/// subscription. No prices here: pricing is decided after the beta (spec D09).
+model plan {
+  id         String   @id @default(uuid()) @db.Uuid
+  code       String   @unique @db.VarChar(32)
+  name       String   @db.VarChar(80)
+  /// ACTIVE or RETIRED.
+  status     String   @db.VarChar(16)
+  is_default Boolean  @default(false)
+  /// { SELF_TESTS_PER_DAY, LONG_TESTS, PARENT_REPORT_WEEKS }. See entitlement-domain.ts.
+  values     Json
+  notes      String?  @db.VarChar(1000)
+  created_at DateTime @default(now())
+
+  subscriptions subscription[]
+}
+
+/// A plan for one student, for a period. Held by an adult account (or by no one, for the system's beta grant).
+/// Holding a subscription gives the holder NO access to the student's data.
+model subscription {
+  id                    String    @id @default(uuid()) @db.Uuid
+  student_id            String    @db.Uuid
+  plan_id               String    @db.Uuid
+  holder_account_id     String?   @db.Uuid
+  /// BETA, ADMIN_GRANT or PROVIDER (a payment provider, later).
+  source                String    @db.VarChar(16)
+  /// ACTIVE or ENDED.
+  status                String    @db.VarChar(16)
+  starts_at             DateTime
+  ends_at               DateTime?
+  ended_at              DateTime?
+  /// EXPIRED, ADMIN_ENDED, REPLACED.
+  ended_reason          String?   @db.VarChar(24)
+  created_by_account_id String?   @db.Uuid
+  created_at            DateTime  @default(now())
+
+  plan   plan                 @relation(fields: [plan_id], references: [id])
+  events subscription_event[]
+
+  @@index([student_id, status])
+  @@index([status, ends_at])
+}
+
+/// What happened to a subscription, in order. Append-only.
+model subscription_event {
+  id               String       @id @default(uuid()) @db.Uuid
+  subscription_id  String       @db.Uuid
+  /// CREATED, EXTENDED, ENDED, EXPIRED.
+  type             String       @db.VarChar(16)
+  actor_account_id String?      @db.Uuid
+  reason           String?      @db.VarChar(300)
+  details          Json?
+  at               DateTime     @default(now())
+
+  subscription subscription @relation(fields: [subscription_id], references: [id])
+
+  @@index([subscription_id, at])
+}
+
+/// One entitlement widened for one student for a period (support, apologies, trials). Only ever widens.
+model entitlement_grant {
+  id                    String    @id @default(uuid()) @db.Uuid
+  student_id            String    @db.Uuid
+  entitlement_key       String    @db.VarChar(32)
+  value                 Json
+  starts_at             DateTime
+  ends_at               DateTime
+  reason                String    @db.VarChar(300)
+  granted_by_account_id String    @db.Uuid
+  revoked_at            DateTime?
+  revoked_by_account_id String?   @db.Uuid
+  created_at            DateTime  @default(now())
+
+  @@index([student_id])
+}

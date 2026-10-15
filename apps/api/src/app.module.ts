@@ -20,6 +20,7 @@ import { RecommendationModule } from './recommendation/recommendation.module';
 import { CompetitionModule } from './competition/competition.module';
 import { SocialModule } from './social/social.module';
 import { ParentModule } from './parent/parent.module';
+import { EntitlementModule } from './entitlement/entitlement.module';
 import { GuardianModule } from './guardian/guardian.module';
 import { SchoolModule } from './school/school.module';
 
@@ -48,6 +49,7 @@ import { SchoolModule } from './school/school.module';
     CompetitionModule,
     SocialModule,
     ParentModule,
+    EntitlementModule,
     GuardianModule,
     StudentModule,
     SchoolModule,

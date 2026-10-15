@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { EntitlementModule } from '../entitlement/entitlement.module';
 import { ExamModule } from '../exam/exam.module';
 import { webBaseUrl } from '../guardian/guardian-mailer';
 import { IdentityModule } from '../identity/identity.module';
@@ -11,7 +12,7 @@ import { PARENT_WEB_BASE, ParentService } from './parent.service';
 import { ReportSweeper } from './sweeper';
 
 @Module({
-  imports: [ExamModule, IdentityModule, PrivacyModule, OutboxModule],
+  imports: [ExamModule, IdentityModule, PrivacyModule, OutboxModule, EntitlementModule],
   controllers: [ParentController, ParentSharingController],
   providers: [
     ParentService,
