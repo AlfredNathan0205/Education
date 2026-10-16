@@ -10,6 +10,7 @@ import {
   improvedCount,
   project,
   returnRates,
+  sourceRefKey,
   subjectKey,
   suppress,
   validateVariants,
@@ -26,6 +27,13 @@ describe('what can be recorded', () => {
     expect(subjectKey('11111111-1111-4111-8111-111111111111', SECRET)).toBe(k);
     expect(subjectKey('11111111-1111-4111-8111-111111111111', 'y'.repeat(40))).not.toBe(k);
     expect(k).not.toContain('1111');
+  });
+  it('de-duplication references are keyed hashes, never the raw id', () => {
+    const r = sourceRefKey('00000000-0000-0000-0000-000000000001', SECRET);
+    expect(r).toMatch(/^[0-9a-f]{40}$/);
+    expect(sourceRefKey('00000000-0000-0000-0000-000000000001', SECRET)).toBe(r);
+    expect(r).not.toBe(sourceRefKey('00000000-0000-0000-0000-000000000002', SECRET));
+    expect(r).not.toBe(subjectKey('00000000-0000-0000-0000-000000000001', SECRET).padEnd(40, '0'));
   });
   it('props keep only allow-listed keys and shapes: no ids, no text', () => {
     expect(cleanProps('ASSESSMENT_STARTED', { mode: 'TEST', blueprint: 'QUICK10', fromRecommendation: false, studentId: 'abc', note: 'hi' })).toEqual({ mode: 'TEST', blueprint: 'QUICK10', fromRecommendation: false });

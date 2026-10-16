@@ -174,6 +174,11 @@ describe('projecting the outbox', () => {
     expect(b.T.analytics_event[4].props).toEqual({ improvedObjectives: 1 });
     // The kid's cohort code is not in code form, so it is left out rather than refused.
     expect(b.T.analytics_event[4].cohort).toBeNull();
+    // No raw reference is stored: not the student id (SIGNED_UP), not the outbox event id (which joins back to the student).
+    const stored = JSON.stringify(b.T.analytics_event);
+    expect(stored).not.toContain('ann"');
+    expect(stored).not.toMatch(/signup:|00000000-0000-0000-0000-00000000000/);
+    expect(b.T.analytics_event.every((e: Row) => /^[0-9a-f]{40}$/.test(e.source_ref))).toBe(true);
     // Nothing new: the cursor moved on.
     expect(await b.service.projectOutbox(NOW)).toEqual({ read: 0, recorded: 0, forgotten: 0 });
     // Later the fresh one is read; then a withdrawal deletes everything about ann.

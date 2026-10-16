@@ -36,7 +36,9 @@ Spec sources:
   - a coarse cohort code ("ICSE/GRADE_8");
   - allow-listed properties: booleans, small numbers, codes.
 
-  No ids, names, scores, answers or free text. The database itself refuses an unknown event name, a raw id as the subject, non-object properties, and a cohort that isn't codes.
+  No ids, names, scores, answers or free text. Even the de-duplication key (`source_ref`) is a keyed hash: the raw outbox event id would join back to `outbox_event`, whose payload names the student.
+
+  The integration test caught the original version, which stored the raw reference. The database itself refuses an unknown event name, a raw id as the subject, non-object properties, and a cohort that isn't codes.
 - **Server events,** projected every 30 seconds from the existing outbox by a cursor. The projector waits 10 seconds so a transaction still committing isn't missed, and records each outbox event at most once.
   - SIGNED_UP: dated when the student was created, recorded when they consent.
   - ASSESSMENT_STARTED: mode, design, and whether it came from a recommendation.
@@ -104,7 +106,7 @@ The extra SQL adds:
 - **The consent purpose `PRODUCT_ANALYTICS`,** with draft wording v1.
 
 ## Checks done here
-- **Unit tests: 68 suites, 1065 tests** (Step 18 had 1045). They cover:
+- **Unit tests: 68 suites, 1066 tests** (Step 18 had 1045). They cover:
   - **the rules:**
     - pseudonyms;
     - the property allow-list;

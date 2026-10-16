@@ -2077,6 +2077,9 @@ describe('ExamService (real DB)', () => {
     expect(rows.filter((r: { name: string }) => r.name === 'ASSESSMENT_STARTED')).toHaveLength(1);
     // Nothing identifying: no ids, no scores.
     expect(JSON.stringify(rows)).not.toContain(ann.studentId);
+    // Nor any outbox event id (an outbox row names the student): de-duplication keys are keyed hashes.
+    const outboxIds = (await prisma.outbox_event.findMany({ select: { id: true } })).map((o: { id: string }) => o.id);
+    expect(outboxIds.some((id: string) => JSON.stringify(rows).includes(id))).toBe(false);
     expect(JSON.stringify(rows)).not.toMatch(/"correct"|"total"|"amount"/);
     // Running again records nothing twice.
     const before = await prisma.analytics_event.count();

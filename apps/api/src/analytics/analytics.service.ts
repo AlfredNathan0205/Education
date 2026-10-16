@@ -16,6 +16,7 @@ import {
   isClientEvent,
   project,
   returnRates,
+  sourceRefKey,
   subjectKey,
   suppress,
   validateVariants,
@@ -78,6 +79,7 @@ export class AnalyticsService {
   }
 
   /** Records one server event if analytics is on and the student consents now. Returns whether it was recorded. */
+  /** `sourceRef` is the raw de-duplication reference; only its keyed hash is stored. */
   async record(studentId: string, name: AnalyticsEventName, props: Record<string, unknown> | null, at = new Date(), sourceRef: string | null = null, client?: any): Promise<boolean> {
     if (!this.enabled || !(await this.consents(studentId, at))) return false;
     const db = client ?? (this.db.client as any);
@@ -85,7 +87,7 @@ export class AnalyticsService {
       await db.analytics_event.create({
         // No props: leave the column out so it is SQL NULL. Prisma writes a plain `null` to a Json column as JSON null,
         // which the CHECK (props IS NULL OR an object) rightly refuses.
-        data: { subject_key: this.keyOf(studentId), name, source: 'SERVER', occurred_at: at, cohort: await this.cohortOf(db, studentId), ...(props ? { props: props as any } : {}), source_ref: sourceRef },
+        data: { subject_key: this.keyOf(studentId), name, source: 'SERVER', occurred_at: at, cohort: await this.cohortOf(db, studentId), ...(props ? { props: props as any } : {}), source_ref: sourceRef ? sourceRefKey(sourceRef, this.secret) : null },
       });
       return true;
     } catch (e) {

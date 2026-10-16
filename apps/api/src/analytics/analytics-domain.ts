@@ -72,6 +72,14 @@ export function subjectKey(studentId: string, secret: string): string {
   return createHmac('sha256', secret).update(`student:${studentId}`).digest('hex').slice(0, 32);
 }
 
+/**
+ * The de-duplication key of a row, keyed under the same secret. The raw reference (an outbox event id, or a student id
+ * for SIGNED_UP) must never be stored: an outbox id joins back to outbox_event, whose payload names the student.
+ */
+export function sourceRefKey(raw: string, secret: string): string {
+  return createHmac('sha256', secret).update(`ref:${raw}`).digest('hex').slice(0, 40);
+}
+
 export function analyticsSecret(env: Record<string, string | undefined> = process.env): string {
   const s = env.ANALYTICS_PSEUDONYM_KEY?.trim() ?? '';
   if (s.length >= 32) return s;
