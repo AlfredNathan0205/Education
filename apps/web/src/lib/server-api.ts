@@ -55,6 +55,13 @@ const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
   // Plans (Step 18): the student's own; and administration (SUPER_ADMIN, enforced by the API).
   { method: 'GET', path: 'entitlements' },
   { method: 'POST', path: 'admin/entitlements/lookup' },
+  // Analytics (Step 19): the student's own choice and UI events; a guardian's choices; administrators' totals.
+  { method: 'GET', path: 'analytics/consent' },
+  { method: 'PUT', path: 'analytics/consent' },
+  { method: 'POST', path: 'analytics/events' },
+  { method: 'GET', path: 'guardian/analytics-consent' },
+  { method: 'GET', path: 'admin/analytics/metrics' },
+  { method: 'GET', path: 'admin/analytics/experiments' },
 ];
 
 /** Admin curriculum routes carry a unit id, so they are matched by an exact pattern, never a prefix. */
@@ -109,6 +116,8 @@ const ALLOWED_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: 'GET', pattern: new RegExp(`^admin/entitlements/students/${UUID}$`) },
   { method: 'POST', pattern: new RegExp(`^admin/entitlements/students/${UUID}/(subscriptions|grants)$`) },
   { method: 'POST', pattern: new RegExp(`^admin/entitlements/(subscriptions|grants)/${UUID}/(end|revoke)$`) },
+  // Analytics (Step 19).
+  { method: 'PUT', pattern: new RegExp(`^guardian/analytics-consent/${UUID}$`) },
 ];
 
 export function isAllowed(method: string, path: string): boolean {

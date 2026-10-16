@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError, bff, type GuardianApproval } from '@/lib/client-api';
+import { GuardianAnalytics } from './GuardianAnalytics';
 import { GuardianFriendships } from './GuardianFriendships';
 
 export function GuardianApprovals() {
@@ -56,6 +57,7 @@ export function GuardianApprovals() {
         ))
       )}
       <GuardianFriendships />
+      {items.length > 0 && <GuardianAnalytics />}
       <form action="/sign-out" method="post"><button className="btn secondary" type="submit">Sign out</button></form>
     </>
   );

@@ -46,6 +46,19 @@ const REGISTRY: ConsentWording[] = [
       '[Name of the organisation responsible for the data, and how to contact it, to be confirmed.]',
     ],
   },
+  {
+    // Step 19: permission to include the student in pseudonymous product statistics.
+    reference: 'consent-text:PRODUCT_ANALYTICS:v1-draft',
+    title: 'Help improve Exam App',
+    counselReviewed: false,
+    paragraphs: [
+      'DRAFT. This wording has not been reviewed by a lawyer and must not be used with real families.',
+      'If you agree, we count how the app is used so we can make it better: for example how many tests are started and finished each week, how often students come back, and whether practice after a test is used.',
+      'These statistics use a code instead of the student\'s name or account, are seen only by the Exam App team as totals, and are never sold, shared with advertisers or used to show ads. We do not track time spent on screens.',
+      'Saying no changes nothing about how the app works. You can change your mind at any time; if you turn this off, what was collected is deleted.',
+      '[Name of the organisation responsible for the data, and how to contact it, to be confirmed.]',
+    ],
+  },
 ];
 
 export function findConsentWording(reference: string, env: Record<string, string | undefined> = process.env): ConsentWording | null {
@@ -57,3 +70,4 @@ export function findConsentWording(reference: string, env: Record<string, string
 
 export const DEV_DRAFT_WORDING_REFERENCE = 'consent-text:CORE_SERVICE:v1-draft';
 export const SHARING_DRAFT_WORDING_REFERENCE = 'consent-text:PARENT_REPORT_SHARING:v1-draft';
+export const ANALYTICS_DRAFT_WORDING_REFERENCE = 'consent-text:PRODUCT_ANALYTICS:v1-draft';

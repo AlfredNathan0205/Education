@@ -3,8 +3,9 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { AppNav } from './AppNav';
+import { AnalyticsConsent } from './AnalyticsConsent';
 import { ParentSharing } from './ParentSharing';
-import { ApiError, MASTERY_LABEL, bff, type MasteryLabel, type MasteryView, type MyAssessment } from '@/lib/client-api';
+import { ApiError, MASTERY_LABEL, bff, type MasteryLabel, type MasteryView, type MyAssessment, track } from '@/lib/client-api';
 
 /**
  * Progress (spec STUDENT_WEB; MASTERY_DIAGNOSTICS; CLAIM_GATING): what the student has shown, objective by objective
@@ -17,6 +18,7 @@ export function Progress() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    track('PROGRESS_OPENED');
     Promise.all([bff<MasteryView>('GET', 'mastery'), bff<MyAssessment[]>('GET', 'exam/assessments')])
       .then(([m, a]) => {
         setMastery(m);
@@ -87,6 +89,7 @@ export function Progress() {
         );
       })}
       {mastery && <ParentSharing />}
+      {mastery && <AnalyticsConsent />}
     </div>
   );
 }

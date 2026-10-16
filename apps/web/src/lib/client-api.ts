@@ -653,3 +653,55 @@ export interface StaffPlanView {
 
 /** Tests of this many questions or more are "long" (mirrors the API's LONG_TEST_QUESTIONS). */
 export const LONG_TEST_QUESTIONS = 20;
+
+// ── Step 19: analytics (consented, pseudonymous) ─────────────────────────────
+
+export type ClientAnalyticsEvent = 'RESULTS_OPENED' | 'PRACTISE_MISSED_CLICKED' | 'PROGRESS_OPENED' | 'PARENT_PREVIEW_OPENED' | 'COMPETE_OPENED';
+
+/**
+ * Sends one UI event. Fire and forget: never awaited, never shown, never retried. The API keeps it only if the student's
+ * analytics consent is valid, and the response is the same either way. No page views, no timings.
+ */
+export function track(name: ClientAnalyticsEvent): void {
+  void fetch('/api/bff/analytics/events', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }).catch(() => undefined);
+}
+
+export interface ConsentWording {
+  version: number;
+  title: string;
+  paragraphs: string[];
+  draft: boolean;
+}
+
+export interface MyAnalyticsConsent {
+  decidedBy: 'SELF' | 'GUARDIAN';
+  granted: boolean;
+  consent: ConsentWording | null;
+}
+
+export interface GuardianAnalyticsConsents {
+  children: Array<{ studentId: string; label: string; granted: boolean }>;
+  consent: ConsentWording | null;
+}
+
+type MetricValue = number | '<5' | null;
+export interface AdminMetrics {
+  generatedAt: string;
+  coverage: { consenting: MetricValue; students: MetricValue };
+  weeks: Array<{
+    weekStart: string;
+    northStar: MetricValue;
+    intensity: number | null;
+    activeLearners: MetricValue;
+    started: MetricValue;
+    completed: MetricValue;
+    completionRate: number | null;
+    signups: MetricValue;
+    activated: MetricValue;
+    loop: { resultsOpened: MetricValue; practiseMissed: MetricValue; practiceFromRecommendation: MetricValue; retestsCompleted: MetricValue };
+    improvedObjectives: MetricValue;
+    parentViews: MetricValue;
+    studentsWithParentViews: MetricValue;
+  }>;
+  returns: { d7: { eligible: MetricValue; returned: MetricValue; rate: number | null }; d30: { eligible: MetricValue; returned: MetricValue; rate: number | null } };
+}

@@ -2364,6 +2364,8 @@ model entitlement {
   kind        String   @db.VarChar(8)
   description String   @db.VarChar(300)
   created_at  DateTime @default(now())
+
+  grants entitlement_grant[]
 }
 
 /// A plan: the value of each entitlement. Exactly one is the default (FREE) that every student has without a
@@ -2439,5 +2441,88 @@ model entitlement_grant {
   revoked_by_account_id String?   @db.Uuid
   created_at            DateTime  @default(now())
 
+  /// Step 19: the key must name a real entitlement. Declared here (with the name and actions the Step 18 SQL gave it)
+  /// so later migrations keep it instead of dropping it as unknown.
+  entitlement entitlement @relation(fields: [entitlement_key], references: [key], onDelete: NoAction, onUpdate: NoAction, map: "entitlement_grant_key_fkey")
+
   @@index([student_id])
+}
+
+// ── Step 19: analytics and experiments (pseudonymous, consented, internal) ────────────────────
+
+/// A pseudonymous analytics event. Recorded only for students whose PRODUCT_ANALYTICS consent is valid at the time.
+/// No student id, account id, name or free text: `subject_key` is an HMAC of the student id under a secret key, so
+/// these rows cannot be joined back to a person without that key. Withdrawing consent deletes the student's rows.
+model analytics_event {
+  id          String   @id @default(uuid()) @db.Uuid
+  subject_key String   @db.VarChar(64)
+  /// From a fixed list (analytics-domain.ts).
+  name        String   @db.VarChar(40)
+  /// SERVER (projected from the outbox, or recorded by a service) or CLIENT (a few UI events).
+  source      String   @db.VarChar(8)
+  occurred_at DateTime
+  /// Coarse cohort only: "ICSE/GRADE_8".
+  cohort      String?  @db.VarChar(64)
+  /// Allow-listed keys with booleans, small numbers or codes from fixed lists. Never ids or text.
+  props       Json?
+  /// The outbox event it came from, so a projection never records twice.
+  source_ref  String?  @unique @db.VarChar(255)
+  created_at  DateTime @default(now())
+
+  @@index([name, occurred_at])
+  @@index([subject_key, occurred_at])
+}
+
+/// Where the analytics projector has read the outbox up to.
+model analytics_cursor {
+  id              String   @id @db.VarChar(32)
+  last_created_at DateTime
+  last_event_id   String   @db.Uuid
+  updated_at      DateTime @updatedAt
+}
+
+/// An experiment (foundation only in Step 19: nothing assigns students to one yet).
+model experiment {
+  id          String   @id @default(uuid()) @db.Uuid
+  key         String   @unique @db.VarChar(64)
+  description String   @db.VarChar(500)
+  /// DRAFT, RUNNING or STOPPED.
+  status      String   @db.VarChar(16)
+  created_by_account_id String @db.Uuid
+  created_at  DateTime @default(now())
+  started_at  DateTime?
+  stopped_at  DateTime?
+
+  variants    experiment_variant[]
+  assignments experiment_assignment[]
+}
+
+model experiment_variant {
+  id            String @id @default(uuid()) @db.Uuid
+  experiment_id String @db.Uuid
+  key           String @db.VarChar(32)
+  /// Relative weight, 1..100.
+  weight        Int
+  is_control    Boolean @default(false)
+
+  experiment  experiment              @relation(fields: [experiment_id], references: [id], onDelete: Cascade)
+  assignments experiment_assignment[]
+
+  @@unique([experiment_id, key])
+}
+
+/// A consenting student's stable variant (pseudonymous, like analytics_event). Students without analytics consent
+/// always get the control variant and are never recorded.
+model experiment_assignment {
+  id            String   @id @default(uuid()) @db.Uuid
+  experiment_id String   @db.Uuid
+  subject_key   String   @db.VarChar(64)
+  variant_key   String   @db.VarChar(32)
+  assigned_at   DateTime @default(now())
+
+  experiment experiment         @relation(fields: [experiment_id], references: [id], onDelete: Cascade)
+  /// An assignment names a variant of its own experiment.
+  variant    experiment_variant @relation(fields: [experiment_id, variant_key], references: [experiment_id, key], onDelete: Cascade, map: "experiment_assignment_variant_fkey")
+
+  @@unique([experiment_id, subject_key])
 }

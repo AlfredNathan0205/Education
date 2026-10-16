@@ -26,7 +26,7 @@ import { ExamService } from '../exam/exam.service';
 import { ExamConflictError, ExamNotPermittedError } from '../exam/exam.errors';
 import { DEFAULT_JURISDICTION } from '../student/student.service';
 import { GuardianService } from '../guardian/guardian.service';
-import { DEV_DRAFT_WORDING_REFERENCE, SHARING_DRAFT_WORDING_REFERENCE } from '../guardian/consent-texts';
+import { ANALYTICS_DRAFT_WORDING_REFERENCE, DEV_DRAFT_WORDING_REFERENCE, SHARING_DRAFT_WORDING_REFERENCE } from '../guardian/consent-texts';
 import { GuardianConflictError, GuardianNotPermittedError, GuardianUnavailableError } from '../guardian/guardian.errors';
 import { QuestionService } from '../question/question.service';
 import { optionRows } from '../question/question-domain';
@@ -41,6 +41,8 @@ import { CompetitionService } from '../competition/competition.service';
 import { SocialService } from '../social/social.service';
 import { ParentService } from '../parent/parent.service';
 import { EntitlementService } from '../entitlement/entitlement.service';
+import { AnalyticsService } from '../analytics/analytics.service';
+import { subjectKey } from '../analytics/analytics-domain';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
@@ -80,6 +82,12 @@ async function cleanAll() {
   capturedCodes = [];
   (sender.send as jest.Mock).mockClear();
 
+  // Step 19: analytics and experiments.
+  await prisma.analytics_event.deleteMany();
+  await prisma.analytics_cursor.deleteMany();
+  await prisma.experiment_assignment.deleteMany();
+  await prisma.experiment_variant.deleteMany();
+  await prisma.experiment.deleteMany();
   // Step 18: the subscription history refuses DELETE (append-only trigger); TRUNCATE still resets it in tests.
   await prisma.$executeRawUnsafe('TRUNCATE "subscription_event", "subscription"');
   await prisma.entitlement_grant.deleteMany();
@@ -2035,6 +2043,86 @@ describe('ExamService (real DB)', () => {
     expect((await entitlements.mine(ann.accountId)).values).toMatchObject({ SELF_TESTS_PER_DAY: 3, LONG_TESTS: false });
     expect((await prisma.subscription_event.findMany({ where: { subscription_id: subscriptionId }, orderBy: { at: 'asc' } })).map((e: { type: string }) => e.type)).toEqual(['CREATED', 'ENDED']);
     expect(await prisma.audit_event.count({ where: { action: { in: ['entitlement.plan_granted', 'entitlement.plan_ended'] } } })).toBe(3);
+  });
+
+  // ---- Step 19: analytics (pseudonymous, consented) and experiments ----
+
+  const analytics = new AnalyticsService(dbService, privacyService, authzService);
+  const SOON = () => new Date(Date.now() + 20_000);
+
+  it('analytics: nothing is kept without consent; with an adult\'s consent the outbox becomes pseudonymous events; withdrawing deletes them', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const ann = await adult();
+    await privacyService.publishConsentWording({ purposeCode: 'PRODUCT_ANALYTICS', textReference: ANALYTICS_DRAFT_WORDING_REFERENCE, description: 'Product statistics' });
+
+    // Before consenting: a test is taken and projected, and nothing is kept.
+    await tookTest(ann.accountId, unitId, () => true);
+    await analytics.projectOutbox(SOON());
+    expect(await prisma.analytics_event.count()).toBe(0);
+
+    const c = await analytics.myConsent(ann.accountId);
+    expect(c).toMatchObject({ decidedBy: 'SELF', granted: false, consent: { version: 1, draft: true } });
+    await analytics.setMyConsent(ann.accountId, { granted: true, consentVersion: c.consent!.version });
+    await tookTest(ann.accountId, unitId, () => true);
+    await mastery.reconcile();
+    await competition.reconcile();
+    await analytics.recordClient(ann.accountId, 'RESULTS_OPENED');
+    await analytics.projectOutbox(SOON());
+    const rows = await prisma.analytics_event.findMany({ orderBy: { occurred_at: 'asc' } });
+    const key = subjectKey(ann.studentId, 'development-only-analytics-pseudonym-key-000');
+    expect(new Set(rows.map((r: { subject_key: string }) => r.subject_key))).toEqual(new Set([key]));
+    expect(rows.map((r: { name: string }) => r.name)).toEqual(expect.arrayContaining(['SIGNED_UP', 'ASSESSMENT_STARTED', 'ASSESSMENT_COMPLETED', 'MASTERY_UPDATED', 'QUALIFIED_TEST', 'RESULTS_OPENED']));
+    // Only events after consent: one test started, not two.
+    expect(rows.filter((r: { name: string }) => r.name === 'ASSESSMENT_STARTED')).toHaveLength(1);
+    // Nothing identifying: no ids, no scores.
+    expect(JSON.stringify(rows)).not.toContain(ann.studentId);
+    // Nor any outbox event id (an outbox row names the student): de-duplication keys are keyed hashes.
+    const outboxIds = (await prisma.outbox_event.findMany({ select: { id: true } })).map((o: { id: string }) => o.id);
+    expect(outboxIds.some((id: string) => JSON.stringify(rows).includes(id))).toBe(false);
+    expect(JSON.stringify(rows)).not.toMatch(/"correct"|"total"|"amount"/);
+    // Running again records nothing twice.
+    const before = await prisma.analytics_event.count();
+    await analytics.projectOutbox(SOON());
+    expect(await prisma.analytics_event.count()).toBe(before);
+    // The database refuses an event that is not on the list, and a raw id as the subject.
+    await expect(prisma.analytics_event.create({ data: { subject_key: key, name: 'PAGE_VIEW', source: 'CLIENT', occurred_at: new Date() } })).rejects.toThrow();
+    await expect(prisma.analytics_event.create({ data: { subject_key: ann.studentId, name: 'QUALIFIED_TEST', source: 'SERVER', occurred_at: new Date() } })).rejects.toThrow();
+
+    // The administrator sees totals only (one learner: hidden as "<5").
+    const admin = await roleAccount('SUPER_ADMIN');
+    const m = await analytics.metrics(admin);
+    expect(m.weeks[m.weeks.length - 1].northStar).toBe('<5');
+    await expect(analytics.metrics(ann.accountId)).rejects.toThrow(/administrator/);
+
+    // Turning it off deletes everything kept about the student.
+    await analytics.setMyConsent(ann.accountId, { granted: false, consentVersion: 1 });
+    expect(await prisma.analytics_event.count()).toBe(0);
+    expect(await prisma.consent_withdrawal.count()).toBeGreaterThan(0);
+  });
+
+  it("analytics: a minor's guardian decides; the minor cannot; experiments give consenting students a stable variant", async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    await adult();
+    const kid = await guardedMinor('step19-mum@example.com');
+    await privacyService.publishConsentWording({ purposeCode: 'PRODUCT_ANALYTICS', textReference: ANALYTICS_DRAFT_WORDING_REFERENCE, description: 'Product statistics' });
+    await expect(analytics.setMyConsent(kid.accountId, { granted: true, consentVersion: 1 })).rejects.toThrow(/parent or guardian decides/);
+    const g = await analytics.guardianConsents(kid.guardianId);
+    expect(g.children).toEqual([expect.objectContaining({ studentId: kid.studentId, granted: false })]);
+    await analytics.setGuardianConsent(kid.guardianId, kid.studentId, { granted: true, consentVersion: 1 });
+    expect(await prisma.consent_record.findFirstOrThrow({ where: { student_id: kid.studentId, purpose: { code: 'PRODUCT_ANALYTICS' } } })).toMatchObject({ capacity: 'GUARDIAN', granted_by_account_id: kid.guardianId });
+    expect(await analytics.consents(kid.studentId)).toBe(true);
+
+    const admin = await roleAccount('SUPER_ADMIN');
+    const { id } = await analytics.createExperiment(admin, { key: 'home_cards', description: 'Cards on Home instead of a list', variants: [{ key: 'control', weight: 1, isControl: true }, { key: 'cards', weight: 1 }] });
+    await analytics.setExperimentStatus(admin, id, 'RUNNING');
+    const v = await analytics.variantFor(kid.studentId, 'home_cards');
+    expect(await analytics.variantFor(kid.studentId, 'home_cards')).toBe(v);
+    expect(await prisma.experiment_assignment.count()).toBe(1);
+    // Withdrawing (by the guardian) deletes the assignment too.
+    await analytics.setGuardianConsent(kid.guardianId, kid.studentId, { granted: false, consentVersion: 1 });
+    expect(await prisma.experiment_assignment.count()).toBe(0);
   });
 });
 
