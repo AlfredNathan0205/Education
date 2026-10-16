@@ -20,7 +20,15 @@ const PEOPLE = {
   // Step 18: everyone above has the Beta plan (as during the private beta); these two see a long test offered.
   'free@example.com': { name: 'Farah', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_8' }, chapters: {}, plan: 'FREE', longTest: true },
   'beta@example.com': { name: 'Bea', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_8' }, chapters: {}, longTest: true },
+  // Step 20: an adult who deletes their account, and an administrator who must use an authenticator app.
+  'leaver@example.com': { name: 'Lee', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_8' }, chapters: {} },
+  'admin@example.com': { name: null, cohort: null, chapters: {}, admin: true },
 };
+// Step 20: deletion requests (by subject) and the administrators' authenticator. The stub's valid code is 246810.
+const erasures = new Map(); // subject key -> { requestId, dueAt, requestedAt, by }
+const mfa = new Map(); // email -> { enrolled, pending, verified: Set<token>, recovery: string[] }
+const MFA_CODE = '246810';
+const WAIT_DAYS = 14;
 const SUBJECT20 = { code: 'SUBJECT20', name: 'Subject 20', total: 20, ready: true };
 // Step 19: analytics choices (off unless agreed) and the UI events the API would keep (consenting students only).
 const analyticsOn = new Set();
@@ -314,6 +322,8 @@ const server = createServer(async (req, res) => {
     lastShareToken = null;
     analyticsOn.clear();
     keptEvents.length = 0;
+    erasures.clear();
+    mfa.clear();
     return json(res, 200, { reset: true });
   }
   // Test-only: the token of the last sharing email (the real API emails it). Not reachable through the web proxy.
@@ -362,6 +372,86 @@ const server = createServer(async (req, res) => {
   }
   if (key === 'GET compete') return json(res, 200, competeFor(p));
   if (key === 'GET entitlements') return json(res, 200, planOf(p));
+  // Step 20: your data.
+  if (key === 'GET privacy/rights') {
+    const student = !!(p.cohort || p.name);
+    const mineKey = student ? `S:${p.email}` : `A:${p.email}`;
+    const view = (k) => (erasures.has(k) ? { ...erasures.get(k), canCancel: true } : null);
+    const block = p.minor ? 'MINOR_ASKS_GUARDIAN' : p.guardianOf?.length ? 'GUARDIAN_OF_CHILDREN' : p.admin ? 'ADMIN_ROLE' : null;
+    const messages = {
+      MINOR_ASKS_GUARDIAN: 'Ask your parent or guardian: they can delete your account from their guardian page.',
+      GUARDIAN_OF_CHILDREN: 'You approve a child on Exam App. Delete their account first, or withdraw your approval, then delete yours.',
+      ADMIN_ROLE: 'Your account has an administrator role. Ask another administrator to remove it first.',
+    };
+    return json(res, 200, {
+      waitDays: WAIT_DAYS,
+      me: { subjectType: student ? 'STUDENT' : 'ACCOUNT', erasure: view(mineKey), block: erasures.has(mineKey) ? null : block, blockMessage: erasures.has(mineKey) ? null : block ? messages[block] : null },
+      children: (p.guardianOf ?? []).map((kid) => ({ studentId: STUDENT_IDS[kid], label: PEOPLE[kid].name, erasure: view(`S:${kid}`) })),
+    });
+  }
+  const exportMatch = /^privacy\/export(?:\/([0-9a-f-]{36}))?$/.exec(path);
+  if (req.method === 'GET' && exportMatch) {
+    const kid = exportMatch[1] ? (p.guardianOf ?? []).find((k) => STUDENT_IDS[k] === exportMatch[1]) : null;
+    if (exportMatch[1] && !kid) return json(res, 404, { message: 'Not found' });
+    const who = kid ?? p.email;
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="exam-app-data.json"' });
+    return res.end(JSON.stringify({ format: 'exam-app-export/v1', about: 'STUDENT', student: { display_name: PEOPLE[who].name }, accounts: [{ identities: [{ identifier_normalized: who }] }], tables: { assessment_result: mine(who).filter((a) => a.status === 'SUBMITTED').map((a) => ({ id: a.id })) } }));
+  }
+  if (key === 'POST privacy/erasure') {
+    const kid = body.studentId ? (p.guardianOf ?? []).find((k) => STUDENT_IDS[k] === body.studentId) : null;
+    if (body.studentId && !kid) return json(res, 404, { message: 'Not found' });
+    if (!kid && (p.minor || p.guardianOf?.length || p.admin)) return json(res, 409, { message: 'You cannot delete this account yet' });
+    const k = kid ? `S:${kid}` : p.cohort || p.name ? `S:${p.email}` : `A:${p.email}`;
+    if (!erasures.has(k)) erasures.set(k, { requestId: randomUUID(), requestedAt: new Date().toISOString(), dueAt: new Date(Date.now() + WAIT_DAYS * 86_400_000).toISOString(), by: p.email });
+    const e = erasures.get(k);
+    return json(res, 200, { requestId: e.requestId, dueAt: e.dueAt });
+  }
+  const cancelMatch = /^privacy\/erasure\/([0-9a-f-]{36})\/cancel$/.exec(path);
+  if (req.method === 'POST' && cancelMatch) {
+    for (const [k, e] of erasures) {
+      if (e.requestId === cancelMatch[1] && (e.by === p.email || k === `S:${p.email}`)) {
+        erasures.delete(k);
+        return json(res, 200, { cancelled: true });
+      }
+    }
+    return json(res, 404, { message: 'Not found' });
+  }
+  // Step 20: the administrators' authenticator.
+  const token = (req.headers.authorization ?? '').replace(/^Bearer /, '');
+  const mf = mfa.get(p.email) ?? { enrolled: false, pending: false, verified: new Set(), recovery: [] };
+  mfa.set(p.email, mf);
+  if (key === 'GET mfa/status') return json(res, 200, { required: !!p.admin, enrolled: mf.enrolled, pending: mf.pending, verified: mf.verified.has(token), recoveryCodesLeft: mf.recovery.length });
+  if (key === 'POST mfa/enrol/start') {
+    if (!p.admin) return json(res, 403, { message: 'Only accounts with an administrator role use an authenticator here' });
+    mf.pending = true;
+    return json(res, 200, { secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP', otpauthUri: 'otpauth://totp/Exam%20App%3Aadmin?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Exam%20App&algorithm=SHA1&digits=6&period=30' });
+  }
+  if (key === 'POST mfa/enrol/confirm') {
+    if (body.code !== MFA_CODE) return json(res, 400, { message: 'That code did not work. Check the time on your phone and try again.' });
+    Object.assign(mf, { enrolled: true, pending: false, recovery: Array.from({ length: 10 }, (_, i) => `ABCD-EFGH-JK${String.fromCharCode(50 + (i % 6))}${String.fromCharCode(65 + i)}`) });
+    mf.verified.add(token);
+    return json(res, 200, { recoveryCodes: mf.recovery });
+  }
+  if (key === 'POST mfa/verify') {
+    const ok = body.code === MFA_CODE || (typeof body.recoveryCode === 'string' && mf.recovery.includes(body.recoveryCode.toUpperCase()));
+    if (!ok) return json(res, 400, { message: 'That code did not work. Check the time on your phone and try again.' });
+    if (body.recoveryCode) mf.recovery = mf.recovery.filter((c) => c !== body.recoveryCode.toUpperCase());
+    mf.verified.add(token);
+    return json(res, 200, { verified: true, recoveryCodesLeft: mf.recovery.length });
+  }
+  if (path.startsWith('admin/') && p.admin && !mf.verified.has(token)) {
+    return json(res, 403, { statusCode: 403, code: 'MFA_REQUIRED', message: 'Confirm it is you with your authenticator app first.' });
+  }
+  if (key === 'GET admin/analytics/metrics') {
+    if (!p.admin) return json(res, 403, { message: 'Only an administrator may see analytics' });
+    const few = '<5';
+    return json(res, 200, {
+      generatedAt: new Date().toISOString(),
+      coverage: { consenting: few, students: few },
+      weeks: [{ weekStart: '2026-10-11T18:30:00.000Z', northStar: few, intensity: null, activeLearners: few, started: few, completed: few, completionRate: null, signups: few, activated: few, loop: { resultsOpened: few, practiseMissed: few, practiceFromRecommendation: few, retestsCompleted: few }, improvedObjectives: few, parentViews: few, studentsWithParentViews: few }],
+      returns: { d7: { eligible: few, returned: few, rate: null }, d30: { eligible: few, returned: few, rate: null } },
+    });
+  }
   // Step 19.
   if (key === 'GET analytics/consent') {
     return json(res, 200, p.minor ? { decidedBy: 'GUARDIAN', granted: analyticsOn.has(p.email), consent: null } : { decidedBy: 'SELF', granted: analyticsOn.has(p.email), consent: ANALYTICS_WORDING });

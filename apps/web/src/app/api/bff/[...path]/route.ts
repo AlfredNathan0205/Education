@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
-import { SESSION_COOKIE, callApi, isAllowed } from '@/lib/server-api';
+import { SESSION_COOKIE, callApi, clientIp, isAllowed } from '@/lib/server-api';
 
 /**
  * Browser-facing proxy. The session token lives only in an httpOnly cookie, so page
@@ -27,7 +27,7 @@ async function handle(req: Request, ctx: { params: Promise<{ path: string[] }> }
 
   let upstream: Response;
   try {
-    upstream = await callApi(req.method, target, token, body);
+    upstream = await callApi(req.method, target, token, body, clientIp(req.headers));
   } catch {
     return NextResponse.json(
       { message: 'We could not reach the service. Check your connection and try again.' },
@@ -53,10 +53,13 @@ async function handle(req: Request, ctx: { params: Promise<{ path: string[] }> }
   }
 
   const text = await upstream.text();
-  return new NextResponse(text.length ? text : null, {
-    status: upstream.status,
-    headers: { 'Content-Type': upstream.headers.get('content-type') ?? 'application/json' },
-  });
+  const headers: Record<string, string> = { 'Content-Type': upstream.headers.get('content-type') ?? 'application/json', 'Cache-Control': 'no-store' };
+  // Step 20: a data copy downloads as a file; a rate-limited request says when to retry.
+  for (const h of ['content-disposition', 'retry-after']) {
+    const v = upstream.headers.get(h);
+    if (v) headers[h] = v;
+  }
+  return new NextResponse(text.length ? text : null, { status: upstream.status, headers });
 }
 
 export { handle as GET, handle as POST, handle as PUT };

@@ -19,7 +19,7 @@ function makeFakes() {
   const client: Record<string, any> = {
     otp_challenge: { findFirst: jest.fn(), count: jest.fn().mockResolvedValue(0), create: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn().mockResolvedValue({ count: 1 }) },
     authentication_identity: { findUnique: jest.fn(), update: jest.fn() },
-    account: { create: jest.fn() },
+    account: { create: jest.fn(), update: jest.fn() },
     auth_session: { create: jest.fn(), findUnique: jest.fn(), updateMany: jest.fn() },
     audit_event: { create: jest.fn() },
   };
@@ -234,6 +234,8 @@ describe('IdentityService.verifyOtp', () => {
     expect(login).toMatchObject({ accountId: 'acct-9', isNewAccount: false });
     expect(client.account.create).not.toHaveBeenCalled();
     expect(outbox.publish).not.toHaveBeenCalled();
+    // Step 20: the sign-in is kept on the account (inactivity is judged from it) and clears an inactivity flag.
+    expect(client.account.update).toHaveBeenCalledWith({ where: { id: 'acct-9' }, data: { last_sign_in_at: NOW, inactive_flagged_at: null } });
   });
 
   it('refuses to log in a suspended account, with the same generic error', async () => {

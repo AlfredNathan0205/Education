@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 
 test.beforeEach(async ({ request }) => {
   await request.post(`http://127.0.0.1:${process.env.STUB_API_PORT ?? 4010}/__reset`);
@@ -437,4 +438,106 @@ test("Analytics: a minor's guardian decides on the guardian page; the minor is t
 
   await page.reload();
   await expect(page.getByRole('region', { name: 'Help improve Exam App' })).toContainText('Right now they do.');
+});
+
+// ── Step 20: your data, and the administrators' authenticator ─────────────────
+
+test('Your data: an adult downloads a copy, asks to delete with a 14-day wait, and cancels', async ({ page }) => {
+  await signedIn(page, 'leaver@example.com');
+  await page.goto('/progress');
+  await page.getByRole('link', { name: /Your data/ }).click();
+  await expect(page).toHaveURL(/\/privacy$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Your data' })).toBeVisible();
+
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download my data' }).click()]);
+  expect(download.suggestedFilename()).toBe('exam-app-data.json');
+  const copy = JSON.parse(readFileSync(await download.path(), 'utf8'));
+  expect(copy).toMatchObject({ format: 'exam-app-export/v1', student: { display_name: 'Lee' } });
+  await expect(page.getByText('Your copy has been downloaded.')).toBeVisible();
+
+  const del = page.getByRole('region', { name: 'Delete your account' });
+  await del.getByRole('button', { name: 'Delete your account' }).click();
+  await expect(del).toContainText('It happens in 14 days, and you can cancel until then.');
+  await del.getByRole('button', { name: 'Keep it' }).click();
+  await del.getByRole('button', { name: 'Delete your account' }).click();
+  await del.getByRole('button', { name: 'Yes, delete in 14 days' }).click();
+  await expect(del).toContainText('Your account will be deleted on');
+  await page.reload();
+  await page.getByRole('region', { name: 'Delete your account' }).getByRole('button', { name: 'Cancel deletion' }).click();
+  await expect(page.getByText('Deletion cancelled.')).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Delete your account' }).getByRole('button', { name: 'Delete your account' })).toBeVisible();
+});
+
+test("Your data: a minor is sent to their guardian; the guardian downloads and deletes the child's account, and can cancel", async ({ page }) => {
+  await signedIn(page, 'kid@example.com');
+  await page.goto('/privacy');
+  const mine = page.getByRole('region', { name: 'Delete your account' });
+  await expect(mine).toContainText('Ask your parent or guardian');
+  await expect(mine.getByRole('button')).toHaveCount(0);
+
+  const ctx = await page.context().browser()!.newContext({ baseURL: test.info().project.use.baseURL });
+  const mum = await ctx.newPage();
+  await signedIn(mum, 'mum@example.com');
+  await mum.goto('/guardian');
+  await mum.getByRole('link', { name: /Your data/ }).click();
+  await expect(mum.getByRole('region', { name: 'Delete your account' })).toContainText('You approve a child');
+  const kiran = mum.getByRole('region', { name: 'Kiran' });
+  const [download] = await Promise.all([mum.waitForEvent('download'), kiran.getByRole('button', { name: "Download Kiran's data" }).click()]);
+  expect(download.suggestedFilename()).toBe('exam-app-data.json');
+  await kiran.getByRole('button', { name: "Delete Kiran's account" }).click();
+  await kiran.getByRole('button', { name: 'Yes, delete in 14 days' }).click();
+  await expect(kiran).toContainText("Kiran's account will be deleted on");
+  await kiran.getByRole('button', { name: 'Cancel deletion' }).click();
+  await expect(kiran.getByRole('button', { name: "Delete Kiran's account" })).toBeVisible();
+  await ctx.close();
+});
+
+test('Admin: an authenticator is set up before any admin page opens; a new session passes with a recovery code', async ({ page }) => {
+  await signedIn(page, 'admin@example.com');
+  await page.goto('/admin/metrics');
+  await expect(page).toHaveURL(/\/admin\/mfa\?next=%2Fadmin%2Fmetrics$/);
+  await page.getByRole('button', { name: 'Start set-up' }).click();
+  await expect(page.getByLabel('Set-up key')).toHaveText('JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP');
+  await page.getByLabel('The 6-digit code your app shows').fill('111111');
+  await page.getByRole('button', { name: 'Confirm' }).click();
+  await expect(page.getByText('That code did not work')).toBeVisible();
+  await page.getByLabel('The 6-digit code your app shows').fill('246810');
+  await page.getByRole('button', { name: 'Confirm' }).click();
+  const codes = page.getByRole('list', { name: 'Recovery codes' }).getByRole('listitem');
+  await expect(codes).toHaveCount(10);
+  const first = (await codes.first().textContent())!.trim();
+  await page.getByRole('link', { name: 'I have saved them, continue' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Metrics' })).toBeVisible();
+
+  // A second session has to pass the check again.
+  const ctx = await page.context().browser()!.newContext({ baseURL: test.info().project.use.baseURL });
+  const again = await ctx.newPage();
+  await signedIn(again, 'admin@example.com');
+  await again.goto('/admin/metrics');
+  await expect(again.getByRole('heading', { name: 'Confirm it is you' })).toBeVisible();
+  await again.getByRole('button', { name: 'Use a recovery code' }).click();
+  await again.getByLabel('A recovery code').fill(first.toLowerCase());
+  await again.getByRole('button', { name: 'Continue' }).click();
+  await expect(again.getByRole('heading', { level: 1, name: 'Metrics' })).toBeVisible();
+  await ctx.close();
+});
+
+test('Admin: a student never sees the authenticator page, and is told admin pages are not theirs', async ({ page }) => {
+  await signedIn(page, 'student@example.com');
+  await page.goto('/admin/mfa');
+  await expect(page.getByText('Only administrator accounts use an authenticator app here.')).toBeVisible();
+  await page.goto('/admin/metrics');
+  await expect(page.getByText('Only an administrator may see analytics')).toBeVisible();
+  await expect(page).toHaveURL(/\/admin\/metrics$/);
+});
+
+test('Every page carries the security headers', async ({ request }) => {
+  const res = await request.get('/sign-in');
+  const h = res.headers();
+  expect(h['content-security-policy']).toContain("frame-ancestors 'none'");
+  expect(h['content-security-policy']).toContain("default-src 'self'");
+  expect(h['x-frame-options']).toBe('DENY');
+  expect(h['x-content-type-options']).toBe('nosniff');
+  expect(h['referrer-policy']).toBe('strict-origin-when-cross-origin');
+  expect(h['x-powered-by']).toBeUndefined();
 });

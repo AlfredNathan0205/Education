@@ -152,6 +152,7 @@ export function ParentHome() {
         </>
       )}
       <div className="spacer" />
+      <p className="hint"><Link href="/privacy">Your data: download a copy or delete your account</Link></p>
       <form action="/sign-out" method="post"><button className="btn secondary" type="submit">Sign out</button></form>
     </>
   );

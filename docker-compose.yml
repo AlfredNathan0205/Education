@@ -62,6 +62,8 @@ services:
     environment:
       NODE_ENV: development
       API_URL: http://api:3001
+      # Step 20: lets the API rate-limit per browser, not per web server. Set the same value in .env (read by the API).
+      BFF_SHARED_SECRET: ${BFF_SHARED_SECRET:-}
     depends_on:
       - api
 

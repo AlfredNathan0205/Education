@@ -27,6 +27,11 @@ export async function bff<T>(method: string, path: string, body?: unknown): Prom
     /* non-JSON error body */
   }
   if (!res.ok) {
+    // Step 20: an administrator who has not passed the authenticator check on this session is sent to do it.
+    if (res.status === 403 && (data as { code?: unknown } | null)?.code === 'MFA_REQUIRED' && typeof window !== 'undefined') {
+      window.location.assign(`/admin/mfa?next=${encodeURIComponent(window.location.pathname)}`);
+      throw new ApiError(403, 'Confirm it is you with your authenticator app first.');
+    }
     const raw = (data as { message?: unknown } | null)?.message;
     const msg = Array.isArray(raw) ? String(raw[0]) : typeof raw === 'string' ? raw : null;
     throw new ApiError(res.status, msg ?? 'Something went wrong. Please try again.');
@@ -704,4 +709,56 @@ export interface AdminMetrics {
     studentsWithParentViews: MetricValue;
   }>;
   returns: { d7: { eligible: MetricValue; returned: MetricValue; rate: number | null }; d30: { eligible: MetricValue; returned: MetricValue; rate: number | null } };
+}
+
+// ── Step 20: your data, and the administrators' authenticator ─────────────────
+
+export interface PendingErasure {
+  requestId: string;
+  dueAt: string;
+  requestedAt: string;
+  canCancel: boolean;
+}
+
+export interface RightsOverview {
+  waitDays: number;
+  me: { subjectType: 'STUDENT' | 'ACCOUNT'; erasure: PendingErasure | null; block: string | null; blockMessage: string | null };
+  children: Array<{ studentId: string; label: string; erasure: PendingErasure | null }>;
+}
+
+export interface MfaStatus {
+  required: boolean;
+  enrolled: boolean;
+  pending: boolean;
+  verified: boolean;
+  recoveryCodesLeft: number;
+}
+
+/** Downloads a JSON copy through the proxy and saves it as a file. Errors come back like bff() errors. */
+export async function downloadJson(path: string, filename: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/bff/${path}`);
+  } catch {
+    throw new ApiError(0, 'You appear to be offline. Check your connection and try again.');
+  }
+  const text = await res.text();
+  if (!res.ok) {
+    let msg: string | null = null;
+    try {
+      const raw = (JSON.parse(text) as { message?: unknown }).message;
+      msg = Array.isArray(raw) ? String(raw[0]) : typeof raw === 'string' ? raw : null;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new ApiError(res.status, msg ?? 'Something went wrong. Please try again.');
+  }
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

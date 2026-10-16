@@ -392,6 +392,8 @@ export class ParentService {
       FROM assessment_session s
       WHERE s.status = 'SUBMITTED' AND s.submitted_at >= ${last.start} AND s.submitted_at < ${last.end}
         AND NOT EXISTS (SELECT 1 FROM student_report r WHERE r.student_id = s.student_id AND r.week_start = ${last.start})
+        -- Step 20: an erased student's summaries are deleted and never made again.
+        AND NOT EXISTS (SELECT 1 FROM student e WHERE e.id = s.student_id AND e.erased_at IS NOT NULL)
         AND NOT EXISTS (
           SELECT 1 FROM assessment_session p JOIN assessment_result pr ON pr.session_id = p.id
           WHERE p.student_id = s.student_id AND p.status IN ('SUBMITTED', 'INVALIDATED') AND p.submitted_at < ${last.end}

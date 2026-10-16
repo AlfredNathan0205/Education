@@ -94,6 +94,12 @@ model account {
   status     account_status @default(ACTIVE)
   created_at DateTime       @default(now())
   updated_at DateTime       @updatedAt
+  /// Step 20: set when the account was erased (status CLOSED, identities and sessions deleted). Never cleared.
+  erased_at  DateTime?
+  /// Step 20: the last successful sign-in (sessions are deleted after a while, so they cannot say this).
+  last_sign_in_at DateTime?
+  /// Step 20: set by the retention sweeper when the account has not signed in for the inactivity period.
+  inactive_flagged_at DateTime?
 
   identities              authentication_identity[]
   sessions                auth_session[]
@@ -146,6 +152,8 @@ model auth_session {
   expires_at   DateTime
   revoked_at   DateTime?
   last_seen_at DateTime?
+  /// Step 20: when this session passed the authenticator check (privileged accounts only).
+  mfa_verified_at DateTime?
 
   account account @relation(fields: [account_id], references: [id])
 
@@ -161,6 +169,8 @@ model student {
   display_name String?  @db.VarChar(120)
   created_at   DateTime @default(now())
   updated_at   DateTime @updatedAt
+  /// Step 20: set when the student was erased. Learning records stay, under this id, with no link to a person.
+  erased_at    DateTime?
 
   account_access         account_student_access[]
   guardian_relationships guardian_relationship[]
@@ -2525,4 +2535,90 @@ model experiment_assignment {
   variant    experiment_variant @relation(fields: [experiment_id, variant_key], references: [experiment_id, key], onDelete: Cascade, map: "experiment_assignment_variant_fkey")
 
   @@unique([experiment_id, subject_key])
+}
+
+// ── Step 20: data rights, admin MFA, retention ─────────────────────────────────────────────
+
+/// A data-rights request: an export (done at once) or an erasure (waits 14 days, cancellable, then runs).
+/// subject_type STUDENT (a student and their own account) or ACCOUNT (an adult account with no student).
+model privacy_request {
+  id                     String    @id @default(uuid()) @db.Uuid
+  /// EXPORT or ERASURE.
+  kind                   String    @db.VarChar(16)
+  /// STUDENT or ACCOUNT.
+  subject_type           String    @db.VarChar(16)
+  subject_id             String    @db.Uuid
+  requested_by_account_id String   @db.Uuid
+  /// SELF or GUARDIAN.
+  capacity               String    @db.VarChar(16)
+  /// PENDING, CANCELLED, COMPLETED or FAILED.
+  status                 String    @db.VarChar(16)
+  requested_at           DateTime  @default(now())
+  /// Erasure: when it runs (requested_at + the waiting period). Export: requested_at.
+  due_at                 DateTime
+  cancelled_at           DateTime?
+  cancelled_by_account_id String?  @db.Uuid
+  completed_at           DateTime?
+  failure_code           String?   @db.VarChar(64)
+  attempts               Int       @default(0)
+
+  @@index([subject_type, subject_id, kind])
+  @@index([status, due_at])
+  @@index([requested_by_account_id, requested_at])
+}
+
+/// What was erased, so an erasure can be applied again after a backup restore. Ids only: after erasure these ids
+/// point at rows with no link to a person. No email, number or name, hashed or not.
+model deletion_tombstone {
+  id           String   @id @default(uuid()) @db.Uuid
+  /// STUDENT or ACCOUNT.
+  subject_type String   @db.VarChar(16)
+  subject_id   String   @db.Uuid
+  /// The accounts erased with it (a student's own account), so a restore can be re-erased completely.
+  account_ids  String[] @db.Uuid
+  request_id   String?  @db.Uuid
+  erased_at    DateTime
+
+  @@unique([subject_type, subject_id])
+}
+
+/// A privileged account's authenticator app (TOTP, RFC 6238). The secret is encrypted with MFA_ENCRYPTION_KEY.
+model admin_mfa_factor {
+  id                String    @id @default(uuid()) @db.Uuid
+  account_id        String    @unique @db.Uuid
+  /// PENDING until the first code is confirmed, then ACTIVE.
+  status            String    @db.VarChar(16)
+  secret_ciphertext String    @db.VarChar(512)
+  /// The last 30-second step accepted, so a code cannot be used twice.
+  last_used_step    BigInt?
+  created_at        DateTime  @default(now())
+  activated_at      DateTime?
+
+  recovery_codes admin_mfa_recovery_code[]
+}
+
+/// One-time recovery codes, stored hashed. Ten are issued when the authenticator is set up.
+model admin_mfa_recovery_code {
+  id         String    @id @default(uuid()) @db.Uuid
+  factor_id  String    @db.Uuid
+  code_hash  String    @unique @db.VarChar(64)
+  used_at    DateTime?
+  created_at DateTime  @default(now())
+
+  factor admin_mfa_factor @relation(fields: [factor_id], references: [id], onDelete: Cascade)
+
+  @@index([factor_id])
+}
+
+/// One run of the daily retention sweeper: what it deleted or flagged, by rule.
+model retention_run {
+  id          String    @id @default(uuid()) @db.Uuid
+  started_at  DateTime
+  finished_at DateTime?
+  /// { rule: count } for each rule.
+  counts      Json?
+  ok          Boolean   @default(false)
+  error       String?   @db.VarChar(300)
+
+  @@index([started_at])
 }

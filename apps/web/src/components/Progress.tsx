@@ -90,6 +90,7 @@ export function Progress() {
       })}
       {mastery && <ParentSharing />}
       {mastery && <AnalyticsConsent />}
+      <p className="hint"><Link href="/privacy">Your data: download a copy or delete your account</Link></p>
     </div>
   );
 }
