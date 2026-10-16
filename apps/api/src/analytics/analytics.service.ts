@@ -109,6 +109,11 @@ export class AnalyticsService {
     await db.analytics_event.create({ data: { subject_key: key, name, source: 'CLIENT', occurred_at: now, cohort: await this.cohortOf(db, studentId) } });
   }
 
+  /** Step 20: how many analytics rows are held for a student (the export reports the count; rows carry no id). */
+  async heldFor(studentId: string): Promise<number> {
+    return (this.db.client as any).analytics_event.count({ where: { subject_key: this.keyOf(studentId) } });
+  }
+
   /** Deletes everything analytics holds about a student (their consent was withdrawn). */
   async forget(studentId: string, client?: any): Promise<number> {
     const db = client ?? (this.db.client as any);

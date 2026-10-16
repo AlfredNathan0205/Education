@@ -896,6 +896,39 @@ export class PrivacyService {
   }
 
   /**
+   * Step 20: an erasure withdraws every live consent for the student, whoever granted it, in the erasure's
+   * transaction. The records and withdrawals are kept (evidence of what was agreed and when; see the Step 20 notes for
+   * counsel). Only the erasure saga calls this: it has already checked who may erase.
+   */
+  async withdrawAllForErasure(
+    input: { studentId?: string; consentRecordIds?: string[]; actorAccountId: string },
+    tx: Prisma.TransactionClient,
+    now: Date = new Date(),
+  ): Promise<number> {
+    const where: Record<string, unknown> = { withdrawal: null };
+    if (input.studentId) where.student_id = input.studentId;
+    if (input.consentRecordIds) where.id = { in: input.consentRecordIds };
+    if (!input.studentId && !input.consentRecordIds) return 0;
+    const live = await tx.consent_record.findMany({ where: where as any, include: { purpose: { select: { code: true } } } });
+    for (const record of live as Array<{ id: string; student_id: string; purpose: { code: string } }>) {
+      await tx.consent_withdrawal.create({
+        data: { consent_record_id: record.id, withdrawn_by_account_id: input.actorAccountId, withdrawn_at: now, reason_code: 'ERASURE' },
+      });
+      await this.outbox.publish(tx, {
+        aggregateType: 'student',
+        aggregateId: record.student_id,
+        eventType: 'privacy.consent.withdrawn.v1',
+        payload: { consentRecordId: record.id, studentId: record.student_id, purposeCode: record.purpose.code },
+        idempotencyKey: `consent-withdrawn:${record.id}`,
+      });
+      await tx.audit_event.create({
+        data: { actor_account_id: input.actorAccountId, action: 'privacy.consent.withdrawn', subject_type: 'consent_record', subject_id: record.id, reason_code: 'ERASURE' },
+      });
+    }
+    return live.length;
+  }
+
+  /**
    * The question every other domain asks: may this purpose be processed for this
    * student right now? A student with no age classification is treated as
    * requiring guardian consent (fail closed).

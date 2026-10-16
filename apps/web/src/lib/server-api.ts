@@ -62,6 +62,15 @@ const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
   { method: 'GET', path: 'guardian/analytics-consent' },
   { method: 'GET', path: 'admin/analytics/metrics' },
   { method: 'GET', path: 'admin/analytics/experiments' },
+  // Your data (Step 20): a copy, and deletion with a 14-day wait.
+  { method: 'GET', path: 'privacy/rights' },
+  { method: 'GET', path: 'privacy/export' },
+  { method: 'POST', path: 'privacy/erasure' },
+  // The administrators' authenticator (Step 20). Not under admin/, so it is reachable before the check.
+  { method: 'GET', path: 'mfa/status' },
+  { method: 'POST', path: 'mfa/enrol/start' },
+  { method: 'POST', path: 'mfa/enrol/confirm' },
+  { method: 'POST', path: 'mfa/verify' },
 ];
 
 /** Admin curriculum routes carry a unit id, so they are matched by an exact pattern, never a prefix. */
@@ -118,6 +127,9 @@ const ALLOWED_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: 'POST', pattern: new RegExp(`^admin/entitlements/(subscriptions|grants)/${UUID}/(end|revoke)$`) },
   // Analytics (Step 19).
   { method: 'PUT', pattern: new RegExp(`^guardian/analytics-consent/${UUID}$`) },
+  // Your data (Step 20): a child's copy, and cancelling a deletion.
+  { method: 'GET', pattern: new RegExp(`^privacy/export/${UUID}$`) },
+  { method: 'POST', pattern: new RegExp(`^privacy/erasure/${UUID}/cancel$`) },
 ];
 
 export function isAllowed(method: string, path: string): boolean {
@@ -127,15 +139,32 @@ export function isAllowed(method: string, path: string): boolean {
   );
 }
 
+/**
+ * Step 20: the browser's address, for the API's rate limits. Every browser request reaches the API from this server,
+ * so the address is passed on, with a shared secret so the API can believe it (BFF_SHARED_SECRET on both sides). Only
+ * the first X-Forwarded-For entry is used: it is set by the load balancer in front of this server.
+ */
+export function clientIp(headers: Headers): string | null {
+  const fwd = headers.get('x-forwarded-for')?.split(',')[0]?.trim();
+  const ip = fwd || headers.get('x-real-ip')?.trim() || null;
+  return ip && /^[0-9a-fA-F:.]{2,45}$/.test(ip) ? ip : null;
+}
+
 export async function callApi(
   method: string,
   path: string,
   token: string | null,
   body?: unknown,
+  ip?: string | null,
 ): Promise<Response> {
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  const secret = process.env.BFF_SHARED_SECRET;
+  if (secret && ip) {
+    headers['X-Client-IP'] = ip;
+    headers['X-BFF-Secret'] = secret;
+  }
   return fetch(`${API_URL}/${path}`, {
     method,
     headers,

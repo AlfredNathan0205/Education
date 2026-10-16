@@ -200,6 +200,9 @@ export class IdentityService {
         });
       }
 
+      // Step 20: kept on the account so inactivity can be judged after old sessions are deleted.
+      await tx.account.update({ where: { id: accountId }, data: { last_sign_in_at: now, inactive_flagged_at: null } });
+
       const sessionToken = generateSessionToken();
       const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
       const session = await tx.auth_session.create({

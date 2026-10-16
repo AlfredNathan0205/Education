@@ -43,6 +43,10 @@ import { ParentService } from '../parent/parent.service';
 import { EntitlementService } from '../entitlement/entitlement.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { subjectKey } from '../analytics/analytics-domain';
+import { RightsService } from '../rights/rights.service';
+import { RetentionService } from '../rights/retention.service';
+import { MfaService } from '../mfa/mfa.service';
+import { hotp, stepAt } from '../mfa/totp';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
@@ -82,6 +86,12 @@ async function cleanAll() {
   capturedCodes = [];
   (sender.send as jest.Mock).mockClear();
 
+  // Step 20: data rights, the authenticator, retention.
+  await prisma.privacy_request.deleteMany();
+  await prisma.deletion_tombstone.deleteMany();
+  await prisma.admin_mfa_recovery_code.deleteMany();
+  await prisma.admin_mfa_factor.deleteMany();
+  await prisma.retention_run.deleteMany();
   // Step 19: analytics and experiments.
   await prisma.analytics_event.deleteMany();
   await prisma.analytics_cursor.deleteMany();
@@ -2123,6 +2133,143 @@ describe('ExamService (real DB)', () => {
     // Withdrawing (by the guardian) deletes the assignment too.
     await analytics.setGuardianConsent(kid.guardianId, kid.studentId, { granted: false, consentVersion: 1 });
     expect(await prisma.experiment_assignment.count()).toBe(0);
+  });
+
+  // ---- Step 20: data rights (export, erasure), the administrators' authenticator, retention ----
+
+  const rights = new RightsService(dbService, privacyService, analytics, outbox);
+  const DAY = 86_400_000;
+
+  it('rights: an adult downloads a copy; erasure waits 14 days, then deletes personal data, unlinks the rest, and can be reapplied after a restore', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const ann = await adult();
+    await prisma.student.update({ where: { id: ann.studentId }, data: { display_name: 'Ann' } });
+    await prisma.authentication_identity.create({ data: { account_id: ann.accountId, kind: 'EMAIL', identifier_normalized: 'ann-step20@example.com', verified_at: new Date() } });
+    await prisma.auth_session.create({ data: { account_id: ann.accountId, token_hash: 'step20-session-hash', expires_at: new Date(Date.now() + DAY) } });
+    await privacyService.publishConsentWording({ purposeCode: 'PRODUCT_ANALYTICS', textReference: ANALYTICS_DRAFT_WORDING_REFERENCE, description: 'Product statistics' });
+    await analytics.setMyConsent(ann.accountId, { granted: true, consentVersion: 1 });
+    await tookTest(ann.accountId, unitId, () => true);
+    await mastery.reconcile();
+    await competition.reconcile();
+    await analytics.recordClient(ann.accountId, 'RESULTS_OPENED');
+    await competition.view(ann.accountId);
+
+    // The copy: the student's own rows, no secrets.
+    const copy: any = await rights.exportFor(ann.accountId, null);
+    expect(copy).toMatchObject({ about: 'STUDENT', student: { id: ann.studentId, display_name: 'Ann' }, counts: { analyticsEvents: 1 } });
+    expect(copy.tables.assessment_result).toHaveLength(1);
+    expect(copy.tables.student_response.length).toBeGreaterThan(0);
+    expect(copy.tables.public_profile).toHaveLength(1);
+    expect(JSON.stringify(copy)).not.toMatch(/step20-session-hash|token_hash|code_hash|idempotency_key/);
+    expect(await prisma.audit_event.count({ where: { action: 'privacy.export.downloaded', actor_account_id: ann.accountId } })).toBe(1);
+
+    // Erasure: one open request per subject (the database keeps it so), nothing happens before the 14 days.
+    const now = new Date();
+    const { requestId, dueAt } = await rights.requestErasure(ann.accountId, null, now);
+    expect(new Date(dueAt).getTime() - now.getTime()).toBe(14 * DAY);
+    await expect(prisma.privacy_request.create({ data: { kind: 'ERASURE', subject_type: 'STUDENT', subject_id: ann.studentId, requested_by_account_id: ann.accountId, capacity: 'SELF', status: 'PENDING', due_at: now } })).rejects.toThrow();
+    expect(await rights.runDue(new Date(now.getTime() + 13 * DAY))).toEqual({ completed: 0, failed: 0 });
+    const at = new Date(now.getTime() + 14 * DAY);
+    expect(await rights.runDue(at)).toEqual({ completed: 1, failed: 0 });
+
+    // Personal data is gone.
+    expect(await prisma.authentication_identity.count({ where: { account_id: ann.accountId } })).toBe(0);
+    expect(await prisma.auth_session.count({ where: { account_id: ann.accountId } })).toBe(0);
+    expect(await prisma.age_classification.count({ where: { student_id: ann.studentId } })).toBe(0);
+    expect(await prisma.public_profile.count({ where: { student_id: ann.studentId } })).toBe(0);
+    expect(await prisma.account_student_access.count({ where: { student_id: ann.studentId } })).toBe(0);
+    expect(await prisma.analytics_event.count()).toBe(0);
+    expect(await prisma.student.findUniqueOrThrow({ where: { id: ann.studentId } })).toMatchObject({ display_name: null, erased_at: at });
+    expect(await prisma.account.findUniqueOrThrow({ where: { id: ann.accountId } })).toMatchObject({ status: 'CLOSED', erased_at: at });
+    // Learning records stay, under an id that leads to no one; consents stay as evidence, withdrawn.
+    expect(await prisma.assessment_result.count({ where: { student_id: ann.studentId } })).toBe(1);
+    expect(await prisma.cp_event.count({ where: { student_id: ann.studentId } })).toBeGreaterThan(0);
+    const consents = await prisma.consent_record.findMany({ where: { student_id: ann.studentId }, include: { withdrawal: true } });
+    expect(consents.length).toBeGreaterThan(0);
+    expect(consents.every((c: any) => c.withdrawal !== null)).toBe(true);
+    expect(await prisma.consent_withdrawal.count({ where: { reason_code: 'ERASURE' } })).toBeGreaterThan(0);
+    expect(await prisma.privacy_request.findUniqueOrThrow({ where: { id: requestId } })).toMatchObject({ status: 'COMPLETED' });
+    expect(await prisma.deletion_tombstone.findMany()).toEqual([expect.objectContaining({ subject_type: 'STUDENT', subject_id: ann.studentId, account_ids: [ann.accountId] })]);
+    // The weekly parent summary is never made again for the erased student (it would be due a week later).
+    expect(await parents.reconcile(new Date(Date.now() + 7 * DAY))).toEqual([]);
+    expect(await prisma.student_report.count()).toBe(0);
+    // Nor are they on this week's boards: their public handle and age are gone, so they are never shown.
+    const bea = await adult();
+    const boards = await competition.view(bea.accountId);
+    expect(JSON.stringify(boards)).not.toContain(copy.tables.public_profile[0].handle);
+    // The database refuses an erased account that is not closed.
+    await expect(prisma.account.update({ where: { id: ann.accountId }, data: { status: 'ACTIVE' } })).rejects.toThrow();
+    // The same email can sign up again as a new person.
+    await identityService.requestOtp('EMAIL', 'ann-step20@example.com');
+    const login = await identityService.verifyOtp('EMAIL', 'ann-step20@example.com', capturedCodes[capturedCodes.length - 1].code);
+    expect(login).toMatchObject({ isNewAccount: true });
+    expect(login.accountId).not.toBe(ann.accountId);
+
+    // A restore brings the old rows back: the exported tombstones erase them again.
+    const tombs = await rights.tombstones();
+    await prisma.authentication_identity.create({ data: { account_id: ann.accountId, kind: 'PHONE', identifier_normalized: '+919800000020', verified_at: new Date() } });
+    await prisma.account_student_access.create({ data: { account_id: ann.accountId, student_id: ann.studentId, access_kind: 'SELF' } });
+    await prisma.student.update({ where: { id: ann.studentId }, data: { display_name: 'Ann', erased_at: null } });
+    expect(await rights.reapply(tombs)).toEqual({ applied: 1, skipped: 0 });
+    expect(await prisma.authentication_identity.count({ where: { account_id: ann.accountId } })).toBe(0);
+    expect((await prisma.student.findUniqueOrThrow({ where: { id: ann.studentId } })).display_name).toBeNull();
+  });
+
+  it("rights: a guardian downloads and erases a minor's data; the guardian link ends; the guardian's account stays", async () => {
+    const kid = await guardedMinor('step20-mum@example.com');
+    const copy: any = await rights.exportFor(kid.guardianId, kid.studentId);
+    expect(copy).toMatchObject({ about: 'STUDENT', student: { id: kid.studentId } });
+    await expect(rights.requestErasure(kid.accountId, null)).rejects.toThrow(/parent or guardian/);
+    await expect(rights.requestErasure(kid.guardianId, null)).rejects.toThrow(/approve a child/);
+    const now = new Date();
+    await rights.requestErasure(kid.guardianId, kid.studentId, now);
+    expect(await rights.runDue(new Date(now.getTime() + 14 * DAY))).toEqual({ completed: 1, failed: 0 });
+    expect(await prisma.account.findUniqueOrThrow({ where: { id: kid.accountId } })).toMatchObject({ status: 'CLOSED' });
+    expect(await prisma.account.findUniqueOrThrow({ where: { id: kid.guardianId } })).toMatchObject({ status: 'ACTIVE' });
+    expect(await prisma.guardian_relationship.findFirstOrThrow({ where: { student_id: kid.studentId } })).toMatchObject({ status: 'REVOKED' });
+    expect(await prisma.guardian_authority.count({ where: { revoked_at: null } })).toBe(0);
+    expect(await prisma.guardian_invitation.count({ where: { student_id: kid.studentId } })).toBe(0);
+    expect(await privacyService.listGuardianApprovals(kid.guardianId)).toEqual([]);
+    // Now the guardian approves no one, so they may delete their own account.
+    await expect(rights.requestErasure(kid.guardianId, null)).resolves.toMatchObject({ requestId: expect.any(String) });
+  });
+
+  it('mfa: an administrator sets up an authenticator; the secret is encrypted; a code works once; the check is per session', async () => {
+    const admin = await roleAccount('SUPER_ADMIN');
+    const s1 = await prisma.auth_session.create({ data: { account_id: admin, token_hash: 'mfa-s1', expires_at: new Date(Date.now() + DAY) } });
+    const s2 = await prisma.auth_session.create({ data: { account_id: admin, token_hash: 'mfa-s2', expires_at: new Date(Date.now() + DAY) } });
+    const mfa = new MfaService(dbService);
+    expect(await mfa.check(admin, s1.id)).toBe('MFA_REQUIRED');
+    const now = new Date();
+    const { secret } = await mfa.startEnrolment(admin, now);
+    expect((await prisma.admin_mfa_factor.findUniqueOrThrow({ where: { account_id: admin } })).secret_ciphertext).not.toContain(secret);
+    const { recoveryCodes } = await mfa.confirmEnrolment(admin, s1.id, hotp(secret, stepAt(now)), now);
+    expect(await prisma.admin_mfa_recovery_code.count()).toBe(10);
+    expect(await mfa.check(admin, s1.id, now)).toBe('OK');
+    expect(await mfa.check(admin, s2.id, now)).toBe('MFA_REQUIRED');
+    const later = new Date(now.getTime() + 30_000);
+    const code = hotp(secret, stepAt(later));
+    await mfa.verify(admin, s2.id, { code }, later);
+    await expect(mfa.verify(admin, s2.id, { code }, later)).rejects.toThrow(/did not work/);
+    await mfa.verify(admin, s2.id, { recoveryCode: recoveryCodes[0] }, later);
+    await expect(mfa.verify(admin, s2.id, { recoveryCode: recoveryCodes[0] }, later)).rejects.toThrow(/did not work/);
+    // The database refuses an active authenticator with no confirmation time.
+    await expect(prisma.admin_mfa_factor.update({ where: { account_id: admin }, data: { activated_at: null } })).rejects.toThrow();
+    expect(await prisma.audit_event.count({ where: { action: 'mfa.verify_failed', actor_account_id: admin } })).toBe(2);
+  });
+
+  it('retention: deletes expired sign-in codes and old sessions, flags inactive accounts, and records the run', async () => {
+    const old = new Date(Date.now() - 100 * DAY);
+    const acct = await prisma.account.create({ data: { created_at: new Date(Date.now() - 800 * DAY) } });
+    await prisma.otp_challenge.create({ data: { kind: 'EMAIL', identifier_normalized: 'old@example.com', code_hash: 'x', expires_at: old } });
+    await prisma.otp_challenge.create({ data: { kind: 'EMAIL', identifier_normalized: 'new@example.com', code_hash: 'y', expires_at: new Date() } });
+    await prisma.auth_session.create({ data: { account_id: acct.id, token_hash: 'ret-old', expires_at: old } });
+    const counts = await new RetentionService(dbService).run(new Date());
+    expect(counts).toMatchObject({ otpChallenges: 1, sessions: 1, inactiveFlagged: 1 });
+    expect(await prisma.otp_challenge.count()).toBe(1);
+    expect((await prisma.account.findUniqueOrThrow({ where: { id: acct.id } })).inactive_flagged_at).not.toBeNull();
+    expect(await prisma.retention_run.findFirstOrThrow()).toMatchObject({ ok: true, counts });
   });
 });
 

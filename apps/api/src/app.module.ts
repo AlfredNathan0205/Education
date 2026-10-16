@@ -22,6 +22,8 @@ import { SocialModule } from './social/social.module';
 import { ParentModule } from './parent/parent.module';
 import { EntitlementModule } from './entitlement/entitlement.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { RightsModule } from './rights/rights.module';
+import { MfaModule } from './mfa/mfa.module';
 import { GuardianModule } from './guardian/guardian.module';
 import { SchoolModule } from './school/school.module';
 
@@ -52,6 +54,8 @@ import { SchoolModule } from './school/school.module';
     ParentModule,
     EntitlementModule,
     AnalyticsModule,
+    RightsModule,
+    MfaModule,
     GuardianModule,
     StudentModule,
     SchoolModule,

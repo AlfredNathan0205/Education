@@ -58,6 +58,7 @@ export function GuardianApprovals() {
       )}
       <GuardianFriendships />
       {items.length > 0 && <GuardianAnalytics />}
+      <p className="hint"><Link href="/privacy">Your data: download a copy or delete an account</Link></p>
       <form action="/sign-out" method="post"><button className="btn secondary" type="submit">Sign out</button></form>
     </>
   );
