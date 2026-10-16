@@ -1,6 +1,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Prisma } from '@exam-app/database';
 import { DatabaseService } from '../database/database.service';
+import { ReleaseService } from '../release/release.service';
 import { EntitlementService } from '../entitlement/entitlement.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrivacyService } from '../privacy/privacy.service';
@@ -164,7 +165,14 @@ export class ExamService {
     @Inject(EXAM_CONFIG) private readonly config: ExamConfig,
     // Step 18: limits on tests a student starts themselves. Absent (as in older tests) = no limits.
     @Optional() private readonly entitlements?: EntitlementService,
+    // Step 21: release tiers. Absent (as in older tests) = every served subject is visible.
+    @Optional() private readonly release?: ReleaseService,
   ) {}
+
+  /** Step 21: whether this student may see a subject at its release tier. */
+  private async released(db: Tx, studentId: string, unit: { curriculum_version_id: string; grade_id: string; subject_id: string }): Promise<boolean> {
+    return this.release ? this.release.visible(db, studentId, unit) : true;
+  }
 
   // ── discovery ────────────────────────────────────────────────────────────
 
@@ -196,6 +204,8 @@ export class ExamService {
       seen.add(key);
       // Belt and braces: the query already filters by cohort.
       if (r.curriculum_version.curriculum.code !== cohort.curriculumCode || r.grade.code !== cohort.gradeCode) continue;
+      // Step 21: a subject not released to this student is not offered (Coming soon).
+      if (!(await this.released(db, studentId, r))) continue;
       const pool = await loadServablePool(db, r, studentId);
       const codes = { curriculumCode: r.curriculum_version.curriculum.code, gradeCode: r.grade.code, subjectCode: r.subject.code };
       const tests = blueprints
@@ -308,6 +318,7 @@ export class ExamService {
         select: { id: true },
       });
       if (!newest || newest.id !== unit.id) throw new ExamConflictError('This subject was updated. Reload the page and try again.');
+      if (!(await this.released(tx, studentId, unit))) throw new ExamUnavailableError('This subject is not open for tests yet');
 
       const open = await tx.assessment_session.findMany({
         where: { student_id: studentId, status: 'IN_PROGRESS' },
@@ -410,6 +421,10 @@ export class ExamService {
     },
   ): Promise<{ assessmentId: string }> {
     const now = new Date();
+    // Step 21: both players must be able to see the subject (a challenge cannot open an unreleased subject).
+    if (!(await this.released(tx, studentId, { curriculum_version_id: input.unit.curriculumVersionId, grade_id: input.unit.gradeId, subject_id: input.unit.subjectId }))) {
+      throw new ExamUnavailableError('This subject is not open for tests yet');
+    }
     const instance = await tx.assessment_instance.create({
       data: {
         student_id: studentId,
@@ -764,6 +779,7 @@ export class ExamService {
       const key = `${r.curriculum_version_id}|${r.grade_id}|${r.subject_id}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      if (!(await this.released(db, studentId, r))) continue;
       out.push({ subjectVersionId: r.id, subjectCode: r.subject.code, subjectName: r.subject.name });
     }
     return out.sort((a, b) => a.subjectName.localeCompare(b.subjectName));

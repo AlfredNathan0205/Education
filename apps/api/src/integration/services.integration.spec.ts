@@ -47,6 +47,8 @@ import { RightsService } from '../rights/rights.service';
 import { RetentionService } from '../rights/retention.service';
 import { MfaService } from '../mfa/mfa.service';
 import { hotp, stepAt } from '../mfa/totp';
+import { ReleaseService } from '../release/release.service';
+import { ReadinessService } from '../release/readiness.service';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
@@ -86,6 +88,13 @@ async function cleanAll() {
   capturedCodes = [];
   (sender.send as jest.Mock).mockClear();
 
+  // Step 21: releases (the history refuses DELETE: TRUNCATE still resets it), audiences, reports; the seeded policy is restored.
+  await prisma.$executeRawUnsafe('TRUNCATE "subject_release_event"');
+  await prisma.subject_release.deleteMany();
+  await prisma.release_access.deleteMany();
+  await prisma.readiness_report.deleteMany();
+  await prisma.readiness_policy_version.deleteMany({ where: { code: { not: 'READINESS_V1' } } });
+  await prisma.readiness_policy_version.updateMany({ where: { code: 'READINESS_V1' }, data: { status: 'ACTIVE', signed_off_at: null, signed_off_by_name: null, signed_off_reference: null } });
   // Step 20: data rights, the authenticator, retention.
   await prisma.privacy_request.deleteMany();
   await prisma.deletion_tombstone.deleteMany();
@@ -2270,6 +2279,91 @@ describe('ExamService (real DB)', () => {
     expect(await prisma.otp_challenge.count()).toBe(1);
     expect((await prisma.account.findUniqueOrThrow({ where: { id: acct.id } })).inactive_flagged_at).not.toBeNull();
     expect(await prisma.retention_run.findFirstOrThrow()).toMatchObject({ ok: true, counts });
+  });
+
+  // ---- Step 21: content readiness and release tiers ----
+
+  const release = new ReleaseService(dbService, authzService);
+  const readiness = new ReadinessService(dbService, authzService, release, outbox);
+  const gatedExam = new ExamService(dbService, privacyService, outbox, { allowUnactivatedCurriculum: false, resumeHours: 24 }, undefined, release);
+  const LENIENT = {
+    objective: { limited: 1, assessmentReady: 2, robust: 3 },
+    tiers: Object.fromEntries(['INTERNAL', 'CONTROLLED', 'GENERAL'].map((t) => [t, { objectivesLimitedShare: 1, objectivesReadyShare: 0, objectivesRobustShare: 0, chapterMin: 1, chapterMinPerDifficulty: 1, chapterMinCognitive: 0, maxQualityIssueShare: 1, designDepth: 1 }])),
+  };
+  async function withEmail(accountId: string, email: string) {
+    await prisma.authentication_identity.create({ data: { account_id: accountId, kind: 'EMAIL', identifier_normalized: email, verified_at: new Date() } });
+  }
+
+  it('readiness: the seeded policy is provisional; a thin bank is ready for nothing, students are not offered it, and it cannot be released', async () => {
+    expect(await prisma.readiness_policy_version.findMany({ select: { code: true, status: true, signed_off_at: true } })).toEqual([{ code: 'READINESS_V1', status: 'ACTIVE', signed_off_at: null }]);
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const ann = await adult();
+    // Without a release, the subject is Coming soon for the student, and a test cannot be started on it.
+    expect(await gatedExam.listUnits(ann.accountId)).toEqual([]);
+    await expect(gatedExam.create(ann.accountId, { subjectVersionId: unitId, mode: 'TEST' })).rejects.toThrow(/not open for tests yet/);
+
+    const editor = await roleAccount('CURRICULUM_EDITOR');
+    const r = await readiness.generate(editor, unitId);
+    expect(r).toMatchObject({ highest: 'FOUNDATION_ONLY', policy: { code: 'READINESS_V1', signedOff: false } });
+    expect(r.result.totals).toMatchObject({ servable: 12, distinct: 12, objectives: expect.any(Number) });
+    const failing = r.result.tiers.INTERNAL.checks.filter((c) => !c.ok).map((c) => c.code);
+    expect(failing).toEqual(expect.arrayContaining(['CHAPTER_COGNITIVE', 'DESIGN_QUICK10']));
+    expect(await prisma.readiness_report.findUniqueOrThrow({ where: { id: r.id } })).toMatchObject({ highest_tier: 'FOUNDATION_ONLY', subject_version_id: unitId });
+
+    const approver = await roleAccount('CURRICULUM_APPROVER');
+    await expect(readiness.changeTier(editor, unitId, { to: 'INTERNAL', reportId: r.id, note: 'Checked by the academic lead' })).rejects.toThrow(/Only an approver/);
+    await expect(readiness.changeTier(approver, unitId, { to: 'INTERNAL', reportId: r.id, note: 'Checked by the academic lead' })).rejects.toThrow(/does not pass the INTERNAL checks/);
+    // The database keeps one active policy, and a fixed list of tiers.
+    await expect(prisma.readiness_policy_version.create({ data: { code: 'SECOND', status: 'ACTIVE', params: LENIENT } })).rejects.toThrow();
+    await expect(prisma.subject_release.create({ data: { curriculum_version_id: ann.studentId, grade_id: ann.studentId, subject_id: ann.studentId, tier: 'EVERYONE', changed_at: new Date(), changed_by_account_id: approver } })).rejects.toThrow();
+  });
+
+  it('readiness: released to INTERNAL, only internal testers see the subject; CONTROLLED needs a signed-off policy; taking it back hides it again', async () => {
+    const unitId = await activeUnit();
+    await bank(unitId, 12);
+    const approver = await roleAccount('CURRICULUM_APPROVER');
+    const admin = await roleAccount('SUPER_ADMIN');
+    await withEmail(approver, 'lead-step21@example.com');
+    const ann = await adult();
+    await withEmail(ann.accountId, 'ann-step21@example.com');
+    const bob = await adult();
+    await withEmail(bob.accountId, 'bob-step21@example.com');
+
+    await readiness.publishPolicy({ code: 'IT_LENIENT', params: LENIENT, notes: 'Integration test', operator: 'test' });
+    const r1 = await readiness.generate(approver, unitId);
+    expect(r1.highest).toBe('GENERAL');
+    await readiness.changeTier(approver, unitId, { to: 'INTERNAL', reportId: r1.id, note: 'Alpha bank checked by the subject lead' });
+
+    // Internal access sees it and can start a test; nobody else does.
+    expect(await gatedExam.listUnits(ann.accountId)).toEqual([]);
+    await release.grantAccess(admin, { email: 'ann-step21@example.com', tier: 'INTERNAL', reason: 'Alpha tester' });
+    expect((await gatedExam.listUnits(ann.accountId)).map((u) => u.subjectVersionId)).toEqual([unitId]);
+    const { assessmentId } = await gatedExam.create(ann.accountId, { subjectVersionId: unitId, mode: 'TEST' });
+    expect(assessmentId).toBeTruthy();
+    expect(await gatedExam.listUnits(bob.accountId)).toEqual([]);
+    // One live audience per account (the database keeps it so).
+    await expect(prisma.release_access.create({ data: { account_id: ann.accountId, tier: 'CONTROLLED', reason: 'Second grant' } })).rejects.toThrow();
+
+    // CONTROLLED needs the policy signed off by an academic lead.
+    await expect(readiness.changeTier(approver, unitId, { to: 'CONTROLLED', reportId: r1.id, note: 'Beta bank checked by the subject lead' })).rejects.toThrow(/signed off by an academic lead/);
+    await readiness.signOff({ code: 'IT_LENIENT', approverName: 'Dr Test Lead', reference: 'Integration memo', operator: 'test' });
+    const r2 = await readiness.generate(approver, unitId);
+    await readiness.changeTier(approver, unitId, { to: 'CONTROLLED', reportId: r2.id, note: 'Beta bank checked by the subject lead' });
+    expect(await gatedExam.listUnits(bob.accountId)).toEqual([]);
+    await release.grantAccess(admin, { email: 'bob-step21@example.com', tier: 'CONTROLLED', reason: 'Beta wave 1' });
+    expect(await gatedExam.listUnits(bob.accountId)).toHaveLength(1);
+
+    // Taking it back needs no report and hides it at once.
+    await readiness.changeTier(approver, unitId, { to: 'FOUNDATION_ONLY', note: 'A wrong answer key was found in chapter 1' });
+    expect(await gatedExam.listUnits(ann.accountId)).toEqual([]);
+    expect(await gatedExam.listUnits(bob.accountId)).toEqual([]);
+    const history = await readiness.history(approver, unitId);
+    expect(history.map((h) => `${h.from}>${h.to}`)).toEqual(['CONTROLLED>FOUNDATION_ONLY', 'INTERNAL>CONTROLLED', 'FOUNDATION_ONLY>INTERNAL']);
+    expect(history[2]).toMatchObject({ approver: 'lead-step21@example.com', reportId: r1.id });
+    // The history cannot be edited.
+    await expect(prisma.subject_release_event.updateMany({ data: { note: 'Rewritten history entry' } })).rejects.toThrow(/append-only/);
+    expect(await prisma.audit_event.count({ where: { action: { in: ['release.promoted', 'release.demoted'] } } })).toBe(3);
   });
 });
 

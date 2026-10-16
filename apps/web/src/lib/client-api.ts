@@ -762,3 +762,76 @@ export async function downloadJson(path: string, filename: string): Promise<void
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+// ── Step 21: content readiness and release tiers ──────────────────────────────
+
+export type ReleaseTier = 'FOUNDATION_ONLY' | 'INTERNAL' | 'CONTROLLED' | 'GENERAL';
+export const RELEASE_TIERS: ReleaseTier[] = ['FOUNDATION_ONLY', 'INTERNAL', 'CONTROLLED', 'GENERAL'];
+export const TIER_LABEL: Record<ReleaseTier, string> = {
+  FOUNDATION_ONLY: 'Not released',
+  INTERNAL: 'Internal (alpha)',
+  CONTROLLED: 'Controlled (beta)',
+  GENERAL: 'Everyone',
+};
+
+export interface ReadinessUnitRow {
+  subjectVersionId: string;
+  curriculumCode: string;
+  versionLabel: string;
+  gradeCode: string;
+  subjectCode: string;
+  subjectName: string;
+  revision: number;
+  curriculumState: string;
+  tier: ReleaseTier;
+  latestReport: null | { id: string; generatedAt: string; highest: ReleaseTier; policy: string; current: boolean };
+  belowTier: boolean;
+}
+
+export interface ReadinessCheck {
+  code: string;
+  ok: boolean;
+  message: string;
+}
+
+export interface ReadinessReport {
+  id: string;
+  subjectVersionId: string;
+  generatedAt: string;
+  highest: ReleaseTier;
+  policy: { code: string; signedOff: boolean };
+  result: {
+    policy: string;
+    eqcNote: string;
+    totals: { servable: number; distinct: number; awaitingPublication: number; objectives: number; chapters: number };
+    objectiveStates: Record<'NOT_READY' | 'LIMITED' | 'ASSESSMENT_READY' | 'ROBUST', number>;
+    objectives: Array<{ path: string; chapter: string; eqc: number; state: string }>;
+    chapters: Array<{ code: string; title: string; servable: number; difficulty: Record<'EASY' | 'MEDIUM' | 'HARD', number>; cognitive: number; objectives: number; notReady: number }>;
+    quality: { approved: number; quarantined: number; degraded: number; issueShare: number };
+    tiers: Record<'INTERNAL' | 'CONTROLLED' | 'GENERAL', { pass: boolean; checks: ReadinessCheck[] }>;
+    highest: ReleaseTier;
+  };
+}
+
+export interface ReadinessPolicyView {
+  code: string;
+  signedOff: null | { by: string; reference: string; at: string };
+}
+
+export interface ReleaseAccessRow {
+  id: string;
+  accountId: string;
+  email: string | null;
+  tier: 'INTERNAL' | 'CONTROLLED';
+  reason: string;
+  grantedAt: string;
+}
+
+export interface ReleaseHistoryRow {
+  from: ReleaseTier;
+  to: ReleaseTier;
+  at: string;
+  note: string;
+  approver: string | null;
+  reportId: string | null;
+}

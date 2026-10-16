@@ -124,6 +124,7 @@ Set the variable and restart the API. Each is listed in `apps/api/src/security/k
 | `RETENTION_ENABLED` | No retention sweep | on | before a backup restore, or a retention bug |
 | `RATE_LIMIT_ENABLED` | No HTTP rate limits | on | only to recover from a mistaken limit |
 | `MFA_ENFORCED` | No authenticator check on /admin; **refused in production** | on | local development only |
+| `RELEASE_GATING_ENABLED` | Release tiers ignored: every served subject shown to every student; **refused in production** | on | local development with data from before Step 21 only |
 | `BETA_GRANT_UNTIL` | Unset: no new Beta plans | unset | ending the beta |
 
 ## 9. Before launch: sign-off

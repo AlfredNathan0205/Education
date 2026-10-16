@@ -71,6 +71,11 @@ const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
   { method: 'POST', path: 'mfa/enrol/start' },
   { method: 'POST', path: 'mfa/enrol/confirm' },
   { method: 'POST', path: 'mfa/verify' },
+  // Content readiness and release tiers (Step 21): curriculum staff; releases by approvers; access by super administrators.
+  { method: 'GET', path: 'admin/readiness/policy' },
+  { method: 'GET', path: 'admin/readiness/units' },
+  { method: 'GET', path: 'admin/readiness/access' },
+  { method: 'POST', path: 'admin/readiness/access' },
 ];
 
 /** Admin curriculum routes carry a unit id, so they are matched by an exact pattern, never a prefix. */
@@ -130,6 +135,11 @@ const ALLOWED_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   // Your data (Step 20): a child's copy, and cancelling a deletion.
   { method: 'GET', pattern: new RegExp(`^privacy/export/${UUID}$`) },
   { method: 'POST', pattern: new RegExp(`^privacy/erasure/${UUID}/cancel$`) },
+  // Content readiness (Step 21).
+  { method: 'POST', pattern: new RegExp(`^admin/readiness/units/${UUID}/(report|release)$`) },
+  { method: 'GET', pattern: new RegExp(`^admin/readiness/units/${UUID}/history$`) },
+  { method: 'GET', pattern: new RegExp(`^admin/readiness/reports/${UUID}$`) },
+  { method: 'POST', pattern: new RegExp(`^admin/readiness/access/${UUID}/revoke$`) },
 ];
 
 export function isAllowed(method: string, path: string): boolean {

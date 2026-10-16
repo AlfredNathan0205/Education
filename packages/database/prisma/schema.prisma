@@ -2622,3 +2622,92 @@ model retention_run {
 
   @@index([started_at])
 }
+
+// ── Step 21: content readiness and release tiers ─────────────────────────────────────────────
+
+/// How far a subject (curriculum version × grade × subject) is released to students: FOUNDATION_ONLY (nobody),
+/// INTERNAL (accounts given internal access), CONTROLLED (internal and controlled access, e.g. the private beta), or
+/// GENERAL (everyone in the cohort). No row = FOUNDATION_ONLY. Kept across curriculum correction revisions.
+model subject_release {
+  id                    String   @id @default(uuid()) @db.Uuid
+  curriculum_version_id String   @db.Uuid
+  grade_id              String   @db.Uuid
+  subject_id            String   @db.Uuid
+  tier                  String   @db.VarChar(16)
+  changed_at            DateTime
+  changed_by_account_id String   @db.Uuid
+
+  events subject_release_event[]
+
+  @@unique([curriculum_version_id, grade_id, subject_id])
+}
+
+/// Append-only history of release changes. A promotion cites the readiness report it relied on and the approver's
+/// sign-off statement.
+model subject_release_event {
+  id                  String   @id @default(uuid()) @db.Uuid
+  release_id          String   @db.Uuid
+  from_tier           String   @db.VarChar(16)
+  to_tier             String   @db.VarChar(16)
+  readiness_report_id String?  @db.Uuid
+  approver_account_id String   @db.Uuid
+  note                String   @db.VarChar(1000)
+  at                  DateTime @default(now())
+
+  release subject_release   @relation(fields: [release_id], references: [id])
+  report  readiness_report? @relation(fields: [readiness_report_id], references: [id])
+
+  @@index([release_id, at])
+}
+
+/// Which audience an account belongs to for release tiers: INTERNAL (staff and alpha testers) or CONTROLLED (beta).
+/// At most one live grant per account. Applies to the account's own student.
+model release_access {
+  id                    String    @id @default(uuid()) @db.Uuid
+  account_id            String    @db.Uuid
+  tier                  String    @db.VarChar(16)
+  reason                String    @db.VarChar(300)
+  granted_by_account_id String?   @db.Uuid
+  granted_at            DateTime  @default(now())
+  revoked_at            DateTime?
+  revoked_by_account_id String?   @db.Uuid
+
+  @@index([account_id])
+}
+
+/// The readiness thresholds, versioned. Exactly one ACTIVE. PROVISIONAL until an academic lead signs it off; only a
+/// signed-off policy can release a subject to CONTROLLED or GENERAL.
+model readiness_policy_version {
+  id                  String    @id @default(uuid()) @db.Uuid
+  code                String    @unique @db.VarChar(32)
+  /// ACTIVE or RETIRED.
+  status              String    @db.VarChar(16)
+  params              Json
+  notes               String?   @db.VarChar(1000)
+  signed_off_by_name  String?   @db.VarChar(200)
+  signed_off_reference String?  @db.VarChar(200)
+  signed_off_at       DateTime?
+  created_at          DateTime  @default(now())
+
+  reports readiness_report[]
+}
+
+/// One readiness check of a subject revision against a policy: the full result, kept so a release can cite it.
+model readiness_report {
+  id                    String   @id @default(uuid()) @db.Uuid
+  policy_version_id     String   @db.Uuid
+  subject_version_id    String   @db.Uuid
+  curriculum_version_id String   @db.Uuid
+  grade_id              String   @db.Uuid
+  subject_id            String   @db.Uuid
+  /// The highest tier every check passed for (cumulative), or FOUNDATION_ONLY.
+  highest_tier          String   @db.VarChar(16)
+  result                Json
+  generated_by_account_id String? @db.Uuid
+  generated_at          DateTime @default(now())
+
+  policy         readiness_policy_version @relation(fields: [policy_version_id], references: [id])
+  release_events subject_release_event[]
+
+  @@index([curriculum_version_id, grade_id, subject_id, generated_at])
+}

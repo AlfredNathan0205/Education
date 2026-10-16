@@ -24,6 +24,7 @@ import { EntitlementModule } from './entitlement/entitlement.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { RightsModule } from './rights/rights.module';
 import { MfaModule } from './mfa/mfa.module';
+import { ReleaseModule } from './release/release.module';
 import { GuardianModule } from './guardian/guardian.module';
 import { SchoolModule } from './school/school.module';
 
@@ -56,6 +57,7 @@ import { SchoolModule } from './school/school.module';
     AnalyticsModule,
     RightsModule,
     MfaModule,
+    ReleaseModule,
     GuardianModule,
     StudentModule,
     SchoolModule,
