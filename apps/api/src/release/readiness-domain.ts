@@ -100,6 +100,8 @@ export function parsePolicy(code: string, raw: unknown): ReadinessPolicy {
 
 export interface ReadinessInput {
   curriculumState: string;
+  /** Development only (EXAM_ALLOW_UNACTIVATED_CURRICULUM): students are served this revision although it is not ACTIVE. */
+  servedUnactivated?: boolean;
   chapters: Array<{ code: string; title: string; objectives: string[] }>;
   /** What students would be served (assembly's pool). */
   items: Array<{ questionId: string; objectivePath: string; difficulty: Difficulty; cognitive: string | null; stemHash: string }>;
@@ -186,7 +188,16 @@ export function evaluateReadiness(input: ReadinessInput, policy: ReadinessPolicy
     const r = policy.tiers[t];
     const checks: Check[] = [];
     const add = (code: string, ok: boolean, message: string) => checks.push({ code, ok, message });
-    add('CURRICULUM_ACTIVE', input.curriculumState === 'ACTIVE', input.curriculumState === 'ACTIVE' ? 'The curriculum is active.' : `The curriculum is ${input.curriculumState}, not ACTIVE.`);
+    const active = input.curriculumState === 'ACTIVE';
+    add(
+      'CURRICULUM_ACTIVE',
+      active || input.servedUnactivated === true,
+      active
+        ? 'The curriculum is active.'
+        : input.servedUnactivated
+          ? `The curriculum is ${input.curriculumState}: served only because EXAM_ALLOW_UNACTIVATED_CURRICULUM is on (development; refused in production).`
+          : `The curriculum is ${input.curriculumState}, not ACTIVE.`,
+    );
     add('HAS_OBJECTIVES', n > 0, n > 0 ? `${n} objectives in ${chapters.length} chapters.` : 'The curriculum has no objectives.');
     add('OBJECTIVES_LIMITED', n > 0 && limitedShare >= r.objectivesLimitedShare, `${pct(limitedShare)} of objectives have at least ${policy.objective.limited} questions (needs ${pct(r.objectivesLimitedShare)}).`);
     if (r.objectivesReadyShare > 0) add('OBJECTIVES_READY', readyShare >= r.objectivesReadyShare, `${pct(readyShare)} of objectives have at least ${policy.objective.assessmentReady} questions (needs ${pct(r.objectivesReadyShare)}).`);

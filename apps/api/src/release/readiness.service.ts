@@ -6,6 +6,7 @@ import { appliesTo, isTargeted } from '../blueprint/blueprint-domain';
 import { servableBlueprints } from '../blueprint/blueprint-store';
 import { DatabaseService } from '../database/database.service';
 import { ExamConflictError, ExamInputError, ExamNotFoundError, ExamNotPermittedError } from '../exam/exam.errors';
+import { loadExamConfig, servedCurriculumStates } from '../exam/exam-domain';
 import { OutboxService } from '../outbox/outbox.service';
 import { DIFFICULTIES, evaluateReadiness, parsePolicy, type Difficulty, type ReadinessPolicy, type ReadinessResult } from './readiness-domain';
 import { RELEASE_ROLES, isTier, rank, releaseBlocks, type ReleasedTier, type Tier } from './release-domain';
@@ -53,6 +54,9 @@ export interface ReportView {
  */
 @Injectable()
 export class ReadinessService {
+  /** The curriculum states students are served, exactly as the exam engine decides (ACTIVE, or the development switch). */
+  private readonly served = servedCurriculumStates(loadExamConfig(process.env));
+
   constructor(
     private readonly db: DatabaseService,
     private readonly authz: AuthzService,
@@ -261,10 +265,10 @@ export class ReadinessService {
 
   // ── internals ──────────────────────────────────────────────────────────────
 
-  /** The newest ACTIVE revision of the subject (what students are served), or null. */
+  /** The newest served revision of the subject (ACTIVE, or any pre-active state under the development switch), or null. */
   private async servedRevision(db: Db, s: { curriculum_version_id: string; grade_id: string; subject_id: string }): Promise<string | null> {
     const row = await db.curriculum_subject_version.findFirst({
-      where: { curriculum_version_id: s.curriculum_version_id, grade_id: s.grade_id, subject_id: s.subject_id, state: 'ACTIVE' },
+      where: { curriculum_version_id: s.curriculum_version_id, grade_id: s.grade_id, subject_id: s.subject_id, state: { in: this.served } },
       orderBy: { revision: 'desc' },
       select: { id: true },
     });
@@ -295,6 +299,7 @@ export class ReadinessService {
       });
     return {
       curriculumState: unit.state,
+      servedUnactivated: unit.state !== 'ACTIVE' && this.served.includes(unit.state),
       chapters: chapters.map((c) => ({
         code: c.code,
         title: c.title,

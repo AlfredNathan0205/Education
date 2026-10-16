@@ -128,6 +128,24 @@ describe('evaluating a subject', () => {
     expect(r.tiers.GENERAL.checks.find((c) => c.code === 'DESIGN_SUBJECT20')!.message).toMatch(/short of easy/);
   });
 
+  it('development: a curriculum served under EXAM_ALLOW_UNACTIVATED_CURRICULUM passes the curriculum check, and says why', () => {
+    const r = evaluateReadiness(subject(2, 10, () => 13, { curriculumState: 'AI_STRUCTURED', servedUnactivated: true }), READINESS_V1);
+    const c = r.tiers.INTERNAL.checks.find((x) => x.code === 'CURRICULUM_ACTIVE')!;
+    expect(c).toMatchObject({ ok: true, message: expect.stringMatching(/AI_STRUCTURED: served only because EXAM_ALLOW_UNACTIVATED_CURRICULUM is on/) });
+    expect(evaluateReadiness(subject(2, 10, () => 13, { curriculumState: 'AI_STRUCTURED' }), READINESS_V1).highest).toBe('FOUNDATION_ONLY');
+  });
+
+  it('the CI case: one objective, 12 questions (4 of each difficulty) cannot hold Quick 10 (5 easy) even once; 15 can', () => {
+    const lenient = parsePolicy('IT_LENIENT', {
+      objective: { limited: 1, assessmentReady: 2, robust: 3 },
+      tiers: Object.fromEntries(['INTERNAL', 'CONTROLLED', 'GENERAL'].map((t) => [t, { objectivesLimitedShare: 1, objectivesReadyShare: 0, objectivesRobustShare: 0, chapterMin: 1, chapterMinPerDifficulty: 1, chapterMinCognitive: 0, maxQualityIssueShare: 1, designDepth: 1 }])),
+    });
+    const twelve = evaluateReadiness(subject(1, 1, () => 12), lenient);
+    expect(twelve.highest).toBe('FOUNDATION_ONLY');
+    expect(twelve.tiers.INTERNAL.checks.filter((c) => !c.ok).map((c) => c.code)).toEqual(['DESIGN_QUICK10']);
+    expect(evaluateReadiness(subject(1, 1, () => 15), lenient).highest).toBe('GENERAL');
+  });
+
   it('the result holds no nulls (it is stored as JSON)', () => {
     expect(JSON.stringify(evaluateReadiness(subject(2, 3, () => 2), READINESS_V1))).not.toContain('null');
     expect(evaluateReadiness(subject(2, 3, () => 2), READINESS_V1).eqcNote).toMatch(/upper bound/);

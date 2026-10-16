@@ -67,6 +67,7 @@ Spec sources:
   - release and move-back buttons with the note, and the history;
   - early-access management.
 - **CLI** (`node dist/release/cli/readiness.js`): `policy`, `policy publish`, `policy sign-off`, `report <curriculum> <grade> <subject>`, and `access <INTERNAL|CONTROLLED> <emails.txt> "<reason>"`.
+- **Development data:** readiness follows the exam engine's rule for which curriculum revision is served. With `EXAM_ALLOW_UNACTIVATED_CURRICULUM=true` (development only, refused in production), a pre-active revision students are already served can be checked and released, and the report says so in its curriculum check. In production only ACTIVE counts. (Fix after the first CI run, PR #27: the hand test found that the dev database has no ACTIVE curriculum.)
 - **New kill switch:** `RELEASE_GATING_ENABLED=false` makes every served subject visible again. It is for local development with data from before this step, and is refused in production.
 
 ## READINESS_V1 numbers (PROVISIONAL)
@@ -125,7 +126,7 @@ The extra SQL adds:
 **On a database with subjects already open to students** (not production, which has none), every subject becomes FOUNDATION_ONLY. Release them through the page, or set `RELEASE_GATING_ENABLED=false` locally.
 
 ## Checks done here
-- **Unit tests: 77 suites, 1183 tests** (Step 20 had 74 and 1145). They cover:
+- **Unit tests: 77 suites, 1185 tests** (Step 20 had 74 and 1145). They cover:
   - **Who sees what:** every tier × audience, and the switch.
   - **Release changes:** one step, fresh, same subject and current revision, active policy, passing, signed off for CONTROLLED and GENERAL, approver only, demotion without a report.
   - **Readiness:**

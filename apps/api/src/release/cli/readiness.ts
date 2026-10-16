@@ -10,6 +10,7 @@
 import { readFileSync } from 'node:fs';
 import { PrismaClient } from '@exam-app/database';
 import { AuthzService } from '../../authz/authz.service';
+import { loadExamConfig, servedCurriculumStates } from '../../exam/exam-domain';
 import { OutboxService } from '../../outbox/outbox.service';
 import { ReadinessService } from '../readiness.service';
 import { ReleaseService } from '../release.service';
@@ -41,10 +42,10 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(await readiness.signOff({ code: b, approverName: c, reference: d, operator })));
     } else if (cmd === 'report' && a && b && c) {
       const unit = await client.curriculum_subject_version.findFirst({
-        where: { curriculum_version: { curriculum: { code: a } }, grade: { code: b }, subject: { code: c }, state: 'ACTIVE' },
+        where: { curriculum_version: { curriculum: { code: a } }, grade: { code: b }, subject: { code: c }, state: { in: servedCurriculumStates(loadExamConfig()) as any } },
         orderBy: { revision: 'desc' },
       });
-      if (!unit) throw new Error('No ACTIVE revision for that subject.');
+      if (!unit) throw new Error('No served revision for that subject (ACTIVE, or any pre-active state with EXAM_ALLOW_UNACTIVATED_CURRICULUM=true in development).');
       const r = await readiness.generate(null, unit.id);
       console.log(`Report ${r.id} (${r.policy.code}${r.policy.signedOff ? '' : ', PROVISIONAL'}): highest tier ${r.highest}`);
       for (const [tier, v] of Object.entries(r.result.tiers)) for (const ch of v.checks) console.log(`${tier.padEnd(10)} ${ch.ok ? 'pass' : 'FAIL'}  ${ch.message}`);

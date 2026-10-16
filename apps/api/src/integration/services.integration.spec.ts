@@ -2321,7 +2321,8 @@ describe('ExamService (real DB)', () => {
 
   it('readiness: released to INTERNAL, only internal testers see the subject; CONTROLLED needs a signed-off policy; taking it back hides it again', async () => {
     const unitId = await activeUnit();
-    await bank(unitId, 12);
+    // 15 questions = 5 of each difficulty: enough for Quick 10's and Focus 10's 5/3/2 mix once (the lenient design depth).
+    await bank(unitId, 15);
     const approver = await roleAccount('CURRICULUM_APPROVER');
     const admin = await roleAccount('SUPER_ADMIN');
     await withEmail(approver, 'lead-step21@example.com');

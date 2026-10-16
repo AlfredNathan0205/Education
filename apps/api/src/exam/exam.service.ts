@@ -31,6 +31,7 @@ import {
   type ExamConfig,
   type ItemProgress,
   scoringPolicyFor,
+  servedCurriculumStates,
 } from './exam-domain';
 import {
   ExamConflictError,
@@ -46,7 +47,6 @@ type Tx = Prisma.TransactionClient;
 const EXPIRED = Symbol('expired');
 const expiredError = () => new ExamConflictError('This assessment has expired');
 
-const SERVED_STATES = ['ACTIVE'] as const;
 
 export type SessionStatus = 'IN_PROGRESS' | 'SUBMITTED' | 'VOID' | 'INVALIDATED';
 /** Returned from inside a transaction so a technical-failure exclusion is saved before the caller is told. */
@@ -62,7 +62,6 @@ export function presentable(rev: { stem: string; options: Array<{ position: numb
   const have = new Set(rev.options.map((o) => o.position));
   return optionOrder.length === OPTION_COUNT && optionOrder.every((p) => have.has(p));
 }
-const DEV_STATES = ['DRAFT', 'AI_STRUCTURED', 'VALIDATION_PENDING', 'VALIDATED', 'ADMIN_REVIEW', 'CHANGES_REQUIRED', 'APPROVED', 'ACTIVE', 'ACTIVE_WITH_REVIEW'] as const;
 
 export interface ExamUnitView {
   subjectVersionId: string;
@@ -747,7 +746,7 @@ export class ExamService {
   // ── internals ──────────────────────────────────────────────────────────────
 
   private servedStates() {
-    return (this.config.allowUnactivatedCurriculum ? [...DEV_STATES] : [...SERVED_STATES]) as any[];
+    return servedCurriculumStates(this.config) as any[];
   }
 
   /** The account's own student, who must be age-classified and not awaiting guardian consent. Fails closed. */
