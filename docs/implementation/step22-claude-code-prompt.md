@@ -77,7 +77,7 @@ A sentence such as "1 row, ACTIVE" is a summary, not raw output. Summaries will 
         ```
         curl -s -X POST http://localhost:3001/admin/curriculum/units/<id>/activate -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' -d '{"note":"Activating my own work"}'
         ```
-        It answers 409 with the same sentence. Paste it raw.
+        It answers 403 (forbidden), saying an approver who did not edit it must activate it. Paste it raw.
    d. Activation.
       - Y writes "Checked against the hand test syllabus" and clicks "Activate". The page says students still see nothing until release, and links to Readiness and release. Screenshot it.
       - Raw:
@@ -89,7 +89,7 @@ A sentence such as "1 row, ACTIVE" is a summary, not raw output. Summaries will 
       - X reloads: "Resume" is disabled with the same editor sentence. Screenshot it.
       - Y resumes with "Hand test: resuming after the check".
       - X clicks "Start a correction (new revision)". X lands on revision 2, Draft, and its Revisions list shows "Revision 1: Active". Screenshot it.
-      - Revision 2 offers no "Withdraw" (a draft cannot be withdrawn in the state machine). Leave it as a draft.
+      - Revision 2 offers "Withdraw this revision" (a correction that is not yet live can be withdrawn by an editor, with a note). Do not withdraw it; leave it as a draft.
       - Screenshot revision 1's History.
       - Raw: `SELECT revision, state FROM curriculum_subject_version WHERE subject_id = (SELECT subject_id FROM curriculum_subject_version WHERE id = '<id>') ORDER BY revision;`
    f. One question in a form (X, on `/admin/questions`, subject "Hand test science").

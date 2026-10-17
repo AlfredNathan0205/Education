@@ -53,7 +53,8 @@ function actions(u, email) {
     suspend: u.state === 'ACTIVE' ? yes : not(),
     resume: u.state === 'SUSPENDED' ? activation : no('Only a suspended curriculum can be resumed'),
     startCorrection: ['ACTIVE', 'SUSPENDED'].includes(u.state) ? ([...units.values()].some((x) => x.supersedesId === u.id) ? no('A correction is already being prepared') : edit ? yes : no('Only an editor can start a correction')) : no('Only a live curriculum is corrected with a new revision (edit this one directly)'),
-    withdraw: u.state === 'SUSPENDED' ? yes : not(),
+    // As the real state machine: any pre-active revision (editors) or a suspended one (approvers).
+    withdraw: ['DISCOVERED', 'EVIDENCE_COLLECTION', 'DRAFT', 'AI_STRUCTURED', 'VALIDATION_PENDING', 'VALIDATED', 'ADMIN_REVIEW', 'CHANGES_REQUIRED', 'APPROVED', 'SUSPENDED'].includes(u.state) ? yes : not(),
   };
 }
 
