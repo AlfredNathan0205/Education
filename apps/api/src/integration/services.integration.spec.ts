@@ -52,6 +52,8 @@ import { ReadinessService } from '../release/readiness.service';
 import { AiGateway } from '../factory/ai-gateway';
 import { MockAiProvider, parseMockFaults } from '../factory/mock-provider';
 import { FactoryService } from '../factory/factory.service';
+import { CurriculumWorkflowService } from '../curriculum/curriculum-workflow.service';
+import { QuestionBankService } from '../question/question-bank.service';
 import type { CurriculumActor } from '../curriculum/curriculum-state';
 import type { CurriculumTree } from '../curriculum/curriculum-validation';
 
@@ -2645,5 +2647,95 @@ describe('AI question factory with the mock provider (real DB)', () => {
     const b = await run();
     expect(a.draftsStored).toBe(2);
     expect(b).toMatchObject({ draftsStored: 2, duplicates: 0 });
+  });
+});
+
+/* ===================================================================== */
+/*  Step 22: the admin workflow, one question in a form                   */
+/* ===================================================================== */
+
+describe('Step 22: the curriculum workflow from the admin page, and one question in a form (real DB)', () => {
+  const workflow = new CurriculumWorkflowService(dbService, curriculumService, curriculumAdmin, authzService);
+  const bank = new QuestionBankService(new QuestionService(dbService), curriculumService, authzService);
+
+  async function person(roleCode: string) {
+    const account = await prisma.account.create({ data: {} });
+    await prisma.authentication_identity.create({ data: { account_id: account.id, kind: 'EMAIL', identifier_normalized: `${roleCode.toLowerCase()}-${account.id.slice(0, 8)}@example.com`, verified_at: new Date() } as never });
+    await authzService.grantRole({ targetAccountId: account.id, roleCode, actorAccountId: null, operator: 'test-setup' });
+    return account.id;
+  }
+  const NOTE = { note: 'Checked against the official syllabus' };
+
+  async function approved() {
+    const editor = await person('SUPER_ADMIN');
+    const reviewer = await person('CURRICULUM_REVIEWER');
+    const approver = await person('CURRICULUM_APPROVER');
+    const { id } = await workflow.create(editor, { curriculumCode: 'wf', curriculumName: 'Workflow', versionLabel: '2026-27', gradeCode: 'g8', subjectCode: `wf_${Date.now()}`, subjectName: 'Workflow Subject' });
+    const { referenceId } = await workflow.addEvidence(editor, id, { title: 'Official syllabus', url: 'https://example.org/s.pdf', locator: 'p. 4' });
+    const leaf = { provenance: 'OFFICIAL_EXPLICIT' as const, evidenceReferenceId: referenceId, rationale: null };
+    await curriculumAdmin.replaceContent(editor, id, {
+      chapters: [{ code: 'CH01', title: 'Matter', position: 1, ...leaf, topics: [{ code: 'T01', title: 'States', position: 1, ...leaf, microConcepts: [{ code: 'MC01', title: 'Particles', position: 1, ...leaf, learningObjectives: [{ code: 'LO01', statement: 'Describe the three states of matter', position: 1, ...leaf }] }] }] }],
+    });
+    const checked = await workflow.submit(editor, id);
+    expect(checked.passed).toBe(true);
+    await workflow.verifyEvidence(reviewer, id, NOTE);
+    await workflow.sendToReview(reviewer, id);
+    expect((await workflow.approve(approver, id, NOTE)).state).toBe('APPROVED');
+    return { id, editor, reviewer, approver };
+  }
+
+  it('the editor, even a super administrator, cannot activate; an approver who did not edit it can, with a note, audited', async () => {
+    const { id, editor, approver } = await approved();
+    const mine = await workflow.detail(editor, id);
+    expect(mine.unit.curriculumCode).toBe('WF');
+    expect(mine.evidence).toMatchObject({ status: 'VERIFIED', references: [{ number: 1, title: 'Official syllabus' }] });
+    expect(mine.content).toMatchObject({ chapters: 1, objectives: 1 });
+    expect(mine.actions.activate).toEqual({ allowed: false, reason: expect.stringMatching(/You edited this revision/) });
+    await expect(workflow.activate(editor, id, NOTE)).rejects.toThrow(/did not edit/);
+    await expect(workflow.activate(approver, id, { note: 'short' })).rejects.toThrow(/10/);
+    expect((await workflow.detail(approver, id)).actions.activate).toEqual({ allowed: true });
+
+    expect((await workflow.activate(approver, id, NOTE)).state).toBe('ACTIVE');
+    const audit = await prisma.audit_event.findFirst({ where: { action: 'curriculum.activated', subject_id: id } });
+    expect(audit).toMatchObject({ actor_account_id: approver });
+    const history = (await workflow.detail(approver, id)).history;
+    expect(history[0]).toMatchObject({ from: 'APPROVED', to: 'ACTIVE' });
+  });
+
+  it('a live curriculum is suspended and resumed by an approver, and corrected with a new revision', async () => {
+    const { id, editor, approver } = await approved();
+    await workflow.activate(approver, id, NOTE);
+    expect((await workflow.suspend(approver, id, { note: 'A wrong unit in chapter 1' })).state).toBe('SUSPENDED');
+    await expect(workflow.resume(editor, id, NOTE)).rejects.toThrow(/did not edit/);
+    expect((await workflow.resume(approver, id, { note: 'Fixed upstream, resuming' })).state).toBe('ACTIVE');
+    expect(await prisma.audit_event.count({ where: { subject_id: id, action: { in: ['curriculum.suspended', 'curriculum.resumed'] } } })).toBe(2);
+
+    const next = await workflow.startCorrection(editor, id);
+    expect(next.revision).toBe(2);
+    const d = await workflow.detail(editor, next.id);
+    expect(d.unit.state).toBe('DRAFT');
+    expect(d.revisions.map((r) => [r.revision, r.state])).toEqual([[2, 'DRAFT'], [1, 'ACTIVE']]);
+    expect((await workflow.detail(editor, id)).actions.startCorrection).toEqual({ allowed: false, reason: 'A correction is already being prepared' });
+  });
+
+  it('one question written in a form is saved as a draft through the same checks as an upload', async () => {
+    const { id, approver } = await approved();
+    await workflow.activate(approver, id, NOTE);
+    const editor = await person('CURRICULUM_EDITOR');
+    expect(await bank.objectives(editor, id)).toEqual([expect.objectContaining({ code: 'LO01', path: 'CH01/T01/MC01/LO01', ambiguous: false })]);
+    const form = { code: 'wf-q1', objectiveCode: 'LO01', stem: 'Which state of matter has a fixed shape?', options: ['Solid', 'Liquid', 'Gas', 'Plasma'], correct: 'A', difficulty: 'EASY', cognitive: 'C1', explanation: '' };
+
+    const bad = await bank.saveOne(editor, id, { ...form, options: ['Solid', 'Liquid', 'Gas'] });
+    expect(bad.written).toBe(false);
+    expect(await prisma.question.count({ where: { code: 'WF-Q1' } })).toBe(0);
+
+    const saved = await bank.saveOne(editor, id, form);
+    expect(saved).toMatchObject({ ok: true, written: true, revisionId: expect.any(String) });
+    const rev = await prisma.question_revision.findUniqueOrThrow({ where: { id: saved.revisionId as string }, include: { options: true } });
+    expect(rev).toMatchObject({ state: 'DRAFT', origin: 'HUMAN', difficulty: 'EASY', cognitive: 'C1' });
+    expect(rev.options.filter((o: { is_correct: boolean }) => o.is_correct)).toHaveLength(1);
+
+    const reviewer = await person('CURRICULUM_REVIEWER');
+    await expect(bank.saveOne(reviewer, id, { ...form, code: 'wf-q2' })).rejects.toThrow(/editor/);
   });
 });

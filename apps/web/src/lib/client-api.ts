@@ -835,3 +835,79 @@ export interface ReleaseHistoryRow {
   approver: string | null;
   reportId: string | null;
 }
+
+// ── Step 22: the admin home, the curriculum workflow, one question in a form, AI drafting ──────────
+
+export type WorkflowAction =
+  | 'addEvidence' | 'uploadContent' | 'verifyEvidence' | 'submit' | 'sendToReview' | 'requestChanges'
+  | 'approve' | 'activate' | 'suspend' | 'resume' | 'startCorrection' | 'withdraw';
+export type ActionCheck = { allowed: true } | { allowed: false; reason: string };
+
+export interface CurriculumDetail {
+  unit: AdminUnit & { supersedesId: string | null; activatedAt: string | null };
+  evidence: {
+    status: string;
+    verifiedAt: string | null;
+    verifiedBy: string | null;
+    note: string | null;
+    references: Array<{ number: number; title: string; url: string | null; locator: string | null; retrievedAt: string | null }>;
+  };
+  content: { chapters: number; topics: number; concepts: number; objectives: number; chapterList: Array<{ code: string; title: string; objectives: number }> };
+  validation: { status: string; at: string; errors: number; warnings: number; findings: Array<{ severity: string; rule: string; path: string; message: string }> } | null;
+  revisions: Array<{ id: string; revision: number; state: string }>;
+  editors: string[];
+  history: Array<{ type: string; from: string | null; to: string | null; actor: string | null; actorKind: string; note: string | null; at: string }>;
+  actions: Record<WorkflowAction, ActionCheck>;
+}
+
+export interface ObjectiveOption {
+  code: string;
+  path: string;
+  statement: string;
+  chapter: string;
+  ambiguous: boolean;
+}
+
+export interface FactoryStatus {
+  available: boolean;
+  reason: string | null;
+  provider: string | null;
+  dailyTokenBudget: number | null;
+  tokensUsedToday: number;
+}
+
+export interface FactorySuggestion {
+  objectivePath: string;
+  objectiveCode: string;
+  difficulty: 'EASY' | 'MEDIUM' | 'HARD';
+  approved: number;
+  inPipeline: number;
+  requestable: number;
+}
+
+export interface FactoryBatchSummary {
+  batchId: string;
+  status: 'COMPLETED' | 'STOPPED';
+  stopReason: string | null;
+  requested: number;
+  attempted: number;
+  draftsStored: number;
+  rejected: number;
+  duplicates: number;
+  failed: number;
+}
+
+export interface FactoryBatchRow {
+  id: string;
+  startedAt: string;
+  status: string;
+  objectivePath: string;
+  difficulty: string;
+  cognitive: string;
+  requested: number;
+  stored: number;
+  rejected: number;
+  duplicates: number;
+  failed: number;
+  provider: string;
+}

@@ -76,6 +76,12 @@ const ALLOWED: ReadonlyArray<{ method: string; path: string }> = [
   { method: 'GET', path: 'admin/readiness/units' },
   { method: 'GET', path: 'admin/readiness/access' },
   { method: 'POST', path: 'admin/readiness/access' },
+  // Step 22: the admin home, creating a subject, and AI drafting.
+  { method: 'GET', path: 'admin/me' },
+  { method: 'POST', path: 'admin/curriculum/units' },
+  { method: 'GET', path: 'admin/factory/status' },
+  { method: 'GET', path: 'admin/factory/batches' },
+  { method: 'POST', path: 'admin/factory/batches' },
 ];
 
 /** Admin curriculum routes carry a unit id, so they are matched by an exact pattern, never a prefix. */
@@ -85,6 +91,13 @@ const ALLOWED_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: 'POST', pattern: new RegExp(`^admin/curriculum/units/${UUID}/content/preview$`) },
   { method: 'PUT', pattern: new RegExp(`^admin/curriculum/units/${UUID}/content$`) },
   { method: 'POST', pattern: new RegExp(`^admin/curriculum/units/${UUID}/submit$`) },
+  // Step 22: one subject's workflow, one question in a form, AI drafting.
+  { method: 'GET', pattern: new RegExp(`^admin/curriculum/units/${UUID}$`) },
+  { method: 'POST', pattern: new RegExp(`^admin/curriculum/units/${UUID}/(evidence|verify-evidence|send-to-review|request-changes|approve|activate|suspend|resume|correction|withdraw)$`) },
+  { method: 'GET', pattern: new RegExp(`^admin/questions/units/${UUID}/objectives$`) },
+  { method: 'POST', pattern: new RegExp(`^admin/questions/units/${UUID}/question$`) },
+  { method: 'GET', pattern: new RegExp(`^admin/factory/units/${UUID}/suggestions$`) },
+  { method: 'POST', pattern: new RegExp(`^admin/factory/batches/${UUID}/stop$`) },
   { method: 'GET', pattern: /^admin\/questions\/units$/ },
   { method: 'GET', pattern: new RegExp(`^admin/questions/units/${UUID}/questions$`) },
   { method: 'POST', pattern: new RegExp(`^admin/questions/units/${UUID}/preview$`) },
