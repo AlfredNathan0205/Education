@@ -54,6 +54,10 @@ Spec sources:
 
   The web server's allow-list matches each exactly.
 
+## Fix after the hand test (PR #28)
+- **The problem:** an edit to a revision that had already passed its checks reopens it at VALIDATION_PENDING, which is the state machine's rule. But submitting needed a move *into* VALIDATION_PENDING, so nothing on the page could run the checks again, and the revision was stuck. The hand test found this on HT22B.
+- **The fix:** an editor can now submit a revision that is already at VALIDATION_PENDING, and the checks run again from there. It has a unit test and an integration test (edit, reopened, submit again, VALIDATED).
+
 ## Assumptions and open decisions (please confirm)
 1. **Separation of duties covers activation only.** As decided, an editor of a revision cannot activate or resume it.
    - **Not covered:** approving a revision you edited. The state machine already needs an APPROVER or SUPER_ADMIN role to approve, but a super administrator who uploaded the content can still approve it.

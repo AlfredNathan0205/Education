@@ -8,6 +8,11 @@ describe('what the curriculum page offers', () => {
     expect(allowed({})).toEqual(['addEvidence', 'submit', 'uploadContent', 'withdraw']);
   });
 
+  it('an edit after the checks reopens them: the editor can submit again from VALIDATION_PENDING', () => {
+    expect(workflowActions(f({ state: 'VALIDATION_PENDING' })).submit).toEqual({ allowed: true });
+    expect(workflowActions(f({ state: 'VALIDATION_PENDING', roles: ['REVIEWER'], isEditor: false })).submit).toEqual({ allowed: false, reason: 'Your role cannot submit for validation' });
+  });
+
   it('submitting needs a source and chapters', () => {
     expect(workflowActions(f({ evidenceCount: 0 })).submit).toEqual({ allowed: false, reason: 'Add at least one syllabus source first' });
     expect(workflowActions(f({ chapters: 0 })).submit).toEqual({ allowed: false, reason: 'Upload the chapters first' });

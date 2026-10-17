@@ -76,7 +76,8 @@ export function workflowActions(f: WorkflowFacts): Record<WorkflowAction, Action
             ? yes
             : no('Only a reviewer or approver can verify evidence'),
     submit: (() => {
-      const v = byRule(f, 'VALIDATION_PENDING', 'submit for validation');
+      // An edit after the checks reopens a revision at VALIDATION_PENDING: the editor runs the checks again from there.
+      const v = f.state === 'VALIDATION_PENDING' ? (has(EDIT_ROLES) ? yes : no('Your role cannot submit for validation')) : byRule(f, 'VALIDATION_PENDING', 'submit for validation');
       if (!v.allowed) return v;
       if (f.evidenceCount === 0) return no('Add at least one syllabus source first');
       if (f.chapters === 0) return no('Upload the chapters first');

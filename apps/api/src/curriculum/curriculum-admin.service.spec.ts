@@ -58,4 +58,13 @@ describe('CurriculumAdminService (roles come from the database, not the caller)'
     expect(curriculum.runValidation).toHaveBeenCalledWith('sv');
     expect(out.passed).toBe(true);
   });
+  it('a revision reopened by an edit (VALIDATION_PENDING) is checked again by an editor, without a transition', async () => {
+    const { curriculum, svc } = make(['EDITOR'], 'VALIDATION_PENDING');
+    expect((await svc.submitForValidation('a', 'sv')).passed).toBe(true);
+    expect(curriculum.transition).not.toHaveBeenCalled();
+    expect(curriculum.runValidation).toHaveBeenCalledWith('sv');
+    const reviewer = make(['REVIEWER'], 'VALIDATION_PENDING');
+    await expect(reviewer.svc.submitForValidation('a', 'sv')).rejects.toBeInstanceOf(CurriculumForbiddenError);
+    expect(reviewer.curriculum.runValidation).not.toHaveBeenCalled();
+  });
 });

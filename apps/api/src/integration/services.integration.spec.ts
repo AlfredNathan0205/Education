@@ -2718,6 +2718,24 @@ describe('Step 22: the curriculum workflow from the admin page, and one question
     expect((await workflow.detail(editor, id)).actions.startCorrection).toEqual({ allowed: false, reason: 'A correction is already being prepared' });
   });
 
+  it('an edit after the checks reopens them, and the editor can run them again from the page', async () => {
+    const editor = await person('SUPER_ADMIN');
+    const { id } = await workflow.create(editor, { curriculumCode: 'wf', curriculumName: 'Workflow', versionLabel: '2026-27', gradeCode: 'g8', subjectCode: `wfre_${Date.now()}`, subjectName: 'Reopened Subject' });
+    const { referenceId } = await workflow.addEvidence(editor, id, { title: 'Official syllabus' });
+    const leaf = { provenance: 'OFFICIAL_EXPLICIT' as const, evidenceReferenceId: referenceId, rationale: null };
+    const tree = (statement: string) => ({
+      chapters: [{ code: 'CH01', title: 'Matter', position: 1, ...leaf, topics: [{ code: 'T01', title: 'States', position: 1, ...leaf, microConcepts: [{ code: 'MC01', title: 'Particles', position: 1, ...leaf, learningObjectives: [{ code: 'LO01', statement, position: 1, ...leaf }] }] }] }],
+    });
+    await curriculumAdmin.replaceContent(editor, id, tree('Describe the three states of matter'));
+    expect((await workflow.submit(editor, id)).passed).toBe(true);
+    expect(await curriculumService.getState(id)).toBe('VALIDATED');
+    await curriculumAdmin.replaceContent(editor, id, tree('Describe the three states of matter, with examples'));
+    expect(await curriculumService.getState(id)).toBe('VALIDATION_PENDING');
+    expect((await workflow.detail(editor, id)).actions.submit).toEqual({ allowed: true });
+    expect((await workflow.submit(editor, id)).passed).toBe(true);
+    expect(await curriculumService.getState(id)).toBe('VALIDATED');
+  });
+
   it('one question written in a form is saved as a draft through the same checks as an upload', async () => {
     const { id, approver } = await approved();
     await workflow.activate(approver, id, NOTE);
