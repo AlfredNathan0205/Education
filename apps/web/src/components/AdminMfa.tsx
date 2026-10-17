@@ -6,7 +6,7 @@ import { ApiError, bff, type MfaStatus } from '@/lib/client-api';
 
 /** Only a page under /admin is a safe place to go back to. */
 export function safeNext(raw: string | null): string {
-  return raw && /^\/admin(\/[A-Za-z0-9/_-]*)?$/.test(raw) && raw !== '/admin/mfa' ? raw : '/admin/curriculum';
+  return raw && /^\/admin(\/[A-Za-z0-9/_-]*)?$/.test(raw) && raw !== '/admin/mfa' ? raw : '/admin';
 }
 
 /**

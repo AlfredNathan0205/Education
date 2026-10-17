@@ -84,6 +84,18 @@ export class QuestionController {
     return this.map(() => this.bank.upload(req.accountId as string, id(unit, 'unit'), format, text));
   }
 
+  // Step 22: the question form.
+  @Get('units/:id/objectives')
+  objectives(@Req() req: AuthenticatedRequest, @Param('id') unit: string) {
+    return this.map(() => this.bank.objectives(req.accountId as string, id(unit, 'unit')));
+  }
+
+  @Post('units/:id/question')
+  @HttpCode(200)
+  saveOne(@Req() req: AuthenticatedRequest, @Param('id') unit: string, @Body() raw: unknown) {
+    return this.map(() => this.bank.saveOne(req.accountId as string, id(unit, 'unit'), raw));
+  }
+
   @Get('revisions/:id')
   detail(@Req() req: AuthenticatedRequest, @Param('id') rev: string): Promise<QuestionDetail> {
     return this.map(() => this.bank.detail(req.accountId as string, id(rev, 'question')));

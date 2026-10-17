@@ -3,6 +3,7 @@
 // real rules are tested in the API's unit and real-database integration tests. Sign-in code is always 123456.
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { handleAdmin, resetAdmin } from './stub-admin.mjs';
 
 const PORT = Number(process.env.STUB_API_PORT ?? 4010);
 
@@ -23,6 +24,8 @@ const PEOPLE = {
   // Step 20: an adult who deletes their account, and an administrator who must use an authenticator app.
   'leaver@example.com': { name: 'Lee', cohort: { curriculumCode: 'ICSE', gradeCode: 'GRADE_8' }, chapters: {} },
   'admin@example.com': { name: null, cohort: null, chapters: {}, admin: true },
+  // Step 22: an approver who did not edit the curriculum, so may activate it.
+  'approver@example.com': { name: null, cohort: null, chapters: {}, admin: true },
 };
 // Step 20: deletion requests (by subject) and the administrators' authenticator. The stub's valid code is 246810.
 const erasures = new Map(); // subject key -> { requestId, dueAt, requestedAt, by }
@@ -361,6 +364,7 @@ const server = createServer(async (req, res) => {
     releases.clear();
     reports.clear();
     earlyAccess.length = 0;
+    resetAdmin();
     return json(res, 200, { reset: true });
   }
   // Test-only: the token of the last sharing email (the real API emails it). Not reachable through the web proxy.
@@ -479,6 +483,8 @@ const server = createServer(async (req, res) => {
   if (path.startsWith('admin/') && p.admin && !mf.verified.has(token)) {
     return json(res, 403, { statusCode: 403, code: 'MFA_REQUIRED', message: 'Confirm it is you with your authenticator app first.' });
   }
+  // Step 22: the admin home, the curriculum workflow, one question in a form, AI drafting.
+  if (handleAdmin(p, req.method, path, body, (status, b) => (json(res, status, b), true))) return;
   // Step 21: content readiness (the stub's admin is a super administrator and an approver).
   if (path.startsWith('admin/readiness/') && !p.admin) return json(res, 403, { message: 'Only curriculum staff may see content readiness' });
   if (key === 'GET admin/readiness/policy') return json(res, 200, { code: 'READINESS_V1', signedOff: null });

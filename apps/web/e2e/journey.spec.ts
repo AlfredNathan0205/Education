@@ -609,3 +609,126 @@ test('Readiness: a student cannot see the readiness page', async ({ page }) => {
   await page.goto('/admin/readiness');
   await expect(page.getByText('Only curriculum staff may see content readiness')).toBeVisible();
 });
+
+// ── Step 22: the admin home, and adding content ──────────────────────────────────────
+
+async function staff(page: Page, email: string, path: string) {
+  await signedIn(page, email);
+  await page.goto(path);
+  await expect(page).toHaveURL(new RegExp(`/admin/mfa\\?next=${encodeURIComponent(path).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+  await page.getByRole('button', { name: 'Start set-up' }).click();
+  await page.getByLabel('The 6-digit code your app shows').fill('246810');
+  await page.getByRole('button', { name: 'Confirm' }).click();
+  await page.getByRole('link', { name: 'I have saved them, continue' }).click();
+  await expect(page).toHaveURL(new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+}
+
+test('Admin home: one page lists what each role can open; a student is told it is not theirs', async ({ page }) => {
+  await staff(page, 'admin@example.com', '/admin');
+  await expect(page.getByRole('heading', { level: 1, name: 'Administration' })).toBeVisible();
+  const nav = page.getByRole('navigation', { name: 'Admin pages' });
+  for (const name of ['Curriculum', 'Questions', 'Readiness and release', 'Safety reports', 'Plans']) await expect(nav.getByRole('link', { name })).toBeVisible();
+  await nav.getByRole('link', { name: 'Curriculum' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Curriculum' })).toBeVisible();
+});
+
+test('Admin home: a student has no staff role', async ({ page }) => {
+  await signedIn(page, 'student@example.com');
+  await page.goto('/admin');
+  await expect(page.getByText('Your account has no staff role')).toBeVisible();
+});
+
+test('Curriculum: an editor creates a subject, adds a source and the content, and submits it for the checks', async ({ page }) => {
+  await staff(page, 'admin@example.com', '/admin/curriculum');
+  await page.getByRole('button', { name: 'Create a subject' }).click();
+  const form = page.getByRole('form', { name: 'Create a subject' });
+  await form.getByLabel('Syllabus year or version').fill('2026-27');
+  await form.getByLabel('Subject code').fill('CHEMISTRY');
+  await form.getByLabel('Subject name').fill('Chemistry');
+  await form.getByRole('button', { name: 'Create' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: /Chemistry · ICSE 2026-27 · GRADE 8/ })).toBeVisible();
+  await expect(page.getByRole('status', { name: 'Curriculum state' })).toContainText('Draft');
+
+  const steps = page.getByRole('list', { name: 'Steps' });
+  await expect(steps.getByRole('button', { name: 'Submit for automated checks' })).toBeDisabled();
+  await expect(steps).toContainText('Upload the chapters first');
+
+  const source = page.getByRole('form', { name: 'Add a source' });
+  await source.getByLabel('Source title').fill('CISCE Chemistry syllabus 2026-27');
+  await source.getByLabel('Link (optional)').fill('https://example.org/chem.pdf');
+  await source.getByRole('button', { name: 'Add the source' }).click();
+  await expect(page.getByRole('list', { name: 'Sources' })).toContainText('CISCE Chemistry syllabus 2026-27');
+
+  await page.getByLabel('File (.csv or .json)').setInputFiles({ name: 'chem.csv', mimeType: 'text/csv', buffer: Buffer.from('chapter,topic\nCH01,Matter\nCH01,Mixtures\nCH02,Atoms\n') });
+  await page.getByRole('button', { name: 'Check the file (nothing is saved)' }).click();
+  await expect(page.getByRole('region', { name: 'Check result' })).toContainText('2 chapters');
+  await page.getByRole('button', { name: 'Save as draft' }).click();
+  await expect(page.getByRole('list', { name: 'Chapters' })).toContainText('CH02');
+
+  await steps.getByRole('button', { name: 'Submit for automated checks' }).click();
+  await expect(page.getByText('The automated checks passed.')).toBeVisible();
+  await expect(page.getByRole('status', { name: 'Curriculum state' })).toContainText('Checked');
+  await expect(page.getByRole('list', { name: 'Curriculum history' })).toContainText('Being checked → Checked by admin@example.com');
+});
+
+test('Curriculum: the editor cannot activate; a different approver activates with a note, then suspends and resumes it', async ({ page, browser }) => {
+  await staff(page, 'admin@example.com', '/admin/curriculum');
+  await page.getByRole('link', { name: /Physics/ }).click();
+  await expect(page.getByRole('status', { name: 'Curriculum state' })).toContainText('Approved, not active');
+  const steps = page.getByRole('list', { name: 'Steps' });
+  await expect(steps.getByRole('button', { name: 'Activate' })).toBeDisabled();
+  await expect(steps).toContainText('You edited this revision: an approver who did not edit it must do this');
+
+  const other = await browser.newPage();
+  await staff(other, 'approver@example.com', '/admin/curriculum');
+  await other.getByRole('link', { name: /Physics/ }).click();
+  const theirs = other.getByRole('list', { name: 'Steps' });
+  await expect(theirs.getByRole('button', { name: 'Activate' })).toBeDisabled();
+  await other.getByLabel(/^Note/).fill('Checked against the 2026-27 syllabus');
+  await theirs.getByRole('button', { name: 'Activate' }).click();
+  await expect(other.getByText('Active. Students still see nothing until the subject is released')).toBeVisible();
+  await expect(other.getByRole('status', { name: 'Curriculum state' })).toContainText('Active');
+  await expect(other.getByRole('link', { name: 'Readiness and release' })).toBeVisible();
+
+  await other.getByLabel(/^Note/).fill('Wrong unit in chapter 1, pausing');
+  await theirs.getByRole('button', { name: 'Suspend' }).click();
+  await expect(other.getByRole('status', { name: 'Curriculum state' })).toContainText('Suspended');
+  await other.getByLabel(/^Note/).fill('Fixed upstream, resuming now');
+  await theirs.getByRole('button', { name: 'Resume' }).click();
+  await expect(other.getByRole('status', { name: 'Curriculum state' })).toContainText('Active');
+  await expect(other.getByRole('list', { name: 'Curriculum history' })).toContainText('Active → Suspended by approver@example.com: “Wrong unit in chapter 1, pausing”');
+  await other.close();
+
+  // The editor starts a correction: a new draft revision, which links back.
+  await page.reload();
+  await page.getByRole('list', { name: 'Steps' }).getByRole('button', { name: 'Start a correction (new revision)' }).click();
+  await expect(page.getByRole('status', { name: 'Curriculum state' })).toContainText('Revision 2: Draft');
+  await expect(page.getByRole('list', { name: 'Revisions' })).toContainText('Revision 1: Active');
+});
+
+test('Questions: an editor writes a question in a form, and asks the AI for drafts', async ({ page }) => {
+  await staff(page, 'admin@example.com', '/admin/questions');
+  await page.getByLabel('Subject').selectOption({ label: 'ICSE 2026-27 · GRADE 8 · Physics' });
+  const form = page.getByRole('form', { name: 'Write a question' });
+  await form.getByLabel('Question code').fill('phy8-q101');
+  await form.getByLabel('Learning objective').selectOption('LO01');
+  await form.getByLabel('Question', { exact: true }).fill('Which state of matter has a fixed shape?');
+  for (const [l, t] of [['A', 'Solid'], ['B', 'Liquid'], ['C', 'Gas'], ['D', 'Plasma']]) await form.getByLabel(`Option ${l}`).fill(t);
+  await form.getByLabel('Difficulty').selectOption('EASY');
+  await form.getByLabel('Cognitive level').selectOption('C1');
+  await form.getByRole('button', { name: 'Save as draft' }).click();
+  await expect(form.getByRole('status')).toContainText('Saved as a draft. It is open below');
+  const opened = page.getByRole('region', { name: 'Question PHY8-Q101' });
+  await expect(opened).toContainText('Solid ✔ correct');
+  await expect(page.getByRole('button', { name: 'Open question PHY8-Q101' })).toBeVisible();
+
+  const ai = page.getByRole('region', { name: 'AI drafting' });
+  await expect(ai).toContainText('Provider mock');
+  await ai.getByRole('button', { name: 'CH01/T01/MC01/LO02 · HARD' }).click();
+  await expect(ai.getByLabel('Objective code')).toHaveValue('LO02');
+  await ai.getByLabel('How many drafts').fill('3');
+  await ai.getByRole('button', { name: 'Draft questions' }).click();
+  await expect(ai.getByRole('status')).toContainText('3 drafts saved');
+  await expect(ai.getByRole('list', { name: 'Recent batches' })).toContainText('3 of 3 saved');
+  await expect(page.getByText(/· AI draft/)).toHaveCount(3);
+});

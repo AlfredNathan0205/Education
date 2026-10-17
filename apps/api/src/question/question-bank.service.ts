@@ -8,7 +8,7 @@ import {
   type QuestionActor,
   type QuestionState,
 } from './question-domain';
-import { QuestionForbiddenError } from './question.errors';
+import { QuestionConflictError, QuestionForbiddenError } from './question.errors';
 import {
   QuestionService,
   type PlanAction,
@@ -87,6 +87,44 @@ export class QuestionBankService {
     if (!plan || !result.ok) return result;
     const counts = await this.questions.apply(unit, plan, { actor, origin: 'HUMAN' });
     return { ...result, written: true, counts };
+  }
+
+  // ── Step 22: one question at a time, in a form ─────────────────────────────
+
+  /** The objectives a question can be written for (the unit's newest revision), with where they sit. */
+  async objectives(accountId: string, unitId: string): Promise<Array<{ code: string; path: string; statement: string; chapter: string; ambiguous: boolean }>> {
+    await this.rolesOf(accountId, true);
+    const unit = await this.questions.unitIdentity(unitId);
+    const out = (await this.questions.objectiveList(unit.latestRevisionId)).map((o) => ({ ...o, ambiguous: false }));
+    // An objective code used twice in the tree cannot be chosen by code (the upload would refuse it): say so.
+    const counts = new Map<string, number>();
+    for (const o of out) counts.set(o.code, (counts.get(o.code) ?? 0) + 1);
+    return out.map((o) => ({ ...o, ambiguous: (counts.get(o.code) ?? 0) > 1 }));
+  }
+
+  /**
+   * Writes or edits ONE question through exactly the same path as a file upload (the same checks, codes, revisions
+   * and contributor tracking): a new code creates a draft; the code of a draft or sent-back question edits it; the
+   * code of an approved question makes a new revision. Returns the result and the revision to open next.
+   */
+  async saveOne(accountId: string, unitId: string, raw: unknown): Promise<QuestionImportResult & { revisionId: string | null }> {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new QuestionConflictError('Request body must be a JSON object');
+    const b = raw as Record<string, unknown>;
+    const question = {
+      code: b.code,
+      objectiveCode: b.objectiveCode,
+      stem: b.stem,
+      options: b.options,
+      correct: b.correct,
+      difficulty: b.difficulty,
+      cognitive: b.cognitive === '' ? undefined : b.cognitive,
+      explanation: b.explanation === '' ? undefined : b.explanation,
+    };
+    const text = JSON.stringify({ questions: [question] });
+    const result = await this.upload(accountId, unitId, 'json', text);
+    const unit = await this.questions.unitIdentity(unitId);
+    const revisionId = result.written && typeof b.code === 'string' ? await this.questions.revisionIdByCode(unit, b.code.trim().toUpperCase()) : null;
+    return { ...result, revisionId };
   }
 
   async list(accountId: string, unitId: string, state?: QuestionState): Promise<QuestionRow[]> {

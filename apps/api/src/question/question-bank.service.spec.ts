@@ -117,3 +117,39 @@ describe('QuestionBankService: quarantine', () => {
     expect(questions.approvedRevisionIdsFromSource).not.toHaveBeenCalled();
   });
 });
+
+describe('QuestionBankService: one question in a form (Step 22)', () => {
+  const FORM = { code: 'che8-q300', objectiveCode: 'O1', stem: 'Which gas turns lime water milky?', options: ['Oxygen', 'Carbon dioxide', 'Nitrogen', 'Hydrogen'], correct: 'B', difficulty: 'MEDIUM', cognitive: 'C2', explanation: 'Carbon dioxide forms calcium carbonate.' };
+
+  it('goes through the same checks and write as an upload, and returns the revision to open', async () => {
+    const { service, questions } = make(['EDITOR']);
+    (questions as any).revisionIdByCode = jest.fn().mockResolvedValue('rev-300');
+    const r = await service.saveOne('a', 'u', FORM);
+    expect(r).toMatchObject({ ok: true, written: true, revisionId: 'rev-300' });
+    const parsed = questions.plan.mock.calls[0][1];
+    expect(parsed.questions[0].draft).toMatchObject({ code: 'CHE8-Q300', objectiveCode: 'O1', correctIndex: 1, difficulty: 'MEDIUM', cognitive: 'C2' });
+    expect(questions.apply).toHaveBeenCalledWith(UNIT, expect.anything(), expect.objectContaining({ origin: 'HUMAN' }));
+    expect((questions as any).revisionIdByCode).toHaveBeenCalledWith(UNIT, 'CHE8-Q300');
+  });
+
+  it('reports problems field by field and writes nothing', async () => {
+    const { service, questions } = make(['EDITOR']);
+    const r = await service.saveOne('a', 'u', { ...FORM, options: ['Oxygen', '', 'Nitrogen', 'Hydrogen'], correct: 'E' });
+    expect(r.written).toBe(false);
+    expect(r.revisionId).toBeNull();
+    expect(r.issues.map((i: { message: string }) => i.message).join(' ')).toMatch(/correct must be A, B, C or D/);
+    expect(questions.apply).not.toHaveBeenCalled();
+  });
+
+  it('only editors write; anyone with a role can list the objectives', async () => {
+    const reviewer = make(['REVIEWER']);
+    await expect(reviewer.service.saveOne('a', 'u', FORM)).rejects.toBeInstanceOf(QuestionForbiddenError);
+    (reviewer.questions as any).objectiveList = jest.fn().mockResolvedValue([
+      { code: 'O1', path: 'C1/T/M/O1', statement: 'Name gases', chapter: 'C1 Matter' },
+      { code: 'O1', path: 'C2/T/M/O1', statement: 'Again', chapter: 'C2 Air' },
+      { code: 'O2', path: 'C2/T/M/O2', statement: 'Test for CO2', chapter: 'C2 Air' },
+    ]);
+    expect((await reviewer.service.objectives('a', 'u')).map((o) => [o.code, o.ambiguous])).toEqual([['O1', true], ['O1', true], ['O2', false]]);
+    await expect(make([]).service.objectives('a', 'u')).rejects.toBeInstanceOf(QuestionForbiddenError);
+  });
+});

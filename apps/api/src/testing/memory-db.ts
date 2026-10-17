@@ -62,7 +62,8 @@ function apply(row: Row, data: Row): void {
 function pick(row: Row, select?: Record<string, boolean>): Row {
   if (!select) return { ...row };
   const out: Row = {};
-  for (const [k, on] of Object.entries(select)) if (on === true) out[k] = row[k];
+  // A nested select (a relation) is returned as seeded: tests seed relations inline on the row.
+  for (const [k, on] of Object.entries(select)) if (on === true || (on && typeof on === 'object')) out[k] = row[k];
   return out;
 }
 

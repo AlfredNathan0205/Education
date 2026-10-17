@@ -15,6 +15,7 @@ import {
   type InvalidationImpact,
   type InvalidationSummary,
 } from '@/lib/client-api';
+import { AiDrafting, QuestionForm } from './QuestionAuthoring';
 
 const MAX_BYTES = 2_000_000;
 const STATE_LABEL: Record<QuestionRow['state'], string> = {
@@ -192,6 +193,7 @@ export function QuestionBank() {
 
   return (
     <div className="card">
+      <p><a href="/admin">← Administration</a></p>
       <h1>Question bank</h1>
       <p className="muted">
         Multiple-choice questions, each tied to one learning objective. Nothing here reaches students. A question is saved as a
@@ -216,7 +218,16 @@ export function QuestionBank() {
 
       {unitId && (
         <>
-          <h2>Add or correct questions</h2>
+          <QuestionForm
+            key={`form-${unitId}`}
+            unitId={unitId}
+            onSaved={(revisionId) => {
+              void loadRows(unitId);
+              if (revisionId) void guarded(async () => setDetail(await bff<QuestionDetail>('GET', `admin/questions/revisions/${revisionId}`)));
+            }}
+          />
+          <AiDrafting key={`ai-${unitId}`} unitId={unitId} onDrafted={() => void loadRows(unitId)} />
+          <h2>Upload many questions from a file</h2>
           <p className="muted">
             Each row needs a question code. Uploading a code that already exists changes that question while it is a draft or sent
             back; if it was approved, it becomes a new version that needs approving again.

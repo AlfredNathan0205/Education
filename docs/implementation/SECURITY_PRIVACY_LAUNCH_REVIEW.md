@@ -28,6 +28,8 @@ Nothing here is legal advice. Every **COUNSEL** line is a question for a lawyer,
 | Phishing-resistant keys (passkeys or WebAuthn) for SUPER_ADMIN | PM | Decision | Recommended before the team grows. |
 | Role grants only by an operator CLI or an existing SUPER_ADMIN; audited | ENG | Built | Step 3. |
 | Who holds SUPER_ADMIN at launch, and a review every quarter | OPS | Decision | Keep it to two people. |
+| Curriculum activation (and resuming a suspended one) only by an approver who did not edit that revision; audited | ENG | Partly | Step 22, on the admin pages. The seed command and CLI still let one person do everything, and a super administrator who edited a revision can still approve it. Decide whether both should follow the rule before the beta. |
+| AI drafting provider: what is sent, where it is processed, how long it is kept | COUNSEL + PM | Decision | Step 22. Only the mock provider exists, and it is refused in production. |
 
 ## 2. Data rights (Step 20)
 

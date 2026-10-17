@@ -25,6 +25,8 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { RightsModule } from './rights/rights.module';
 import { MfaModule } from './mfa/mfa.module';
 import { ReleaseModule } from './release/release.module';
+import { FactoryModule } from './factory/factory.module';
+import { AdminHomeModule } from './admin/admin-home.controller';
 import { GuardianModule } from './guardian/guardian.module';
 import { SchoolModule } from './school/school.module';
 
@@ -58,6 +60,8 @@ import { SchoolModule } from './school/school.module';
     RightsModule,
     MfaModule,
     ReleaseModule,
+    FactoryModule,
+    AdminHomeModule,
     GuardianModule,
     StudentModule,
     SchoolModule,

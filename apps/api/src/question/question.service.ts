@@ -139,6 +139,18 @@ export class QuestionService {
     return q?.revisions?.[0]?.id ?? null;
   }
 
+  /** Step 22: the objectives of a revision in order, with their statements and chapter titles (for the question form). */
+  async objectiveList(revisionId: string): Promise<Array<{ code: string; path: string; statement: string; chapter: string }>> {
+    const chapters: any[] = await this.db.client.chapter.findMany({
+      where: { subject_version_id: revisionId },
+      orderBy: { position: 'asc' },
+      select: { code: true, title: true, topics: { orderBy: { position: 'asc' }, select: { code: true, micro_concepts: { orderBy: { position: 'asc' }, select: { code: true, learning_objectives: { orderBy: { position: 'asc' }, select: { code: true, statement: true } } } } } } },
+    });
+    const out: Array<{ code: string; path: string; statement: string; chapter: string }> = [];
+    for (const c of chapters) for (const t of c.topics) for (const m of t.micro_concepts) for (const o of m.learning_objectives) out.push({ code: o.code, path: `${c.code}/${t.code}/${m.code}/${o.code}`, statement: o.statement, chapter: `${c.code} ${c.title}` });
+    return out;
+  }
+
   /** objective code -> every "chapter/topic/concept/objective" path that uses it, in the newest revision. */
   async objectivePaths(revisionId: string, client: Prisma.TransactionClient | DatabaseService['client'] = this.db.client): Promise<Map<string, string[]>> {
     const chapters = await client.chapter.findMany({
