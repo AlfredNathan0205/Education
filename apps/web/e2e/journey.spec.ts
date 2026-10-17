@@ -541,3 +541,71 @@ test('Every page carries the security headers', async ({ request }) => {
   expect(h['referrer-policy']).toBe('strict-origin-when-cross-origin');
   expect(h['x-powered-by']).toBeUndefined();
 });
+
+// ── Step 21: content readiness and release tiers ──────────────────────────────
+
+async function adminWithAuthenticator(page: Page) {
+  await signedIn(page, 'admin@example.com');
+  await page.goto('/admin/readiness');
+  await expect(page).toHaveURL(/\/admin\/mfa\?next=%2Fadmin%2Freadiness$/);
+  await page.getByRole('button', { name: 'Start set-up' }).click();
+  await page.getByLabel('The 6-digit code your app shows').fill('246810');
+  await page.getByRole('button', { name: 'Confirm' }).click();
+  await page.getByRole('link', { name: 'I have saved them, continue' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Content readiness' })).toBeVisible();
+}
+
+test('Readiness: an approver checks a subject, sees what is missing, and releases it for internal testing with a sign-off note', async ({ page }) => {
+  await adminWithAuthenticator(page);
+  await expect(page.getByRole('note')).toContainText('PROVISIONAL');
+
+  const physics = page.getByRole('region', { name: /Physics/ });
+  await expect(physics).toContainText('Students: Not released');
+  await expect(physics).toContainText('Not checked yet.');
+  await physics.getByRole('button', { name: 'Open Physics' }).click();
+  await physics.getByRole('button', { name: 'Check readiness now' }).click();
+  const report = physics.getByLabel('Readiness report');
+  await expect(report).toContainText('Ready for Internal (alpha)');
+  await expect(report).toContainText('upper bound');
+
+  const release = physics.getByRole('button', { name: 'Release to Internal (alpha)' });
+  await expect(release).toBeDisabled();
+  await physics.getByLabel(/Sign-off note/).fill('Alpha bank checked by the physics lead on 16 Oct');
+  await release.click();
+  await expect(physics.getByText('Released to Internal (alpha).')).toBeVisible();
+  await expect(physics).toContainText('Students: Internal (alpha)');
+  await expect(physics.getByRole('list', { name: 'Release history' })).toContainText('Not released → Internal (alpha) by admin@example.com');
+  // The beta needs a passing check and a signed-off policy.
+  await expect(physics.getByRole('button', { name: 'Release to Controlled (beta)' })).toBeDisabled();
+  await expect(physics).toContainText('Not ready for Controlled (beta) yet');
+
+  const chemistry = page.getByRole('region', { name: /Chemistry/ });
+  await chemistry.getByRole('button', { name: 'Open Chemistry' }).click();
+  await chemistry.getByRole('button', { name: 'Check readiness now' }).click();
+  await expect(chemistry.getByLabel('Readiness report')).toContainText('Not ready for any release yet.');
+  await expect(chemistry.getByLabel('Readiness report')).toContainText('CH03 (HARD)');
+  await expect(chemistry.getByRole('button', { name: 'Release to Internal (alpha)' })).toBeDisabled();
+});
+
+test('Readiness: a super administrator gives and removes early access', async ({ page }) => {
+  await adminWithAuthenticator(page);
+  const access = page.getByRole('region', { name: 'Early access' });
+  await access.getByLabel('Email they sign in with').fill('nobody@example.com');
+  await access.getByLabel('Reason').fill('Alpha tester');
+  await access.getByRole('button', { name: 'Give access' }).click();
+  await expect(access.getByText('Ask them to sign in once first')).toBeVisible();
+  await access.getByLabel('Email they sign in with').fill('student@example.com');
+  await access.getByLabel('Access').selectOption('CONTROLLED');
+  await access.getByLabel('Reason').fill('Private beta, wave 1');
+  await access.getByRole('button', { name: 'Give access' }).click();
+  const people = access.getByRole('list', { name: 'People with early access' });
+  await expect(people).toContainText('student@example.com: Controlled (beta) (Private beta, wave 1)');
+  await people.getByRole('button', { name: 'Remove' }).click();
+  await expect(access.getByRole('list', { name: 'People with early access' })).toHaveCount(0);
+});
+
+test('Readiness: a student cannot see the readiness page', async ({ page }) => {
+  await signedIn(page, 'student@example.com');
+  await page.goto('/admin/readiness');
+  await expect(page.getByText('Only curriculum staff may see content readiness')).toBeVisible();
+});

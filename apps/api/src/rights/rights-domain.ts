@@ -122,6 +122,7 @@ export const ERASURE_MAP: Record<string, ErasureHandling> = {
   student_block: 'DELETE',
   student_report: 'DELETE',
   student_school_association: 'DELETE',
+  release_access: 'DELETE',
   assessment_instance: 'KEEP_UNLINKED',
   assessment_result: 'KEEP_UNLINKED',
   assessment_session: 'KEEP_UNLINKED',
@@ -160,6 +161,9 @@ export const ERASURE_MAP: Record<string, ErasureHandling> = {
   question_event: 'STAFF',
   question_publication_event: 'STAFF',
   experiment: 'STAFF',
+  subject_release: 'STAFF',
+  subject_release_event: 'STAFF',
+  readiness_report: 'STAFF',
 };
 
 /** Student tables deliberately left out of the export, and why. */

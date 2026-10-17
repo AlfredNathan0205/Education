@@ -19,5 +19,6 @@ export const KILL_SWITCHES: KillSwitch[] = [
   { name: 'RETENTION_ENABLED', offValue: 'false', default: 'on', stops: 'The daily retention sweeper.' },
   { name: 'RATE_LIMIT_ENABLED', offValue: 'false', default: 'on', stops: 'HTTP rate limits (use only to recover from a mistaken limit).' },
   { name: 'MFA_ENFORCED', offValue: 'false', default: 'on', stops: 'The authenticator check on /admin. Refused in production.' },
+  { name: 'RELEASE_GATING_ENABLED', offValue: 'false', default: 'on', stops: 'Release tiers: every served subject is shown to every student. Refused in production.' },
   { name: 'BETA_GRANT_UNTIL', offValue: 'unset', default: 'unset', stops: 'Granting the Beta plan to new students.' },
 ];

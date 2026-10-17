@@ -189,3 +189,10 @@ export function loadExamConfig(env: Record<string, string | undefined> = process
 }
 
 export const EXAM_CONFIG = Symbol('EXAM_CONFIG');
+
+/** Curriculum states whose subjects students are served: ACTIVE only, or (development switch) every pre-active state too. */
+export const SERVED_CURRICULUM_STATES = ['ACTIVE'] as const;
+export const DEV_CURRICULUM_STATES = ['DRAFT', 'AI_STRUCTURED', 'VALIDATION_PENDING', 'VALIDATED', 'ADMIN_REVIEW', 'CHANGES_REQUIRED', 'APPROVED', 'ACTIVE', 'ACTIVE_WITH_REVIEW'] as const;
+export function servedCurriculumStates(config: Pick<ExamConfig, 'allowUnactivatedCurriculum'>): string[] {
+  return config.allowUnactivatedCurriculum ? [...DEV_CURRICULUM_STATES] : [...SERVED_CURRICULUM_STATES];
+}

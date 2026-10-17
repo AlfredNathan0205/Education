@@ -4,6 +4,7 @@ import { EntitlementModule } from '../entitlement/entitlement.module';
 import { IdentityModule } from '../identity/identity.module';
 import { OutboxModule } from '../outbox/outbox.module';
 import { PrivacyModule } from '../privacy/privacy.module';
+import { ReleaseModule } from '../release/release.module';
 import { SessionGuard } from '../student/session.guard';
 import { EXAM_CONFIG, loadExamConfig } from './exam-domain';
 import { ExamController } from './exam.controller';
@@ -13,7 +14,7 @@ import { ItemInvalidationController } from './item-invalidation.controller';
 import { ItemInvalidationService } from './item-invalidation.service';
 
 @Module({
-  imports: [AuthzModule, IdentityModule, PrivacyModule, OutboxModule, EntitlementModule],
+  imports: [AuthzModule, IdentityModule, PrivacyModule, OutboxModule, EntitlementModule, ReleaseModule],
   controllers: [ExamController, ItemInvalidationController],
   providers: [
     ExamService,

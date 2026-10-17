@@ -182,17 +182,20 @@ export class RightsService {
   }
 
   private async accountPart(db: Db, accountId: string): Promise<Record<string, unknown>> {
-    const [account, identities, sessions, roles] = await Promise.all([
+    const [account, identities, sessions, roles, audiences] = await Promise.all([
       db.account.findUnique({ where: { id: accountId } }),
       db.authentication_identity.findMany({ where: { account_id: accountId } }),
       db.auth_session.findMany({ where: { account_id: accountId }, select: { id: true, created_at: true, expires_at: true, revoked_at: true, last_seen_at: true } }),
       db.role_assignment.findMany({ where: { account_id: accountId }, select: { role_id: true, granted_at: true, revoked_at: true } }),
+      // Step 21: early-access audiences (internal testing, private beta).
+      db.release_access.findMany({ where: { account_id: accountId }, select: { tier: true, granted_at: true, revoked_at: true } }),
     ]);
     return {
       account: account ? exportRow(account) : null,
       identities: (identities as any[]).map(exportRow),
       sessions: (sessions as any[]).map(exportRow),
       roles: (roles as any[]).map(exportRow),
+      earlyAccess: (audiences as any[]).map(exportRow),
     };
   }
 
@@ -396,6 +399,8 @@ export class RightsService {
     await tx.authentication_identity.deleteMany({ where: { account_id: accountId } });
     await tx.auth_session.deleteMany({ where: { account_id: accountId } });
     await tx.admin_mfa_factor.deleteMany({ where: { account_id: accountId } });
+    // Step 21: a test audience (internal or beta) is a link to the person.
+    await tx.release_access.deleteMany({ where: { account_id: accountId } });
     await tx.role_assignment.updateMany({ where: { account_id: accountId, revoked_at: null }, data: { revoked_at: now } });
     await tx.account.update({ where: { id: accountId }, data: { status: 'CLOSED', erased_at: now, last_sign_in_at: null } });
   }

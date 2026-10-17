@@ -28,6 +28,40 @@ const PEOPLE = {
 const erasures = new Map(); // subject key -> { requestId, dueAt, requestedAt, by }
 const mfa = new Map(); // email -> { enrolled, pending, verified: Set<token>, recovery: string[] }
 const MFA_CODE = '246810';
+// Step 21: content readiness. Physics passes the internal checks; Chemistry is short of hard questions.
+const READY_UNITS = [
+  { subjectVersionId: '66666666-6666-4666-8666-666666666661', subjectName: 'Physics', subjectCode: 'PHYSICS', passes: ['INTERNAL'] },
+  { subjectVersionId: '66666666-6666-4666-8666-666666666662', subjectName: 'Chemistry', subjectCode: 'CHEMISTRY', passes: [] },
+];
+const TIERS = ['FOUNDATION_ONLY', 'INTERNAL', 'CONTROLLED', 'GENERAL'];
+const releases = new Map(); // subjectVersionId -> { tier, history: [] }
+const reports = new Map(); // reportId -> report
+const earlyAccess = []; // { id, accountId, email, tier, reason, grantedAt }
+function readinessReport(u) {
+  const check = (t, ok) => (ok ? { code: 'CHAPTER_DIFFICULTY', ok: true, message: 'Every chapter has at least 1 easy, medium and hard questions.' } : { code: 'CHAPTER_DIFFICULTY', ok: false, message: `2 chapters have fewer than ${t === 'INTERNAL' ? 1 : 5} of some difficulty: CH03 (HARD), CH05 (HARD).` });
+  const tiers = Object.fromEntries(['INTERNAL', 'CONTROLLED', 'GENERAL'].map((t) => [t, { pass: u.passes.includes(t), checks: [{ code: 'CURRICULUM_ACTIVE', ok: true, message: 'The curriculum is active.' }, check(t, u.passes.includes(t))] }]));
+  const id = randomUUID();
+  const r = {
+    id,
+    subjectVersionId: u.subjectVersionId,
+    generatedAt: new Date().toISOString(),
+    highest: u.passes.at(-1) ?? 'FOUNDATION_ONLY',
+    policy: { code: 'READINESS_V1', signedOff: false },
+    result: {
+      policy: 'READINESS_V1',
+      eqcNote: 'Effective question count here is the number of distinct questions (exact duplicates count 0). Variant levels are not recorded yet, so this is an upper bound.',
+      totals: { servable: 84, distinct: 82, awaitingPublication: 6, objectives: 14, chapters: 2 },
+      objectiveStates: { NOT_READY: 3, LIMITED: 7, ASSESSMENT_READY: 4, ROBUST: 0 },
+      objectives: [{ path: 'CH03/T1/M1/LO2', chapter: 'CH03', eqc: 2, state: 'NOT_READY' }],
+      chapters: [{ code: 'CH03', title: 'Force', servable: 41, difficulty: { EASY: 20, MEDIUM: 16, HARD: u.passes.length ? 5 : 0 }, cognitive: 2, objectives: 7, notReady: 2 }],
+      quality: { approved: 90, quarantined: 1, degraded: 0, issueShare: 0.011 },
+      tiers,
+      highest: u.passes.at(-1) ?? 'FOUNDATION_ONLY',
+    },
+  };
+  reports.set(id, r);
+  return r;
+}
 const WAIT_DAYS = 14;
 const SUBJECT20 = { code: 'SUBJECT20', name: 'Subject 20', total: 20, ready: true };
 // Step 19: analytics choices (off unless agreed) and the UI events the API would keep (consenting students only).
@@ -324,6 +358,9 @@ const server = createServer(async (req, res) => {
     keptEvents.length = 0;
     erasures.clear();
     mfa.clear();
+    releases.clear();
+    reports.clear();
+    earlyAccess.length = 0;
     return json(res, 200, { reset: true });
   }
   // Test-only: the token of the last sharing email (the real API emails it). Not reachable through the web proxy.
@@ -441,6 +478,55 @@ const server = createServer(async (req, res) => {
   }
   if (path.startsWith('admin/') && p.admin && !mf.verified.has(token)) {
     return json(res, 403, { statusCode: 403, code: 'MFA_REQUIRED', message: 'Confirm it is you with your authenticator app first.' });
+  }
+  // Step 21: content readiness (the stub's admin is a super administrator and an approver).
+  if (path.startsWith('admin/readiness/') && !p.admin) return json(res, 403, { message: 'Only curriculum staff may see content readiness' });
+  if (key === 'GET admin/readiness/policy') return json(res, 200, { code: 'READINESS_V1', signedOff: null });
+  if (key === 'GET admin/readiness/units') {
+    return json(res, 200, READY_UNITS.map((u) => {
+      const rel = releases.get(u.subjectVersionId);
+      const last = [...reports.values()].filter((r) => r.subjectVersionId === u.subjectVersionId).at(-1);
+      return { subjectVersionId: u.subjectVersionId, curriculumCode: 'ICSE', versionLabel: '2026-27', gradeCode: 'GRADE_8', subjectCode: u.subjectCode, subjectName: u.subjectName, revision: 1, curriculumState: 'ACTIVE', tier: rel?.tier ?? 'FOUNDATION_ONLY', latestReport: last ? { id: last.id, generatedAt: last.generatedAt, highest: last.highest, policy: 'READINESS_V1', current: true } : null, belowTier: false };
+    }));
+  }
+  const rm = /^admin\/readiness\/units\/([0-9a-f-]{36})\/(report|release|history)$/.exec(path);
+  if (rm) {
+    const u = READY_UNITS.find((x) => x.subjectVersionId === rm[1]);
+    if (!u) return json(res, 404, { message: 'Subject not found' });
+    const rel = releases.get(u.subjectVersionId) ?? { tier: 'FOUNDATION_ONLY', history: [] };
+    releases.set(u.subjectVersionId, rel);
+    if (rm[2] === 'report' && req.method === 'POST') return json(res, 200, readinessReport(u));
+    if (rm[2] === 'history' && req.method === 'GET') return json(res, 200, rel.history);
+    if (rm[2] === 'release' && req.method === 'POST') {
+      const to = body.to;
+      if (!TIERS.includes(to)) return json(res, 400, { message: 'Choose a tier' });
+      if (typeof body.note !== 'string' || body.note.trim().length < 10) return json(res, 409, { message: 'Write a sign-off note of at least 10 characters' });
+      const up = TIERS.indexOf(to) > TIERS.indexOf(rel.tier);
+      if (up) {
+        const r = reports.get(body.reportId);
+        if (TIERS.indexOf(to) !== TIERS.indexOf(rel.tier) + 1) return json(res, 409, { message: 'Release one step at a time' });
+        if (!r || !r.result.tiers[to]?.pass) return json(res, 409, { message: `The report does not pass the ${to} checks` });
+        if (to !== 'INTERNAL') return json(res, 409, { message: `Releasing to ${to} needs a readiness policy signed off by an academic lead` });
+      }
+      rel.history.unshift({ from: rel.tier, to, at: new Date().toISOString(), note: body.note, approver: p.email, reportId: body.reportId ?? null });
+      rel.tier = to;
+      return json(res, 200, { tier: to });
+    }
+  }
+  if (key === 'GET admin/readiness/access') return json(res, 200, earlyAccess);
+  if (key === 'POST admin/readiness/access') {
+    if (!PEOPLE[body.email]) return json(res, 404, { message: 'No account signs in with that email. Ask them to sign in once first.' });
+    for (let i = earlyAccess.length - 1; i >= 0; i--) if (earlyAccess[i].email === body.email) earlyAccess.splice(i, 1);
+    const row = { id: randomUUID(), accountId: randomUUID(), email: body.email, tier: body.tier, reason: body.reason, grantedAt: new Date().toISOString() };
+    earlyAccess.unshift(row);
+    return json(res, 200, { id: row.id, replaced: false });
+  }
+  const am = /^admin\/readiness\/access\/([0-9a-f-]{36})\/revoke$/.exec(path);
+  if (req.method === 'POST' && am) {
+    const i = earlyAccess.findIndex((r) => r.id === am[1]);
+    if (i < 0) return json(res, 404, { message: 'Not found' });
+    earlyAccess.splice(i, 1);
+    return json(res, 200, { revoked: true });
   }
   if (key === 'GET admin/analytics/metrics') {
     if (!p.admin) return json(res, 403, { message: 'Only an administrator may see analytics' });
