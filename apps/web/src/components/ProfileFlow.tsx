@@ -89,7 +89,7 @@ export function ProfileFlow() {
   const errorBox = <div role="alert" aria-live="polite">{error && <p className="error">{error}</p>}</div>;
 
   return (
-    <div className={step === 'READY' ? 'has-nav' : undefined}>
+    <div className={step === 'READY' ? 'has-nav' : 'onboarding'}>
       <ol className="steps" aria-label="Progress">
         {ORDER.map((s, i) => (
           <li key={s} className={i < idx ? 'done' : i === idx ? 'current' : ''} />
@@ -103,6 +103,10 @@ export function ProfileFlow() {
           <div className="field">
             <label htmlFor="dob">Date of birth</label>
             <input id="dob" type="date" required value={value} onChange={(e) => setValue(e.target.value)} max={new Date().toISOString().slice(0, 10)} />
+          </div>
+          <div className="card note">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6l8-3z" /></svg>
+            <p>Your date of birth is never shown to other people.</p>
           </div>
           {errorBox}
           <button className="btn" type="submit" disabled={busy || value === ''}>{busy ? 'Saving…' : 'Continue'}</button>

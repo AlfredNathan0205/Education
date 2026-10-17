@@ -211,9 +211,9 @@ function NextBest({
   onRecommendation: (id: string) => void;
   onPutOff: (id: string) => void;
 }) {
-  const card = (title: string, body: React.ReactNode, cta: React.ReactNode) => (
-    <section className="card nba" aria-labelledby="nba">
-      <p className="eyebrow">Next</p>
+  const card = (title: string, body: React.ReactNode, cta: React.ReactNode, soon = false) => (
+    <section className={soon ? 'card soon' : 'card nba'} aria-labelledby="nba">
+      <p className="eyebrow">Next for you</p>
       <h2 id="nba">{title}</h2>
       <p className="muted">{body}</p>
       {cta}
@@ -229,7 +229,7 @@ function NextBest({
     case 'FINISH_PROFILE':
       return card('Finish your profile', action.reason, <Link className="btn" href="/profile">Choose curriculum and grade</Link>);
     case 'COMING_SOON':
-      return card('Coming soon', `${action.reason} We will let you know when it opens.`, <Link className="btn secondary" href="/profile">Check your profile</Link>);
+      return card('Coming soon', `${action.reason} We will let you know when it opens.`, <Link className="btn secondary" href="/profile">Check your profile</Link>, true);
     case 'NOT_READY':
       return card('Almost ready', action.reason, null);
     case 'FIRST_TEST':
