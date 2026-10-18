@@ -11,7 +11,8 @@ async function bootstrap() {
   app.use(rateLimiter());
   // Curriculum uploads are text files of up to ~2 MB; Nest's default JSON limit is 100 KB.
   app.useBodyParser('json', { limit: '3mb' });
-  const port = process.env.API_PORT ?? 3001;
+  // API_PORT locally; a host that assigns the port (Railway) sets PORT.
+  const port = process.env.API_PORT ?? process.env.PORT ?? 3001;
   await app.listen(port);
   console.log(`API listening on port ${port}`);
 }
