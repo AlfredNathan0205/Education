@@ -19,17 +19,18 @@ Name the services exactly `api` and `web`: the variables below refer to them by 
 
 ## Set up (once)
 
-1. **The project:** in Railway, choose New Project, then Empty project, and name it `exam-app-staging`. Pick a European region if Railway offers one, as it is closest to both the UK and the UAE.
+1. **The project:** in Railway, choose New Project, then Empty project, and name it `exam-app-staging`. The project starts in US West by default.
 2. **Databases:** add PostgreSQL, then add Redis.
-3. **The `api` service:** choose New, then GitHub Repo, then `AlfredNathan0205/Education`, branch `main`.
+3. **Region:** move all four services to EU West (Amsterdam) — closest to both the UK and the UAE. For each service: open Settings → Region and select EU West, or use the CLI: `railway service scale --service <name> eu-west=1 us-west=0`. Postgres and Redis volumes migrate automatically with brief downtime.
+4. **The `api` service:** choose New, then GitHub Repo, then `AlfredNathan0205/Education`, branch `main`.
    - Rename the service to `api`.
-   - In its settings, set the config file path to `deploy/railway/api.railway.json`. If Railway has no such setting, add the variable `RAILWAY_DOCKERFILE_PATH=deploy/railway/api.Dockerfile` instead, and set the health check path to `/health` by hand.
+   - Railway does not currently have a "config file path" setting in the UI. Add the variable `RAILWAY_DOCKERFILE_PATH=deploy/railway/api.Dockerfile` instead. The health check path `/health` must be set by hand in the service settings.
    - Do **not** generate a public domain for it.
-4. **The `web` service:** the same repo and branch, renamed to `web`.
-   - Set the config file path to `deploy/railway/web.railway.json` (or `RAILWAY_DOCKERFILE_PATH=deploy/railway/web.Dockerfile`, with the health check path `/api/health`).
+5. **The `web` service:** the same repo and branch, renamed to `web`.
+   - Add the variable `RAILWAY_DOCKERFILE_PATH=deploy/railway/web.Dockerfile`. Set the health check path `/api/health` by hand.
    - Generate a public domain, or attach your own subdomain (for example `staging.<your-domain>`) with the DNS record Railway shows.
-5. **Variables:** add them as in the next section.
-6. **Deploys:** both services deploy from `main` on every merge. Turn on Railway's option to wait for GitHub checks (CI) before deploying, if your plan offers it, so a red build never reaches staging.
+6. **Variables:** add them as in the next section.
+7. **Deploys:** both services deploy from `main` on every merge. Turn on Railway's option to wait for GitHub checks (CI) before deploying, if your plan offers it, so a red build never reaches staging.
 
 ## Variables
 
@@ -71,16 +72,22 @@ Generate each secret with `openssl rand -hex 32`. Keep the secrets in Railway on
 
 Migrations run by themselves when `api` starts. Then, once:
 
-1. **Run commands against staging.** Use either of these:
-   - `railway ssh --service api` (Railway CLI), then run `node apps/api/dist/...` inside the container.
-   - From your own checkout, after `pnpm install && pnpm build`, run `DATABASE_URL=<Postgres public URL from Railway> node apps/api/dist/...`. Prisma needs the database's **public** URL from outside Railway, and you may need to add `?sslmode=require` to it.
+1. **Run commands against staging.** Use SSH into the running container:
+   - First time: generate an SSH key (`ssh-keygen -t ed25519`), register it (`railway ssh keys add`), and install the SSH config (`railway ssh config --service api`). Then run commands with `ssh railway-api -- ENV=val node apps/api/dist/...`.
+   - The local Prisma engine may not work on all architectures (e.g. Windows ARM64). SSH into the container avoids this.
+   - To upload files: `scp myfile.json railway-api:/tmp/`.
 2. **The test jurisdiction policy:**
-   `ALLOW_DEV_TEST_POLICY=true node apps/api/dist/privacy/cli/policy.js seed-dev-policy`
+   `ssh railway-api -- ALLOW_DEV_TEST_POLICY=true POLICY_OPERATOR=<you> node apps/api/dist/privacy/cli/policy.js seed-dev-policy`
 3. **Accounts:** each person signs up on the staging site with their own email. Then grant roles:
-   `ADMIN_OPERATOR=<you> node apps/api/dist/authz/cli/roles.js grant email <them> SUPER_ADMIN` (or `CURRICULUM_EDITOR`, `CURRICULUM_REVIEWER`, `CURRICULUM_APPROVER`).
+   `ssh railway-api -- ADMIN_OPERATOR=<you> node apps/api/dist/authz/cli/roles.js grant email <them> SUPER_ADMIN` (or `CURRICULUM_EDITOR`, `CURRICULUM_REVIEWER`, `CURRICULUM_APPROVER`).
    - Each admin sets up an authenticator app at first sign-in to `/admin`.
    - Activating a curriculum needs an approver who did not edit it, so give your partner `CURRICULUM_APPROVER`.
-4. **Content:** load the same curriculum and question files you use locally, through the operator commands in the README (`curriculum/cli/import-ai.js`, `question/cli/import-ai-questions.js`). Then review, approve and publish them on the admin pages, with two different people, as the app requires.
+4. **Content:** first seed the curriculum structure, then import the AI drafts:
+   - Upload the evidence and draft files: `scp docs/curriculum/icse-g8-2026-27-evidence.json railway-api:/tmp/` and each `.cisce-sources/icse-g8-*-ai-draft.json`.
+   - Seed the structure: `ssh railway-api -- ADMIN_OPERATOR=<you> node apps/api/dist/curriculum/cli/curriculum.js seed email <admin-email> /tmp/icse-g8-2026-27-evidence.json`
+   - Import each subject: `ssh railway-api -- ADMIN_OPERATOR=<you> node apps/api/dist/curriculum/cli/import-ai.js /tmp/icse-g8-<subject>-ai-draft.json`
+   - Import questions: `ssh railway-api -- ADMIN_OPERATOR=<you> node apps/api/dist/question/cli/import-ai-questions.js /tmp/<questions>.json`
+   - Then review, approve and publish them on the admin pages, with two different people, as the app requires.
 
 ## Day to day
 
