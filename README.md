@@ -157,6 +157,10 @@ This command refuses to run when `NODE_ENV=production` or when
 automatically. The policy is clearly labelled `NOT A LEGAL VALUE` and
 audited as `DEV TEST POLICY`.
 
+## Staging
+
+A hosted copy for the team, with test data only, runs on Railway: see `docs/deploy/STAGING_RAILWAY.md`.
+
 ## Sign-in codes by email
 
 By default (development) codes are written to the API log. To send real email, set these in `.env` and recreate the API container:

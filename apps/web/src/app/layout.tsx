@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import { EnvBanner } from '@/components/EnvBanner';
 
 export const metadata: Metadata = {
   title: 'Exam App',
@@ -12,6 +13,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <a className="skip-link" href="#main">Skip to content</a>
+        <EnvBanner />
         <div className="shell">
           <div className="brand"><span className="brand-mark" aria-hidden="true" />Exam App</div>
           <main id="main">{children}</main>
