@@ -1025,7 +1025,11 @@ describe('ExamService (real DB)', () => {
       const right = await correctSlot(assessmentId, p);
       await exam.lock(accountId, assessmentId, p, { slot: p <= 7 ? right : (right + 1) % 4, activeMs: 2000, idempotencyKey: key() });
     }
-    expect(await exam.present(accountId, assessmentId)).toMatchObject({ phase: 'SUMMARY', summary: { answered: 10, unanswered: 0 } });
+    const atEnd = await exam.present(accountId, assessmentId);
+    expect(atEnd).toMatchObject({ phase: 'SUMMARY', summary: { answered: 10, unanswered: 0 } });
+    // Step 22b: one tile per question, all answered; nothing says whether an answer is right.
+    expect(atEnd.summary!.questions.map((t) => t.state)).toEqual(Array(10).fill('ANSWERED'));
+    expect(JSON.stringify(atEnd.summary)).not.toMatch(/correct/i);
     await exam.submit(accountId, assessmentId);
 
     const result = await exam.result(accountId, assessmentId);

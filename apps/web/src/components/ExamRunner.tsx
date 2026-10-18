@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError, bff, type ExamLockResult, type ExamResult, type ExamView, track } from '@/lib/client-api';
+import { ApiError, bff, type CompeteView, type ExamLockResult, type ExamResult, type ExamView, track } from '@/lib/client-api';
+import { cohortBoard, needsText } from '@/lib/ranking';
 import { practiseMissed } from '@/lib/start-test';
 
 function newKey(): string {
@@ -174,6 +175,20 @@ export function ExamRunner({ assessmentId }: { assessmentId: string }) {
           <div className="stat"><span className="num good">{s.answered}</span><span className="what">Answered</span></div>
           <div className="stat"><span className="num">{s.unanswered}</span><span className="what">Not answered yet</span></div>
         </div>
+        {s.questions && s.questions.length > 0 && (
+          <div className="card">
+            <h2>Your questions</h2>
+            <ol className="tiles" aria-label="Your questions">
+              {s.questions.map((t) => (
+                <li key={t.position} className={`tile ${t.state.toLowerCase().replace('_', '-')}`}>
+                  <span aria-hidden="true">{t.position}</span>
+                  <span className="sr-only">Question {t.position}: {t.state === 'ANSWERED' ? 'answered' : t.state === 'REMOVED' ? 'removed, does not count' : 'not answered'}</span>
+                </li>
+              ))}
+            </ol>
+            <p className="hint" aria-hidden="true">Solid: answered. Dashed: not answered.{s.questions.some((t) => t.state === 'REMOVED') ? ' Crossed out: removed.' : ''}</p>
+          </div>
+        )}
         <div role="alert" aria-live="polite">{error && <p className="error">{error}</p>}</div>
         {view.removed > 0 && (
           <p className="muted">
@@ -200,6 +215,12 @@ export function ExamRunner({ assessmentId }: { assessmentId: string }) {
 
   return (
     <section aria-labelledby="q">
+      <p style={{ margin: '0 0 12px' }}>
+        <Link className="back" href="/home">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+          Save and leave
+        </Link>
+      </p>
       <p style={{ marginBottom: 8, fontWeight: 700 }}>
         {view.mode === 'TEST' ? 'Test' : 'Practice'} · Question {q.position} of {q.total}
         {q.pass === 'REVISIT' && ' · a question you skipped'}
@@ -245,6 +266,9 @@ export function ExamRunner({ assessmentId }: { assessmentId: string }) {
         </div>
       )}
       <p className="hint">Once locked, an answer cannot be changed. You can skip and come back once at the end.</p>
+      <p className="hint">
+        Leaving keeps every locked answer. Come back from Home or Tests before {LEAVE.format(new Date(view.expiresAt))} to finish.
+      </p>
     </section>
   );
 }
@@ -297,6 +321,7 @@ function ResultView({ result, headingRef }: { result: ExamResult; headingRef: Re
           )}
         </ul>
       </section>
+      <RankingNote result={result} />
       <section aria-label="What next" style={{ margin: '16px 0 24px' }}>
         {result.mode === 'TEST' && missed > 0 && (
           <p className="muted" style={{ marginBottom: 10 }}>
@@ -353,5 +378,33 @@ function ResultView({ result, headingRef }: { result: ExamResult; headingRef: Re
         </section>
       ))}
     </>
+  );
+}
+
+const LEAVE = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+/** Step 22b: whether this result counts towards the weekly ranking, and what is still needed to appear on it. */
+function RankingNote({ result }: { result: ExamResult }) {
+  const [view, setView] = useState<CompeteView | null>(null);
+  useEffect(() => {
+    if (result.mode === 'TEST' && result.competitiveEligible) bff<CompeteView>('GET', 'compete').then(setView).catch(() => setView(null));
+  }, [result.mode, result.competitiveEligible]);
+  let text: string;
+  if (result.mode === 'PRACTICE') text = 'Practice does not count towards your ranking.';
+  else if (!result.competitiveEligible) text = 'This test does not count towards your ranking.';
+  else {
+    const you = cohortBoard(view)?.you;
+    text = 'This test counts towards your ranking.';
+    // While a just-finished test is still being counted, the numbers would be out of date: say nothing more.
+    if (you && view && view.pending === 0) {
+      if (you.rank !== null) text += ` You are ranked ${you.rank} this week.`;
+      else if (you.needs.tests > 0 || you.needs.questions > 0) text += ` To appear this week, take ${needsText(you.needs)}.`;
+    }
+  }
+  return (
+    <section className="card note" aria-label="Ranking">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4z" /></svg>
+      <p>{text}</p>
+    </section>
   );
 }

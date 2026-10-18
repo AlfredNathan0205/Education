@@ -330,7 +330,7 @@ function view(a) {
   const base = { assessmentId: a.id, mode: a.mode, status: a.status, expiresAt: a.expiresAt, total: a.items.length, answered: a.items.filter((i) => i.state === 'LOCKED').length, removed: 0 };
   if (a.status !== 'IN_PROGRESS') return { ...base, phase: 'ENDED' };
   const s = step(a);
-  if (s.kind === 'SUMMARY') return { ...base, phase: 'SUMMARY', summary: { answered: s.answered, unanswered: s.unanswered, canReviewSkipped: s.canReviewSkipped } };
+  if (s.kind === 'SUMMARY') return { ...base, phase: 'SUMMARY', summary: { answered: s.answered, unanswered: s.unanswered, canReviewSkipped: s.canReviewSkipped, questions: a.items.map((i) => ({ position: i.position, state: i.state === 'LOCKED' ? 'ANSWERED' : 'NOT_ANSWERED' })) } };
   const it = a.items[s.position - 1];
   return { ...base, phase: 'QUESTION', question: { position: it.position, total: a.items.length, pass: s.pass, stem: it.stem, options: it.options.map((text, slot) => ({ slot, text })) } };
 }

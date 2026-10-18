@@ -23,12 +23,16 @@ export function TestHome() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [plan, setPlan] = useState<MyPlan | null>(null);
+  // Step 22b (blueprint "Choose a test"): one subject at a time, picked from a grid. Home links here with #SUBJECT.
+  const [subjectCode, setSubjectCode] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([bff<HomeView>('GET', 'home'), bff<MyAssessment[]>('GET', 'exam/assessments')])
       .then(([h, m]) => {
         setHome(h);
         setMine(m);
+        const wanted = typeof window !== 'undefined' ? window.location.hash.replace('#', '') : '';
+        setSubjectCode(h.subjects.some((s) => s.subjectCode === wanted) ? wanted : (h.subjects[0]?.subjectCode ?? null));
       })
       .catch((e) => {
         if (e instanceof ApiError && e.status === 401) window.location.assign('/sign-in');
@@ -103,15 +107,29 @@ export function TestHome() {
         <section className="card" aria-labelledby="start">
           <h2 id="start">Start a new one</h2>
           {plan && <PlanLine plan={plan} />}
+          <h3 id="subject-label" style={{ margin: '0 0 8px' }}>Subject</h3>
+          <div className="subject-grid" role="group" aria-labelledby="subject-label">
+            {home.subjects.map((s) => (
+              <button key={s.subjectVersionId} type="button" aria-pressed={s.subjectCode === subjectCode} onClick={() => setSubjectCode(s.subjectCode)}>
+                {s.subjectName}
+              </button>
+            ))}
+          </div>
+          <h3 style={{ margin: '0 0 8px' }}>Mode</h3>
           <div className="seg" role="group" aria-label="Kind">
             <button type="button" aria-pressed={mode === 'TEST'} onClick={() => setMode('TEST')}>Test</button>
             <button type="button" aria-pressed={mode === 'PRACTICE'} onClick={() => setMode('PRACTICE')}>Practice</button>
           </div>
-          {home.subjects.map((s) => {
+          <p className="hint" style={{ margin: '-8px 0 16px' }}>
+            {mode === 'TEST'
+              ? 'Answers are shown when you submit. A test can count towards your weekly ranking.'
+              : 'You see the answer and an explanation after each question. Practice does not count towards your ranking.'}
+          </p>
+          {home.subjects.filter((s) => s.subjectCode === subjectCode).map((s) => {
             const offered = s.tests.filter((t) => t.code !== 'FOCUS10' || s.chosenChapters > 0);
             return (
               <div key={s.subjectVersionId} id={s.subjectCode} className="field">
-                <h3 style={{ margin: '0 0 6px' }}>{s.subjectName}</h3>
+                <h3 style={{ margin: '0 0 6px' }}>{s.subjectName} tests</h3>
                 {offered.every((t) => !t.ready) && <p className="muted">Questions are still being prepared. Check back soon.</p>}
                 {offered
                   .filter((t) => t.ready)
