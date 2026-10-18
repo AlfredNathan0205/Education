@@ -91,6 +91,18 @@ export function nextStep(items: ItemProgress[], revisitUsed: boolean): NextStep 
   return { kind: 'SUMMARY', answered, unanswered, canReviewSkipped: !revisitUsed && unanswered > 0 };
 }
 
+export type SummaryTile = { position: number; state: 'ANSWERED' | 'NOT_ANSWERED' | 'REMOVED' };
+
+/**
+ * Step 22b: one tile per question for "before you submit", in order. Only what the student already knows: answered
+ * (locked) or not, and removed (it does not count). Never whether an answer is right.
+ */
+export function summaryTiles(items: ItemProgress[]): SummaryTile[] {
+  return [...items]
+    .sort((a, b) => a.position - b.position)
+    .map((i) => ({ position: i.position, state: i.excluded ? 'REMOVED' : i.state === 'LOCKED' ? 'ANSWERED' : 'NOT_ANSWERED' }));
+}
+
 export function clampActiveMs(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 0;
   return Math.min(Math.floor(value), MAX_ACTIVE_MS);

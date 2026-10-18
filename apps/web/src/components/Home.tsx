@@ -3,7 +3,8 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { AppNav } from './AppNav';
-import { ApiError, REASON_TEXT, bff, gradeLabel, type HomeView, type NextAction, type RecommendationView } from '@/lib/client-api';
+import { ApiError, REASON_TEXT, bff, gradeLabel, type CompeteView, type HomeView, type NextAction, type RecommendationView } from '@/lib/client-api';
+import { cohortBoard, needsText } from '@/lib/ranking';
 import { startRecommendation, startTest } from '@/lib/start-test';
 
 const TEST_NAME: Record<string, string> = { QUICK10: 'Quick 10', FOCUS10: 'Focus 10' };
@@ -92,13 +93,16 @@ export function Home() {
         </p>
       )}
 
-      <NextBest
-        action={home.nextAction}
-        busy={busy}
-        onStart={go}
-        onRecommendation={(id) => act(() => startRecommendation(id))}
-        onPutOff={putOff}
-      />
+      <div className="home-top">
+        <NextBest
+          action={home.nextAction}
+          busy={busy}
+          onStart={go}
+          onRecommendation={(id) => act(() => startRecommendation(id))}
+          onPutOff={putOff}
+        />
+        {home.supported && <RankingCard />}
+      </div>
       <div role="alert" aria-live="polite">{error && <p className="error">{error}</p>}</div>
 
       {focus.length > 0 && (
@@ -270,4 +274,32 @@ function NextBest({
         </div>,
       );
   }
+}
+
+/** Step 22b (blueprint Home): this week's ranking on the whole-cohort board, or what is still needed to appear. */
+function RankingCard() {
+  const [view, setView] = useState<CompeteView | null>(null);
+  useEffect(() => {
+    bff<CompeteView>('GET', 'compete').then(setView).catch(() => setView(null));
+  }, []);
+  const board = cohortBoard(view);
+  if (!view || !board) return null;
+  const y = board.you;
+  return (
+    <section className="card ranking" aria-labelledby="ranking">
+      <h2 id="ranking">This week&apos;s ranking</h2>
+      {y.rank !== null ? (
+        <>
+          <p className="big">#{y.rank}</p>
+          <p className="muted">of {board.rankedCount} in {board.title} · {y.cp} CP</p>
+        </>
+      ) : (
+        <p className="muted">
+          {y.needs.tests > 0 || y.needs.questions > 0 ? `${y.cp} CP so far. To appear, take ${needsText(y.needs)}.` : `${y.cp} CP this week.`}
+          {view.pending > 0 ? ' A test you just finished is still being counted.' : ''}
+        </p>
+      )}
+      <Link href="/compete">See the ranking</Link>
+    </section>
+  );
 }

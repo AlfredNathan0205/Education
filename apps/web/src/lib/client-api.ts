@@ -185,7 +185,7 @@ export interface ExamView {
   removed: number;
   phase: 'QUESTION' | 'SUMMARY' | 'ENDED';
   question?: { position: number; total: number; pass: 'MAIN' | 'REVISIT'; stem: string; options: Array<{ slot: number; text: string }> };
-  summary?: { answered: number; unanswered: number; canReviewSkipped: boolean };
+  summary?: { answered: number; unanswered: number; canReviewSkipped: boolean; questions?: Array<{ position: number; state: 'ANSWERED' | 'NOT_ANSWERED' | 'REMOVED' }> };
 }
 
 export interface ExamLockResult {

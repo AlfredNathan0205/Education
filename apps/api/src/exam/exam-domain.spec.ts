@@ -1,4 +1,4 @@
-import {
+import { summaryTiles,
   InsufficientBankError,
   allExcluded,
   assembleQuick10,
@@ -134,6 +134,15 @@ describe('nextStep', () => {
   });
   it('shows the summary after the main pass, offering a revisit when something was skipped', () => {
     expect(nextStep(mk([['LOCKED'], ['SKIPPED'], ['LOCKED']]), false)).toEqual({ kind: 'SUMMARY', answered: 2, unanswered: 1, canReviewSkipped: true });
+  });
+  it('summary tiles: one per question in order, answered or not, removed ones marked, nothing about correctness', () => {
+    const items = [{ position: 3, state: null, skipCount: 0 }, { position: 1, state: 'LOCKED' as const, skipCount: 0 }, { position: 2, state: 'SKIPPED' as const, skipCount: 1 }, { position: 4, state: 'LOCKED' as const, skipCount: 0, excluded: true }];
+    expect(summaryTiles(items)).toEqual([
+      { position: 1, state: 'ANSWERED' },
+      { position: 2, state: 'NOT_ANSWERED' },
+      { position: 3, state: 'NOT_ANSWERED' },
+      { position: 4, state: 'REMOVED' },
+    ]);
   });
   it('offers no revisit when nothing was skipped', () => {
     expect(nextStep(mk([['LOCKED'], ['LOCKED']]), false)).toEqual({ kind: 'SUMMARY', answered: 2, unanswered: 0, canReviewSkipped: false });

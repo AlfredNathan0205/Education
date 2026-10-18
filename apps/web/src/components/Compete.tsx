@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { AppNav } from './AppNav';
+import { needsText } from '@/lib/ranking';
 import { Social } from './Social';
 import { ApiError, bff, type CompeteBoard, type CompeteView, track } from '@/lib/client-api';
 
@@ -116,11 +117,4 @@ function Board({ board }: { board: CompeteBoard }) {
       )}
     </section>
   );
-}
-
-function needsText(n: { tests: number; questions: number }): string {
-  const parts: string[] = [];
-  if (n.tests > 0) parts.push(n.tests === 1 ? '1 more test' : `${n.tests} more tests`);
-  if (n.questions > 0) parts.push(`${n.questions} more counted question${n.questions === 1 ? '' : 's'}`);
-  return parts.join(' with ');
 }

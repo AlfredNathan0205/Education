@@ -26,7 +26,9 @@ import {
   revealsAfterLock,
   scoreAssessment,
   slotToPosition,
+  summaryTiles,
   type AssessmentMode,
+  type SummaryTile,
   type Difficulty,
   type ExamConfig,
   type ItemProgress,
@@ -98,7 +100,7 @@ export interface AssessmentView {
   removed: number;
   phase: 'QUESTION' | 'SUMMARY' | 'ENDED';
   question?: QuestionView;
-  summary?: { answered: number; unanswered: number; canReviewSkipped: boolean };
+  summary?: { answered: number; unanswered: number; canReviewSkipped: boolean; questions: SummaryTile[] };
 }
 
 export interface LockResult {
@@ -495,7 +497,7 @@ export class ExamService {
 
         const step = nextStep(this.progress(fresh.items), fresh.session.revisit_used);
         if (step.kind === 'SUMMARY') {
-          return { ...this.baseView(fresh.session, fresh.items, 'SUMMARY'), summary: { answered: step.answered, unanswered: step.unanswered, canReviewSkipped: step.canReviewSkipped } };
+          return { ...this.baseView(fresh.session, fresh.items, 'SUMMARY'), summary: { answered: step.answered, unanswered: step.unanswered, canReviewSkipped: step.canReviewSkipped, questions: summaryTiles(this.progress(fresh.items)) } };
         }
         const item = fresh.items.find((i) => i.position === step.position)!;
         // Deliberately selects no is_correct and no explanation.

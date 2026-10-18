@@ -89,9 +89,16 @@ test('a student who chose chapters is offered Focus 10 first', async ({ page }) 
   await expect(page.getByRole('button', { name: 'Start Focus 10' })).toBeVisible();
   await expect(page.getByText(/Start with Focus 10 in Physics/)).toBeVisible();
   await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Test' }).click();
-  await expect(page.getByRole('button', { name: 'Focus 10 test' })).toHaveCount(1); // only Physics has chapters chosen
+  // Step 22b: one subject at a time, from a grid. Only Physics has chapters chosen, so only Physics offers Focus 10.
+  const subjects = page.getByRole('group', { name: 'Subject' });
+  await subjects.getByRole('button', { name: 'Physics' }).click();
+  await expect(subjects.getByRole('button', { name: 'Physics' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'Focus 10 test' })).toHaveCount(1);
+  await subjects.getByRole('button', { name: 'Chemistry' }).click();
+  await expect(page.getByRole('button', { name: 'Focus 10 test' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Practice', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Quick 10 practice' })).toHaveCount(2);
+  await expect(page.getByRole('button', { name: 'Quick 10 practice' })).toHaveCount(1);
+  await expect(page.getByText('Practice does not count towards your ranking.')).toBeVisible();
 });
 
 test('an unsupported grade is Coming soon, with nothing substituted', async ({ page }) => {
@@ -372,12 +379,12 @@ test('Plans: on Free, a long test is not offered and three self-chosen starts us
   await expect(chemistry.getByText('Longer tests are not included in your plan.')).toBeVisible();
 
   for (const [subject, kind] of [['#CHEMISTRY', 'Test'], ['#PHYSICS', 'Test'], ['#CHEMISTRY', 'Practice']] as const) {
-    await page.goto('/tests');
+    await page.goto(`/tests${subject}`);
     await page.getByRole('button', { name: kind, exact: true }).click();
     await page.locator(subject).getByRole('button', { name: `Quick 10 ${kind.toLowerCase()}` }).click();
     await page.waitForURL(/\/tests\/[0-9a-f-]{36}$/);
   }
-  await page.goto('/tests');
+  await page.goto('/tests#PHYSICS');
   await expect(page.getByText("You've started all the tests your plan includes today")).toBeVisible();
   await expect(page.locator('#PHYSICS').getByRole('button', { name: 'Quick 10 test' })).toBeDisabled();
   // What was started can still be finished.
@@ -731,4 +738,41 @@ test('Questions: an editor writes a question in a form, and asks the AI for draf
   await expect(ai.getByRole('status')).toContainText('3 drafts saved');
   await expect(ai.getByRole('list', { name: 'Recent batches' })).toContainText('3 of 3 saved');
   await expect(page.getByText(/· AI draft/)).toHaveCount(3);
+});
+
+// ── Step 22b: the rest of the blueprint ──────────────────────────────────────
+
+test('Blueprint: Home shows this week\'s ranking; the test has Save and leave and a tile for each question; the result says whether it counts', async ({ page }) => {
+  await signIn(page, 'student@example.com');
+  const ranking = page.getByRole('region', { name: "This week's ranking" });
+  await expect(ranking).toContainText('0 CP so far. To appear, take 2 more tests with 20 more counted questions.');
+  await expect(ranking.getByRole('link', { name: 'See the ranking' })).toHaveAttribute('href', '/compete');
+
+  await page.getByRole('button', { name: 'Start Quick 10' }).click();
+  await expect(page.getByText('Question 1 of 10')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Save and leave' })).toHaveAttribute('href', '/home');
+  await expect(page.getByText(/Leaving keeps every locked answer/)).toBeVisible();
+  await page.getByRole('button', { name: 'Skip' }).click();
+  for (let q = 2; q <= 10; q++) {
+    await expect(page.getByText(`Question ${q} of 10`)).toBeVisible();
+    await page.getByRole('radio').first().check();
+    await page.getByRole('button', { name: 'Lock answer' }).click();
+  }
+  const tiles = page.getByRole('list', { name: 'Your questions' });
+  await expect(tiles.getByRole('listitem')).toHaveCount(10);
+  await expect(tiles).toContainText('Question 1: not answered');
+  await expect(tiles).toContainText('Question 2: answered');
+  await page.getByRole('button', { name: 'Submit anyway' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: /of 10/ })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Ranking' })).toContainText('This test counts towards your ranking. To appear this week, take 1 more test with 10 more counted questions.');
+
+  // Leaving mid-test: Save and leave goes Home, and the test is there to continue.
+  await page.goto('/home');
+  await page.getByRole('link', { name: 'Tests in Chemistry' }).click();
+  await expect(page.getByRole('group', { name: 'Subject' }).getByRole('button', { name: 'Chemistry' })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Quick 10 test' }).click();
+  await expect(page.getByText('Question 1 of 10')).toBeVisible();
+  await page.getByRole('link', { name: 'Save and leave' }).click();
+  await expect(page).toHaveURL(/\/home$/);
+  await expect(page.getByRole('heading', { name: /Continue your Chemistry test/ })).toBeVisible();
 });

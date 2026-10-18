@@ -526,6 +526,9 @@ describe('ExamService: skip, revisit once, submit', () => {
     }
     const summary = await h.service.present(ACCOUNT, assessmentId);
     expect(summary).toMatchObject({ phase: 'SUMMARY', summary: { answered: 9, unanswered: 1, canReviewSkipped: true } });
+    expect(summary.summary!.questions).toHaveLength(10);
+    expect(summary.summary!.questions[0]).toEqual({ position: 1, state: 'NOT_ANSWERED' });
+    expect(summary.summary!.questions.slice(1).every((t) => t.state === 'ANSWERED')).toBe(true);
     expect(summary.question).toBeUndefined();
 
     await h.service.reviewSkipped(ACCOUNT, assessmentId);
