@@ -19,17 +19,18 @@ Name the services exactly `api` and `web`: the variables below refer to them by 
 
 ## Set up (once)
 
-1. **The project:** in Railway, choose New Project, then Empty project, and name it `exam-app-staging`. Railway does not currently offer region selection for new projects; the default (US West) is used.
+1. **The project:** in Railway, choose New Project, then Empty project, and name it `exam-app-staging`. The project starts in US West by default.
 2. **Databases:** add PostgreSQL, then add Redis.
-3. **The `api` service:** choose New, then GitHub Repo, then `AlfredNathan0205/Education`, branch `main`.
+3. **Region:** move all four services to EU West (Amsterdam) — closest to both the UK and the UAE. For each service: open Settings → Region and select EU West, or use the CLI: `railway service scale --service <name> eu-west=1 us-west=0`. Postgres and Redis volumes migrate automatically with brief downtime.
+4. **The `api` service:** choose New, then GitHub Repo, then `AlfredNathan0205/Education`, branch `main`.
    - Rename the service to `api`.
    - Railway does not currently have a "config file path" setting in the UI. Add the variable `RAILWAY_DOCKERFILE_PATH=deploy/railway/api.Dockerfile` instead. The health check path `/health` must be set by hand in the service settings.
    - Do **not** generate a public domain for it.
-4. **The `web` service:** the same repo and branch, renamed to `web`.
+5. **The `web` service:** the same repo and branch, renamed to `web`.
    - Add the variable `RAILWAY_DOCKERFILE_PATH=deploy/railway/web.Dockerfile`. Set the health check path `/api/health` by hand.
    - Generate a public domain, or attach your own subdomain (for example `staging.<your-domain>`) with the DNS record Railway shows.
-5. **Variables:** add them as in the next section.
-6. **Deploys:** both services deploy from `main` on every merge. Turn on Railway's option to wait for GitHub checks (CI) before deploying, if your plan offers it, so a red build never reaches staging.
+6. **Variables:** add them as in the next section.
+7. **Deploys:** both services deploy from `main` on every merge. Turn on Railway's option to wait for GitHub checks (CI) before deploying, if your plan offers it, so a red build never reaches staging.
 
 ## Variables
 
