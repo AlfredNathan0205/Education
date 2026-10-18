@@ -14,6 +14,9 @@ function newKey(): string {
  * result; in Practice the server reveals one question's answer after that question is locked.
  * No countdown and no running score are shown.
  */
+/** Option letters, as on the blueprint. They only label the options; the order comes from the server. */
+const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
+
 export function ExamRunner({ assessmentId }: { assessmentId: string }) {
   const [view, setView] = useState<ExamView | null>(null);
   const [result, setResult] = useState<ExamResult | null>(null);
@@ -161,12 +164,16 @@ export function ExamRunner({ assessmentId }: { assessmentId: string }) {
   if (view.phase === 'SUMMARY' && view.summary) {
     const s = view.summary;
     return (
-      <section className="card" aria-labelledby="sum">
+      <section aria-labelledby="sum">
         <h1 id="sum" ref={headingRef} tabIndex={-1}>You have reached the end</h1>
-        <p>
+        <p className="muted">
           You answered <strong>{s.answered}</strong> of {view.total - view.removed} questions.
           {s.unanswered > 0 && <> <strong>{s.unanswered}</strong> {s.unanswered === 1 ? 'is' : 'are'} unanswered and will score zero.</>}
         </p>
+        <div className="stats" aria-hidden="true">
+          <div className="stat"><span className="num good">{s.answered}</span><span className="what">Answered</span></div>
+          <div className="stat"><span className="num">{s.unanswered}</span><span className="what">Not answered yet</span></div>
+        </div>
         <div role="alert" aria-live="polite">{error && <p className="error">{error}</p>}</div>
         {view.removed > 0 && (
           <p className="muted">
@@ -192,29 +199,31 @@ export function ExamRunner({ assessmentId }: { assessmentId: string }) {
   const locked = reveal !== null;
 
   return (
-    <section className="card" aria-labelledby="q">
-      <p className="muted" style={{ marginBottom: 8 }}>
+    <section aria-labelledby="q">
+      <p style={{ marginBottom: 8, fontWeight: 700 }}>
         {view.mode === 'TEST' ? 'Test' : 'Practice'} · Question {q.position} of {q.total}
         {q.pass === 'REVISIT' && ' · a question you skipped'}
       </p>
-      <div className="bar" role="progressbar" aria-valuemin={0} aria-valuemax={q.total} aria-valuenow={q.position - 1} aria-label="Progress">
-        <span style={{ width: `${((q.position - 1) / q.total) * 100}%` }} />
-      </div>
+      <ol className="qbar" role="progressbar" aria-valuemin={0} aria-valuemax={q.total} aria-valuenow={q.position - 1} aria-label="Progress">
+        {Array.from({ length: q.total }, (_, n) => (
+          <li key={n} className={n < q.position - 1 ? 'done' : n === q.position - 1 ? 'current' : ''} />
+        ))}
+      </ol>
       <fieldset className="choices" disabled={busy || locked}>
         <legend>
           <h1 id="q" ref={headingRef} tabIndex={-1} className="stem">{q.stem}</h1>
         </legend>
-        {q.options.map((o) => {
+        {q.options.map((o, n) => {
           const isRight = reveal?.data.correctSlot === o.slot;
           const isChosen = reveal?.slot === o.slot;
+          const state = locked ? (isRight ? ' right' : isChosen ? ' wrong' : '') : selected === o.slot ? ' picked' : '';
           return (
-            <label key={o.slot} className={`option${selected === o.slot ? ' picked' : ''}${isRight ? ' right' : ''}`}>
+            <label key={o.slot} className={`option${state}`}>
               <input type="radio" name="answer" value={o.slot} checked={selected === o.slot} onChange={() => setSelected(o.slot)} />
-              <span>
-                {o.text}
-                {locked && isRight && <strong> (correct answer)</strong>}
-                {locked && isChosen && !isRight && <strong> (your answer)</strong>}
-              </span>
+              <span className="letter" aria-hidden="true">{LETTERS[n]}</span>
+              <span>{o.text}</span>
+              {locked && isRight && <strong className="tag"> (correct answer)</strong>}
+              {locked && isChosen && !isRight && <strong className="tag"> (your answer)</strong>}
             </label>
           );
         })}
@@ -261,7 +270,8 @@ function ResultView({ result, headingRef }: { result: ExamResult; headingRef: Re
   }
   return (
     <>
-      <section className="card" aria-labelledby="res">
+      <section className="card feature scorecard" aria-labelledby="res">
+        <p className="eyebrow">Your score</p>
         <h1 id="res" ref={headingRef} tabIndex={-1}>
           {result.correct} of {result.total}
         </h1>
@@ -273,15 +283,21 @@ function ResultView({ result, headingRef }: { result: ExamResult; headingRef: Re
         {result.corrected && (
           <p className="muted">This result was updated after a question in it was found to be wrong and removed.</p>
         )}
-        <ul className="plain">
+      </section>
+      <section className="card" aria-label="By difficulty">
+        <h2>By difficulty</h2>
+        <ul className="difficulty">
           {(Object.keys(label) as Array<keyof typeof label>).map((d) =>
             result.byDifficulty[d].total > 0 ? (
               <li key={d}>
-                {label[d]}: {result.byDifficulty[d].correct} of {result.byDifficulty[d].total}
+                <div className="row"><span>{label[d]}</span><span className="muted">{result.byDifficulty[d].correct} of {result.byDifficulty[d].total}</span></div>
+                <div className="bar" aria-hidden="true"><span style={{ width: `${(result.byDifficulty[d].correct / result.byDifficulty[d].total) * 100}%` }} /></div>
               </li>
             ) : null,
           )}
         </ul>
+      </section>
+      <section aria-label="What next" style={{ margin: '16px 0 24px' }}>
         {result.mode === 'TEST' && missed > 0 && (
           <p className="muted" style={{ marginBottom: 10 }}>
             Practise what you missed: 10 questions on the same topics, with the answer shown after each one.
@@ -304,9 +320,9 @@ function ResultView({ result, headingRef }: { result: ExamResult; headingRef: Re
       <h2>Review</h2>
       {result.items.map((i) => (
         <section key={i.position} className="card" aria-label={`Question ${i.position}`}>
-          <p className="muted" style={{ marginBottom: 6 }}>
-            Question {i.position} · {label[i.difficulty]} ·{' '}
-            <strong>
+          <p className="muted" style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span>Question {i.position} · {label[i.difficulty]}</span>
+            <strong className={`pill${i.outcome === 'CORRECT' ? ' correct' : i.outcome === 'INCORRECT' ? ' incorrect' : ''}`}>
               {i.outcome === 'CORRECT' ? 'Correct' : i.outcome === 'INCORRECT' ? 'Incorrect' : i.outcome === 'EXCLUDED' ? 'Removed: does not count' : 'Not answered'}
             </strong>
           </p>
@@ -318,16 +334,22 @@ function ResultView({ result, headingRef }: { result: ExamResult; headingRef: Re
             </p>
           )}
           <p><strong>{i.stem}</strong></p>
-          <ul className="plain">
-            {i.options.map((o) => (
-              <li key={o.slot} className={o.isCorrect ? 'right' : undefined}>
-                {o.text}
-                {o.isCorrect && <strong> (correct answer)</strong>}
-                {o.chosen && <strong> (your answer)</strong>}
+          <ul className="review-options">
+            {i.options.map((o, n) => (
+              <li key={o.slot} className={o.isCorrect ? 'right' : o.chosen ? 'wrong' : undefined}>
+                <span className="letter" aria-hidden="true">{LETTERS[n]}</span>
+                <span style={{ flex: 1 }}>{o.text}</span>
+                {o.isCorrect && <strong className="tag"> (correct answer)</strong>}
+                {o.chosen && <strong className="tag"> (your answer)</strong>}
               </li>
             ))}
           </ul>
-          {i.explanation && <p className="muted" style={{ marginBottom: 0 }}>{i.explanation}</p>}
+          {i.explanation && (
+            <>
+              <h3>Why</h3>
+              <p className="muted" style={{ marginBottom: 0 }}>{i.explanation}</p>
+            </>
+          )}
         </section>
       ))}
     </>

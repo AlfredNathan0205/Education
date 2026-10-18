@@ -92,7 +92,7 @@ export function TestHome() {
           <Link className="btn" href="/profile">Go to your profile</Link>
         </section>
       ) : !home.supported ? (
-        <section className="card" aria-labelledby="start">
+        <section className="card soon" aria-labelledby="start">
           <h2 id="start">Coming soon</h2>
           <p className="muted" style={{ marginBottom: 0 }}>
             Tests for {home.cohort.curriculumCode} {gradeLabel(home.cohort.gradeCode)} are not available yet. We will not give you

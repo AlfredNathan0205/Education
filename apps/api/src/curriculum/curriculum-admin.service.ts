@@ -45,8 +45,14 @@ export class CurriculumAdminService {
     return this.as(accountId, APPROVE, (a) => this.curriculum.activate(id, a));
   }
 
-  /** Request validation: moves to VALIDATION_PENDING as the editor, then the system validates. */
+  /**
+   * Request validation: moves to VALIDATION_PENDING as the editor, then the system validates. A revision already in
+   * VALIDATION_PENDING (an edit after it was checked reopens it there) is checked again; only an editor may ask.
+   */
   async submitForValidation(accountId: string, id: string) {
+    if ((await this.curriculum.getState(id)) === 'VALIDATION_PENDING') {
+      return this.as(accountId, EDIT, () => this.curriculum.runValidation(id));
+    }
     await this.transition(accountId, id, 'VALIDATION_PENDING');
     return this.curriculum.runValidation(id);
   }

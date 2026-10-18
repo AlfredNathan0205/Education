@@ -17,6 +17,7 @@ import { SessionGuard, type AuthenticatedRequest } from '../student/session.guar
 import { CurriculumConflictError, CurriculumForbiddenError, CurriculumNotFoundError } from './curriculum.errors';
 import { CurriculumTransitionError } from './curriculum-state';
 import { ContentImportService, type ImportResult } from './import/content-import.service';
+import { CurriculumWorkflowService } from './curriculum-workflow.service';
 import type { ImportFormat } from './import/content-import';
 import type { UnitSummary } from './curriculum.service';
 
@@ -42,7 +43,7 @@ export function parseUploadBody(raw: unknown): { format: ImportFormat; text: str
 @Controller('admin/curriculum')
 @UseGuards(SessionGuard)
 export class AdminCurriculumController {
-  constructor(private readonly imports: ContentImportService) {}
+  constructor(private readonly imports: ContentImportService, private readonly workflow: CurriculumWorkflowService) {}
 
   @Get('units')
   units(@Req() req: AuthenticatedRequest): Promise<UnitSummary[]> {
@@ -66,6 +67,46 @@ export class AdminCurriculumController {
   @HttpCode(200)
   submit(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
     return this.map(() => this.imports.submit(req.accountId as string, unitId(id)));
+  }
+
+  // ── Step 22: the whole workflow on the admin page ──────────────────────────
+
+  @Post('units')
+  @HttpCode(200)
+  create(@Req() req: AuthenticatedRequest, @Body() raw: unknown) {
+    return this.map(() => this.workflow.create(req.accountId as string, raw));
+  }
+
+  @Get('units/:id')
+  detail(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
+    return this.map(() => this.workflow.detail(req.accountId as string, unitId(id)));
+  }
+
+  @Post('units/:id/evidence')
+  @HttpCode(200)
+  addEvidence(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Body() raw: unknown) {
+    return this.map(() => this.workflow.addEvidence(req.accountId as string, unitId(id), raw));
+  }
+
+  @Post('units/:id/:step')
+  @HttpCode(200)
+  step(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Param('step') step: string, @Body() raw: unknown) {
+    const a = req.accountId as string;
+    const u = unitId(id);
+    const steps: Record<string, () => Promise<unknown>> = {
+      'verify-evidence': () => this.workflow.verifyEvidence(a, u, raw),
+      'send-to-review': () => this.workflow.sendToReview(a, u),
+      'request-changes': () => this.workflow.requestChanges(a, u, raw),
+      approve: () => this.workflow.approve(a, u, raw),
+      activate: () => this.workflow.activate(a, u, raw),
+      suspend: () => this.workflow.suspend(a, u, raw),
+      resume: () => this.workflow.resume(a, u, raw),
+      correction: () => this.workflow.startCorrection(a, u),
+      withdraw: () => this.workflow.withdraw(a, u, raw),
+    };
+    const run = steps[step];
+    if (!run) throw new NotFoundException('Unknown step');
+    return this.map(run);
   }
 
   private async map<T>(fn: () => Promise<T>): Promise<T> {
